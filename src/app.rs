@@ -1,5 +1,6 @@
 use std::cell::Cell;
 use std::io;
+use std::path::PathBuf;
 
 use chrono::{Days, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -8,6 +9,7 @@ use crate::calendar::{self, Calendar};
 use crate::help::Help;
 use crate::input::LineInput;
 use crate::notes::{Action, NotesEditor};
+use crate::options::{self, Options, Settings, TOGGLES};
 use crate::search::{self, Search};
 use crate::store::{Item, Snapshot, Store};
 
@@ -29,6 +31,8 @@ pub enum Mode {
     ConfirmDelete,
     /// The notes screen for the selected item.
     Notes(Box<NotesEditor>),
+    /// The options popup.
+    Options(Options),
     /// Fuzzy search over every day's items.
     Search(Box<Search>),
     /// The calendar, for planning ahead.
@@ -54,6 +58,9 @@ pub struct App {
     pub list_offset: Cell<usize>,
     pub mode: Mode,
     pub quit: bool,
+    pub settings: Settings,
+    /// Where to save settings when they change, if anywhere.
+    pub settings_path: Option<PathBuf>,
     undo: Vec<State>,
     redo: Vec<State>,
     /// The state when the notes screen was opened. Everything typed there is
@@ -71,6 +78,8 @@ impl App {
             list_offset: Cell::new(0),
             mode: Mode::Normal,
             quit: false,
+            settings: Settings::default(),
+            settings_path: None,
             undo: Vec::new(),
             redo: Vec::new(),
             notes_before: None,
@@ -208,6 +217,18 @@ impl App {
                 }
                 calendar::Action::Help => self.open_help(),
             },
+            Mode::Options(popup) => match popup.handle_key(key) {
+                options::Action::Stay => {}
+                options::Action::Close => self.mode = Mode::Normal,
+                options::Action::Toggle(i) => {
+                    let toggle = &TOGGLES[i];
+                    let on = !(toggle.get)(&self.settings);
+                    (toggle.set)(&mut self.settings, on);
+                    if let Some(path) = &self.settings_path {
+                        self.settings.save(path)?;
+                    }
+                }
+            },
             Mode::Search(search) => {
                 let hits = search.find(&self.store, self.today);
                 match search.handle_key(key, &hits) {
@@ -236,6 +257,7 @@ impl App {
         match code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char('o') => self.mode = Mode::Options(Options::default()),
             KeyCode::Char('s') => self.mode = Mode::Search(Box::new(Search::new(false))),
             KeyCode::Char('S') => self.mode = Mode::Search(Box::new(Search::new(true))),
             KeyCode::Char('c') => self.mode = Mode::Calendar(Box::new(Calendar::new(self.day, self.today))),
@@ -1405,6 +1427,45 @@ mod tests {
         assert!(matches!(app.mode, Mode::Search(_)));
         assert!(app.items().iter().all(|item| !item.done && !item.pinned && item.priority.is_none()));
         assert!(!app.quit);
+    }
+
+    #[test]
+    fn o_opens_options_and_toggling_saves_the_settings() {
+        let (mut app, dir) = app_with(&["one"]);
+        let path = dir.path().join("settings.json");
+        app.settings_path = Some(path.clone());
+        type_str(&mut app, "o");
+        assert!(matches!(app.mode, Mode::Options(_)));
+        type_str(&mut app, " ");
+        assert!(app.settings.semantic_icons);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.settings.no_colour);
+        type_str(&mut app, " ");
+        assert!(!app.settings.no_colour);
+        let saved = Settings::load(Some(&path), false);
+        assert_eq!(saved, app.settings);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn keys_in_options_do_not_act_on_the_list() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "oxdpta");
+        assert!(matches!(app.mode, Mode::Options(_)));
+        assert!(app.items().iter().all(|item| !item.done && !item.pinned && item.priority.is_none()));
+        assert_eq!(items(&app), ["one", "two"]);
+    }
+
+    #[test]
+    fn toggling_options_is_not_an_undoable_change() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "xo ");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "u");
+        assert!(app.settings.semantic_icons);
+        assert!(!app.items()[0].done);
     }
 
     #[test]

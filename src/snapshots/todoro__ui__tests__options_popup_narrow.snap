@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 30, 12).backend()"
+---
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1╭ Options ───────────────╮ │"
+"│ │ Accessibility          │ │"
+"│ │ [ ] Semantic priority  │ │"
+"│ │     icons              │ │"
+"│ │     Show ∧ High, –     │ │"
+"│ │     Medium and ∨ Low   │ │"
+"│ │     beside triaged     │ │"
+"│ │     items, not just a  │ │"
+"│ │     colour.            │ │"
+"╰─╰── space toggle · esc ──╯─╯"
+" OPTIONS   esc close          "

@@ -19,6 +19,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/notes.rs`: the notes editor, a vim key layer over `ratatui-textarea`
 - `src/calendar.rs`: the calendar's state and keys (`Calendar`, `Zoom`), returning an `Action` for the app to carry out
 - `src/search.rs`: fuzzy search over every day's items (and notes with `S`), using `nucleo-matcher`
+- `src/options.rs`: `Settings` (saved to `settings.json`), the `TOGGLES` shown in the `o` popup, and the popup's keys
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
 - `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
@@ -27,7 +28,9 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 ## Keybindings
 
-Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `H`/`L` move the item to the day before/after the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `t` triage (priority cycles none → High → Medium → Low → none), `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `u`/`Ctrl+R` undo/redo, `c` calendar, `s`/`S` search items / items and notes, `?` help, `q` quit.
+Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `H`/`L` move the item to the day before/after the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `t` triage (priority cycles none → High → Medium → Low → none), `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `u`/`Ctrl+R` undo/redo, `c` calendar, `s`/`S` search items / items and notes, `o` options, `?` help, `q` quit.
+
+Options: `j`/`k` select, `Space`/`Enter` toggle (saved immediately), `Esc`/`q`/`o` close. To add an option, add a field to `Settings` (with a default of off) and an entry to `TOGGLES`; the popup, saving and loading follow.
 
 Search: every typed character goes into the query; `↑`/`↓`/`Ctrl+N`/`Ctrl+P`/`Ctrl+J`/`Ctrl+K` select, `Enter` goes to the item (its day, with it selected), `Esc` closes.
 
@@ -48,6 +51,7 @@ Keep new bindings vim-like. When you add or change one, update `SECTIONS` in `sr
 - Today and future days also show the pinned, open items from earlier days (`Store::pinned_before`), first, without moving them. So an unfinished pinned item shows on its own day and every day after it. So screen positions aren't always store positions: `App::slots()` maps each row on screen to the `(day, index)` where its item is stored. Use it (or `App::items()`) for anything that reads or changes the selected item, never `store.items(app.day)[app.selected]`.
 - On disk an item is a plain string, or an object with `text` and optional `notes`, `done`, `pinned` and `priority` (`"high"`, `"medium"` or `"low"`) (see `RawItem` in `store.rs`). Items with only text must stay plain strings so simple files stay readable by older versions.
 - `Store` saves after every change by writing a temp file and renaming it. Don't defer or batch saves.
+- "No colours" (`Settings::no_colour`) is applied after drawing, by `strip_colour` in `ui.rs`: background colours become reversed text and grey becomes dim. New UI needs no special handling, but anything highlighted only by colour must also differ in some other way (a symbol, bold, reversed) to stay readable without colour.
 - The calendar shows only the items stored on each day, not pinned items carried forward, which would fill every later day.
 - List undo is automatic: `App::handle_key` snapshots the store before each key in `Normal`, `Insert`, `ConfirmDelete` and `Calendar` mode and records it if the key changed anything. A notes visit is recorded as one change when it closes (`notes_before`). New list actions need no undo code, but must change the store only through `App::handle_key`.
 - Single-line typing (the list's insert mode) goes through `LineInput` in `input.rs`. Its `cursor` is a byte offset that must stay on a char boundary.
@@ -82,7 +86,7 @@ Never update snapshots just to make a failing test pass without reading the diff
 
 ## Data and manual testing
 
-Todos are stored in `~/.local/share/todoro/todos.json` by default. Set `TODORO_FILE` to use another file, and always do this when running the app to test it so the user's real data is never touched.
+Todos are stored in `~/.local/share/todoro/todos.json` by default, and settings in `~/.config/todoro/settings.json`. Set `TODORO_FILE` and `TODORO_SETTINGS` to use other files, and always set both when running the app to test it, so the user's real todos and settings are never touched. Unit tests leave `App::settings_path` as `None`, so they never save settings.
 
 To drive the real TUI, use a separate tmux server (`tmux -L todoro-test ...`) and target sessions with an exact match (`-t '=name:'`). The user runs their own tmux, and a plain `-t name` can prefix-match their windows and send keystrokes into them.
 

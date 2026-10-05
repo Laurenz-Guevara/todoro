@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: render(&app).backend()
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. ∧ Fix the leaking tap                                  │"
+"│2. – Book flights                                         │"
+"│3.   Water the plants                                     │"
+"│4. ∨ Sort the recycling                                   │"
+"│── Completed (1) ─────────────────────────────────────────│"
+"│✓  ∧ Old                                                  │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" NORMAL   a add  e edit  x done  d delete  ↵ notes  ? help  "

@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 70, 16).backend()"
+---
+"╭────────────────── Monday, October 5 2026 (today) ──────────────────╮"
+"│1. Buy milk                                                         │"
+"│                                                                    │"
+"│                                                                    │"
+"│  ╭ Options ─────────────────────────────────────────────────────╮  │"
+"│  │ Accessibility                                                │  │"
+"│  │ [x] Semantic priority icons                                  │  │"
+"│  │     Show ∧ High, – Medium and ∨ Low beside triaged items,    │  │"
+"│  │     not just a colour.                                       │  │"
+"│  │ [ ] No colours                                               │  │"
+"│  │     Draw everything in the terminal's own colours.           │  │"
+"│  │     Highlights use reversed text.                            │  │"
+"│  ╰──────────── j/k move · space toggle · esc close ─────────────╯  │"
+"│                                                                    │"
+"╰───────── h ← prev day · k ↑ up · j ↓ down · next day → l ──────────╯"
+" OPTIONS   j/k move  space toggle  esc close                          "

@@ -22,7 +22,7 @@ expression: terminal.backend()
 "│   │   s                   Search every day's items                       │   │"
 "│   │   S                   Search items and their notes                   │   │"
 "│   │   u / Ctrl+R          Undo / redo a change to the list               │   │"
+"│   │   o                   Options, including accessibility               │   │"
 "│   │   ?                   Show this help                                 │   │"
-"│   │   q                   Quit                                           │   │"
 "╰───╰─────────────────────── ↑/↓ scroll · esc close ───────────────────────╯───╯"
 " HELP   type to search  ↑/↓ scroll  esc close                                   "

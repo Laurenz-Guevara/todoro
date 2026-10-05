@@ -57,12 +57,13 @@ todoro
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `c` | Open the calendar |
 | `s` / `S` | Fuzzy search every day's items / items and their notes |
+| `o` | Options, including accessibility |
 | `?` | Show all keybindings |
 | `q` | Quit |
 
 Undo covers everything you change from the list, including moving items between days and a whole visit to an item's notes, and takes you back to where the change was made.
 
-Pinned items are marked with `⚲` and items that have notes with `≡`. A triaged item's number is coloured by its priority: red for High, yellow for Medium and green for Low.
+Pinned items are marked with `⚲` and items that have notes with `≡`. A triaged item's number is coloured by its priority: red for High, yellow for Medium and green for Low. If colours are hard to tell apart, turn on semantic icons in the options (`o`) to also show `∧` High, `–` Medium and `∨` Low.
 
 ### Completed items
 
@@ -139,6 +140,15 @@ In insert mode, type as normal (`Enter` starts a new line) and press `Esc` to go
 
 The calendar shows the items that belong to each day. Pinned items aren't repeated on every later day there, so they don't fill the whole calendar.
 
+### Options
+
+`o` opens the options. `j` / `k` select one, `Space` or `Enter` turns it on or off, and `Esc` closes them. They're saved and remembered next time.
+
+**Accessibility**
+
+- **Semantic priority icons:** show `∧` High, `–` Medium and `∨` Low beside triaged items, as well as the coloured number, for anyone who can't tell the colours apart.
+- **No colours:** draw everything in your terminal's own colours. Highlights such as the selected item use reversed text instead. This starts on if you set the standard [`NO_COLOR`](https://no-color.org) environment variable, until you change it here.
+
 ### Help
 
 `?` opens a popup listing every key, from the main list or the notes screen. Start typing to search: a single character such as `x` or `G` finds that key, and a word such as `undo` or `esc` finds keys by name or by what they do. `↑` / `↓` scroll and `Esc` closes it.
@@ -159,7 +169,9 @@ Todos are saved after every change, as JSON grouped by date. Items with only tex
 | macOS | `~/Library/Application Support/todoro/todos.json` |
 | Windows | `%APPDATA%\todoro\todos.json` |
 
-To use a different file, set `TODORO_FILE`:
+Options are saved separately, in `settings.json` in your config folder (`~/.config/todoro/` on Linux, `~/Library/Application Support/todoro/` on macOS, `%APPDATA%\todoro\` on Windows), or wherever `TODORO_SETTINGS` points.
+
+To use a different todo file, set `TODORO_FILE`:
 
 ```sh
 TODORO_FILE=~/work-todos.json todoro

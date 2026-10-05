@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -15,6 +16,7 @@ use crate::calendar::{self, Calendar, Zoom};
 use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
+use crate::options::{Options, TOGGLES};
 use crate::search::Search;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -37,7 +39,29 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Help { help, .. } => draw_help(frame, help),
         Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, calendar),
         Mode::Search(search) => draw_search(frame, app, search),
+        Mode::Options(options) => draw_options(frame, app, options),
         _ => {}
+    }
+
+    if app.settings.no_colour {
+        strip_colour(frame.buffer_mut());
+    }
+}
+
+/// Removes every colour from the finished screen. Anything that relied on a
+/// background colour (the selected row, the mode label) is reversed instead,
+/// and grey text is dimmed, so nothing that was highlighted is lost.
+fn strip_colour(buffer: &mut Buffer) {
+    for cell in buffer.content.iter_mut() {
+        if cell.bg != Color::Reset {
+            cell.modifier.insert(Modifier::REVERSED);
+            cell.bg = Color::Reset;
+        }
+        if cell.fg == Color::DarkGray {
+            cell.modifier.insert(Modifier::DIM);
+        }
+        cell.fg = Color::Reset;
+        cell.underline_color = Color::Reset;
     }
 }
 
@@ -95,7 +119,10 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 
     // Pad numbers so text lines up once there are 10 or more open items.
     let width = open.max(1).to_string().len();
-    let prefix_width = width + 2;
+    // With semantic icons on, triaged items get an icon after the number, and
+    // the rest leave a gap so all the text lines up.
+    let icons = app.settings.semantic_icons && rows.iter().any(|row| row.priority.is_some());
+    let prefix_width = width + 2 + if icons { 2 } else { 0 };
     let mut items: Vec<ListItem> = Vec::with_capacity(rows.len() + 1);
     // How many screen lines each list row takes, to place the typing cursor.
     let mut heights: Vec<usize> = Vec::with_capacity(rows.len() + 1);
@@ -130,12 +157,20 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             .iter()
             .enumerate()
             .map(|(n, range)| {
-                let lead = if n == 0 {
-                    Span::styled(prefix.clone(), prefix_style)
+                let mut spans = if n == 0 {
+                    vec![Span::styled(prefix.clone(), prefix_style)]
                 } else {
-                    Span::raw(" ".repeat(prefix_width))
+                    vec![Span::raw(" ".repeat(prefix_width))]
                 };
-                Line::from(vec![lead, Span::styled(row.text[range.clone()].trim_end().to_string(), text_style)])
+                if n == 0 && icons {
+                    spans.push(match row.priority {
+                        Some(priority) if row.done => Span::styled(format!("{} ", priority_icon(priority)), Style::new().fg(Color::DarkGray)),
+                        Some(priority) => Span::styled(format!("{} ", priority_icon(priority)), priority_style(priority)),
+                        None => Span::raw("  "),
+                    });
+                }
+                spans.push(Span::styled(row.text[range.clone()].trim_end().to_string(), text_style));
+                Line::from(spans)
             })
             .collect();
         let last = lines.last_mut().expect("wrap_ranges returns at least one line");
@@ -181,6 +216,15 @@ struct Row<'a> {
     done: bool,
     /// The item being added or edited.
     typing: bool,
+}
+
+/// The icon for a priority, shown when semantic icons are on.
+fn priority_icon(priority: Priority) -> &'static str {
+    match priority {
+        Priority::High => "∧",
+        Priority::Medium => "–",
+        Priority::Low => "∨",
+    }
 }
 
 /// The colour of a triaged item's number.
@@ -232,6 +276,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
+        Mode::Options(_) => ("OPTIONS", Color::Blue, &[("j/k move", 1), ("space toggle", 2), ("esc close", 3)]),
         Mode::Search(_) => ("SEARCH", Color::Yellow, &[("↑/↓ select", 1), ("↵ go to item", 2), ("esc close", 3)]),
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
@@ -769,6 +814,65 @@ fn highlighted(text: &str, matches: &[usize], width: usize, base: Style, matched
         spans.push(Span::styled(run, if run_matched { matched.patch(base) } else { base }));
     }
     spans
+}
+
+fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(64);
+    let inner_width = (width as usize).saturating_sub(4);
+
+    // A heading per section, then each option with its description wrapped
+    // underneath.
+    let mut lines: Vec<Line> = Vec::new();
+    let mut selected_lines = 0..0;
+    let mut section = "";
+    for (i, toggle) in TOGGLES.iter().enumerate() {
+        if toggle.section != section {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.push(Line::from(toggle.section.bold()));
+            section = toggle.section;
+        }
+        let start = lines.len();
+        let on = (toggle.get)(&app.settings);
+        let check = if on { "[x] ".green().bold() } else { "[ ] ".into() };
+        let text_width = inner_width.saturating_sub(4).max(1);
+        for (n, part) in wrap(toggle.label, text_width, usize::MAX).into_iter().enumerate() {
+            let lead = if n == 0 { check.clone() } else { "    ".into() };
+            let mut row = Line::from(vec![lead, part.into()]);
+            if i == options.selected {
+                row = row.bg(SELECTED_BG);
+            }
+            lines.push(row);
+        }
+        for part in wrap(toggle.description, text_width, usize::MAX) {
+            lines.push(Line::from(format!("    {part}")).dim());
+        }
+        if i == options.selected {
+            selected_lines = start..lines.len();
+        }
+    }
+
+    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let area = centered(screen, width, height);
+    let room = (width as usize).saturating_sub(2);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Blue))
+        .title(" Options ".bold())
+        .title_bottom(
+            Line::from(fit_first(&[" j/k move · space toggle · esc close ", " space toggle · esc ", " esc "], room))
+                .centered()
+                .dim(),
+        )
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    // Scroll just enough to keep the selected option in view.
+    let visible = inner.height as usize;
+    let scroll = selected_lines.end.saturating_sub(visible).min(selected_lines.start);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll as u16, 0)), area);
 }
 
 fn draw_help(frame: &mut Frame, help: &Help) {
@@ -1455,6 +1559,55 @@ mod tests {
         assert!(shown.starts_with('…') && shown.contains("dashboard"), "{shown}");
         assert!(shown.width() <= 16, "{shown}");
         assert!(spans.iter().any(|s| s.content == "dashboard" && s.style == matched));
+    }
+
+    #[test]
+    fn options_popup() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.settings.semantic_icons = true;
+        type_str(&mut app, "oj");
+        assert_snapshot!(render_sized(&app, 70, 16).backend());
+    }
+
+    #[test]
+    fn options_popup_narrow() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "o");
+        assert_snapshot!(render_sized(&app, 30, 12).backend());
+    }
+
+    #[test]
+    fn semantic_icons_show_beside_triaged_items() {
+        let (mut app, _dir) = app_with(&["Fix the leaking tap", "Book flights", "Water the plants", "Sort the recycling", "Old"]);
+        app.settings.semantic_icons = true;
+        type_str(&mut app, "tjttjjtttjtx");
+        assert_snapshot!(render(&app).backend());
+        // Off again, the list looks as it does without triage icons.
+        app.settings.semantic_icons = false;
+        assert!(!render(&app).backend().to_string().contains('∧'));
+    }
+
+    #[test]
+    fn no_colour_removes_every_colour_but_keeps_highlights() {
+        let (mut app, _dir) = app_with(&["Fix the tap", "Book flights"]);
+        app.store.set_notes(app.day, 0, "notes".into()).unwrap();
+        type_str(&mut app, "tjp");
+        app.settings.no_colour = true;
+        let mut screens = vec![render(&app)];
+        type_str(&mut app, "c");
+        screens.push(render_sized(&app, 70, 24));
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "sfix");
+        screens.push(render_sized(&app, 70, 14));
+        for terminal in &screens {
+            let buffer = terminal.backend().buffer();
+            assert!(buffer.content.iter().all(|cell| cell.fg == Color::Reset && cell.bg == Color::Reset));
+        }
+        // The list's selected row and the mode label are reversed instead.
+        let list = screens[0].backend().buffer();
+        assert!(list[(5, 2)].modifier.contains(Modifier::REVERSED), "selected row");
+        assert!(!list[(5, 1)].modifier.contains(Modifier::REVERSED), "other row");
+        assert!(list[(2, 9)].modifier.contains(Modifier::REVERSED), "mode label");
     }
 
     #[test]
