@@ -96,8 +96,9 @@ Releases are built by [dist](https://github.com/axodotdev/cargo-dist) in `.githu
 
 To release a new version, with the user's go-ahead:
 
-1. Set `version` in `Cargo.toml` (run `cargo build` so `Cargo.lock` updates too), and commit as `chore: release vX.Y.Z`.
-2. `git tag vX.Y.Z` and `git push origin main vX.Y.Z`. The tag must match the version.
+1. Draft the new `CHANGELOG.md` section with [git-cliff](https://git-cliff.org): `git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md` (it reads `cliff.toml`). Move the new section below the file's intro if it lands above it, and edit it into plain, user-facing wording: a commit for a change that a later commit replaced shouldn't be listed. The section's heading must be `## [X.Y.Z] - YYYY-MM-DD`; dist uses it as the release notes.
+2. Set `version` in `Cargo.toml` (run `cargo build` so `Cargo.lock` updates too), and commit both as `chore: release vX.Y.Z`.
+3. Check the notes with `dist manifest --tag vX.Y.Z --output-format=json` (`announcement_changelog`), then `git tag vX.Y.Z` and `git push origin main vX.Y.Z`. The tag must match the version.
 
 `dist-workspace.toml` holds dist's settings. Don't edit `release.yml` by hand: change the settings and run `dist generate` to regenerate it. `ci.yml` (tests on all three systems) is hand-written.
 
