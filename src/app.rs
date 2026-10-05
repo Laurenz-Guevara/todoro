@@ -1,6 +1,6 @@
 use std::io;
 
-use chrono::{Days, Local, NaiveDate};
+use chrono::{Days, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::store::Store;
@@ -16,6 +16,7 @@ pub enum Mode {
 
 pub struct App {
     pub store: Store,
+    pub today: NaiveDate,
     pub day: NaiveDate,
     pub selected: usize,
     pub mode: Mode,
@@ -23,10 +24,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(store: Store) -> Self {
+    pub fn new(store: Store, today: NaiveDate) -> Self {
         Self {
             store,
-            day: Local::now().date_naive(),
+            today,
+            day: today,
             selected: 0,
             mode: Mode::Normal,
             quit: false,

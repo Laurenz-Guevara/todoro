@@ -1,4 +1,3 @@
-use chrono::Local;
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -19,9 +18,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
-    let today = Local::now().date_naive();
     let mut title = vec![" ".into(), app.day.format("%A, %B %-d %Y").to_string().bold()];
-    if app.day == today {
+    if app.day == app.today {
         title.push(" (today)".fg(Color::Green));
     }
     title.push(" ".into());

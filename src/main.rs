@@ -4,13 +4,14 @@ mod ui;
 
 use std::io;
 
+use chrono::Local;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use crate::app::App;
 use crate::store::Store;
 
 fn main() -> io::Result<()> {
-    let mut app = App::new(Store::load()?);
+    let mut app = App::new(Store::load()?, Local::now().date_naive());
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();

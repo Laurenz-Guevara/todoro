@@ -21,6 +21,11 @@ impl Store {
                 .join("todoro")
                 .join("todos.json"),
         };
+        Self::open(path)
+    }
+
+    /// Loads from `path`. A missing file is an empty store; it is created on first save.
+    pub fn open(path: PathBuf) -> io::Result<Self> {
         let days = match fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).map_err(io::Error::other)?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => BTreeMap::new(),
