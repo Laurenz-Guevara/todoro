@@ -10,6 +10,7 @@ All notable changes to todoro. Each release's section is also shown on its GitHu
 
 ### Features
 
+- Add several items in a row with `A`: `Enter` adds each one and starts the next, and `Esc` stops.
 - Copy an item with `yy` and paste it below or above the cursor with `p` or `P`, on any day. Deleting also keeps the item to paste, so `dd` then `p` moves it.
 - Select several items with `V`, then complete, pin, triage, delete, copy or move them to another day all at once.
 - Tag items by writing `#words` in them. Tags are coloured on the list, and `#` lists every tag so you can see all of a tag's items across every day.
