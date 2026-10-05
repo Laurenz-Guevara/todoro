@@ -2,6 +2,13 @@
 name = "todoro"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
+description = "A vim-style terminal todo app"
+license = "MIT"
+repository = "https://github.com/Laurenz-Guevara/todoro"
+readme = "README.md"
+keywords = ["todo", "tui", "terminal", "vim", "productivity"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 chrono = "0.4.45"

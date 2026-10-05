@@ -189,3 +189,7 @@ cargo clippy --all-targets   # lint
 The UI tests compare the screen against saved snapshots in `src/snapshots/`. If you change the UI on purpose, check the diff the failing test prints, then accept the new snapshots with `INSTA_UPDATE=always cargo test`.
 
 See [AGENTS.md](AGENTS.md) for the project layout, conventions and commit format. It's written for coding agents, but it applies to people too.
+
+## Licence
+
+[MIT](LICENSE)
