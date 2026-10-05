@@ -18,7 +18,7 @@ pub const SECTIONS: &[Section] = &[
             ("h / l", "Previous / next day"),
             ("j / k", "Move down / up"),
             ("J / K", "Move the item down / up the list"),
-            ("> / <", "Move the item to the next / previous day"),
+            ("H / L", "Move the item to the previous / next day"),
             ("a", "Add an item below the cursor"),
             ("e", "Edit the selected item"),
             ("x", "Mark the selected item done / not done"),
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn longer_search_matches_descriptions_ignoring_case() {
         assert_eq!(found("UNDO"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R"]);
-        assert_eq!(found("next day"), ["List: h / l"]);
+        assert_eq!(found("next day"), ["List: h / l", "List: H / L"]);
     }
 
     #[test]

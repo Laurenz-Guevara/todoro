@@ -221,9 +221,9 @@ impl App {
             // Move the item down or up, within the open or completed items.
             KeyCode::Char('J') => self.move_selected(1)?,
             KeyCode::Char('K') => self.move_selected(-1)?,
-            // Move the item to the next or previous day, and follow it there.
-            KeyCode::Char('>') => self.move_to_day(1)?,
-            KeyCode::Char('<') => self.move_to_day(-1)?,
+            // Like h and l, but taking the selected item along to that day.
+            KeyCode::Char('H') => self.move_to_day(-1)?,
+            KeyCode::Char('L') => self.move_to_day(1)?,
             // Like vim's `a`, append after the cursor. From a completed item (or an
             // empty day), append to the end of the open items instead.
             KeyCode::Char('a') => {
@@ -950,26 +950,26 @@ mod tests {
     }
 
     #[test]
-    fn greater_than_moves_the_item_to_the_next_day_and_follows_it() {
+    fn capital_l_moves_the_item_to_the_next_day_and_follows_it() {
         let (mut app, _dir) = app_with(&["one", "two"]);
         let tomorrow = today().succ_opt().unwrap();
         app.store.insert(tomorrow, 0, "t1".into()).unwrap();
-        type_str(&mut app, "j>");
+        type_str(&mut app, "jL");
         assert_eq!(app.day, tomorrow);
         assert_eq!(items(&app), ["t1", "two"]);
         assert_eq!(app.selected, 1);
         assert_eq!(texts_on(&app, today()), ["one"]);
         // Again, and it keeps going.
-        type_str(&mut app, ">>");
+        type_str(&mut app, "LL");
         assert_eq!(app.day, tomorrow + chrono::Duration::days(2));
         assert_eq!(items(&app), ["two"]);
         assert_eq!(app.selected, 0);
     }
 
     #[test]
-    fn less_than_moves_the_item_to_the_previous_day() {
+    fn capital_h_moves_the_item_to_the_previous_day() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "<");
+        type_str(&mut app, "H");
         assert_eq!(app.day, today().pred_opt().unwrap());
         assert_eq!(items(&app), ["one"]);
         type_str(&mut app, "ll");
@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn moving_on_an_empty_day_does_nothing() {
         let (mut app, _dir) = app_with(&[]);
-        type_str(&mut app, "><");
+        type_str(&mut app, "LH");
         assert_eq!(app.day, today());
     }
 
@@ -987,7 +987,7 @@ mod tests {
     fn moving_a_completed_item_keeps_it_completed() {
         let (mut app, _dir) = app_with(&["one", "two"]);
         type_str(&mut app, "x");
-        type_str(&mut app, "j>");
+        type_str(&mut app, "jL");
         // "one" was completed, so it lands among tomorrow's completed items.
         assert_eq!(items(&app), ["one"]);
         assert!(app.items()[0].done);
@@ -996,7 +996,7 @@ mod tests {
     #[test]
     fn moving_lands_after_the_carried_items_on_a_future_day() {
         let (mut app, _dir) = app_with_future(&["pin a", "plain"], &[]);
-        type_str(&mut app, "j>");
+        type_str(&mut app, "jL");
         assert_eq!(items(&app), ["pin a", "plain"]);
         assert_eq!(app.carried(), 1);
         assert_eq!(app.selected, 1);
@@ -1005,7 +1005,7 @@ mod tests {
     #[test]
     fn moving_a_carried_item_takes_it_off_the_earlier_days() {
         let (mut app, _dir) = app_with_future(&["pin a"], &[]);
-        type_str(&mut app, "l>");
+        type_str(&mut app, "lL");
         let later = today() + chrono::Duration::days(2);
         assert_eq!(app.day, later);
         assert_eq!(items(&app), ["pin a"]);
@@ -1016,11 +1016,19 @@ mod tests {
     }
 
     #[test]
-    fn angle_brackets_while_typing_are_text() {
+    fn angle_brackets_no_longer_move_items() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "a<>");
+        type_str(&mut app, "><");
+        assert_eq!(app.day, today());
+        assert_eq!(items(&app), ["one"]);
+    }
+
+    #[test]
+    fn capital_h_and_l_while_typing_are_text() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "aHL");
         press(&mut app, KeyCode::Enter);
-        assert_eq!(items(&app), ["one", "<>"]);
+        assert_eq!(items(&app), ["one", "HL"]);
         assert_eq!(app.day, today());
     }
 
@@ -1077,7 +1085,7 @@ mod tests {
     #[test]
     fn u_after_moving_to_another_day_goes_back_with_the_item() {
         let (mut app, _dir) = app_with(&["one", "two"]);
-        type_str(&mut app, "j>>");
+        type_str(&mut app, "jLL");
         type_str(&mut app, "u");
         assert_eq!(app.day, today().succ_opt().unwrap());
         assert_eq!(items(&app), ["two"]);
@@ -1163,7 +1171,7 @@ mod tests {
     fn a_pinned_item_moved_to_yesterday_still_shows_today_and_after() {
         let (mut app, _dir) = app_with(&["pin a", "plain"]);
         app.store.toggle_pinned(today(), 0).unwrap();
-        type_str(&mut app, "<");
+        type_str(&mut app, "H");
         assert_eq!(app.day, today().pred_opt().unwrap());
         assert_eq!(items(&app), ["pin a"]);
         type_str(&mut app, "l");
