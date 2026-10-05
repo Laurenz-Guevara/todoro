@@ -3,7 +3,7 @@ use std::ops::Range;
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -33,16 +33,25 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
-    let mut title = vec![" ".into(), app.day.format("%A, %B %-d %Y").to_string().bold()];
-    if app.day == app.today {
-        title.push(" (today)".fg(Color::Green));
-    }
-    title.push(" ".into());
+    // Use the longest date that fits, shortening it before dropping "(today)".
+    let room = (area.width as usize).saturating_sub(4);
+    let today = if app.day == app.today { " (today)" } else { "" };
+    let dates = ["%A, %B %-d %Y", "%a, %b %-d %Y", "%a %-d %b"].map(|format| app.day.format(format).to_string());
+    let (date, today) = [today, ""]
+        .iter()
+        .flat_map(|today| dates.iter().map(move |date| (date.clone(), *today)))
+        .find(|(date, today)| date.width() + today.width() <= room)
+        .unwrap_or_else(|| (truncate(&app.day.format("%-d/%-m").to_string(), room), ""));
+    let title = vec![" ".into(), date.bold(), today.fg(Color::Green), " ".into()];
 
+    let hint = fit_first(
+        &[" h ← prev day · k ↑ up · j ↓ down · next day → l ", " h ← day · k ↑ · j ↓ · day → l ", " h/l day · j/k move "],
+        (area.width as usize).saturating_sub(2),
+    );
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(Line::from(title).centered())
-        .title_bottom(Line::from(" h ← prev day · k ↑ up · j ↓ down · next day → l ").centered().dim());
+        .title_bottom(Line::from(hint).centered().dim());
 
     // The rows to show, with the item being typed in place of (or inserted
     // among) the saved ones, so the numbering below it is already right.
@@ -128,7 +137,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default().with_offset(app.list_offset.get()).with_selected(selected.map(list_row));
 
     if items.is_empty() {
-        let empty = Paragraph::new("Nothing to do. Press a to add an item.").dim().centered();
+        let empty =
+            Paragraph::new("Nothing to do. Press a to add an item.").dim().centered().wrap(Wrap { trim: true });
         frame.render_widget(block, area);
         frame.render_widget(empty, inner);
         return;
@@ -164,32 +174,84 @@ const NOTES_MARKER: &str = " ≡";
 const PINNED_MARKER: &str = " ⚲";
 
 fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
-    let title = format!(" {}. {} ", app.selected + 1, app.items()[app.selected].text);
+    let room = (area.width as usize).saturating_sub(4);
+    let title = format!("{}. {}", app.selected + 1, app.items()[app.selected].text);
+    let title = format!(" {} ", truncate(&title, room.saturating_sub(2)));
+    let hint = fit_first(&[" esc/q back to list ", " esc back "], area.width.saturating_sub(2) as usize);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(Line::from(title.bold()).centered())
-        .title_bottom(Line::from(" esc/q back to list ").centered().dim())
+        .title_bottom(Line::from(hint).centered().dim())
         .padding(Padding::horizontal(1));
     frame.render_widget(&block, area);
     frame.render_widget(&editor.textarea, block.inner(area));
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let (mode, color, hints) = match &app.mode {
-        Mode::Normal => ("NORMAL", Color::Blue, "a add  e edit  x done  d delete  ↵ notes  ? help"),
-        Mode::Insert { editing: false, .. } => ("INSERT", Color::Green, "←/→ move  enter/esc save  (empty discards)"),
-        Mode::Insert { editing: true, .. } => ("INSERT", Color::Green, "←/→ move  enter/esc save  (empty asks to delete)"),
-        Mode::ConfirmDelete => ("DELETE", Color::Red, "d confirm  c cancel"),
-        Mode::Notes(editor) if editor.insert => ("INSERT", Color::Green, "esc normal mode"),
-        Mode::Notes(_) => ("NORMAL", Color::Blue, "i/a/o insert  x delete  dd delete line  ? help"),
-        Mode::Help { .. } => ("HELP", Color::Magenta, "type to search  ↑/↓ scroll  esc close"),
+    // Each hint has a priority. On a narrow screen the lowest go first, so
+    // `? help` is the last to go.
+    let (mode, color, hints): (_, _, &[(&str, u8)]) = match &app.mode {
+        Mode::Normal => (
+            "NORMAL",
+            Color::Blue,
+            &[("a add", 4), ("e edit", 2), ("x done", 3), ("d delete", 1), ("↵ notes", 0), ("? help", 5)],
+        ),
+        Mode::Insert { editing: false, .. } => {
+            ("INSERT", Color::Green, &[("←/→ move", 1), ("enter/esc save", 2), ("(empty discards)", 0)])
+        }
+        Mode::Insert { editing: true, .. } => {
+            ("INSERT", Color::Green, &[("←/→ move", 1), ("enter/esc save", 2), ("(empty asks to delete)", 0)])
+        }
+        Mode::ConfirmDelete => ("DELETE", Color::Red, &[("d confirm", 1), ("c cancel", 1)]),
+        Mode::Notes(editor) if editor.insert => ("INSERT", Color::Green, &[("esc normal mode", 0)]),
+        Mode::Notes(_) => {
+            ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
+        }
+        Mode::Help { .. } => {
+            ("HELP", Color::Magenta, &[("type to search", 0), ("↑/↓ scroll", 1), ("esc close", 2)])
+        }
     };
-    let line = Line::from(vec![
-        format!(" {mode} ").bold().fg(Color::Black).bg(color),
-        "  ".into(),
-        hints.dim(),
-    ]);
+    let label = format!(" {mode} ");
+    let hints = fit_hints(hints, (area.width as usize).saturating_sub(label.width() + 2));
+    let line = Line::from(vec![label.bold().fg(Color::Black).bg(color), "  ".into(), hints.dim()]);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Joins `hints` with two spaces, dropping the lowest-priority ones (the
+/// rightmost of equals) until the line fits in `width`.
+fn fit_hints(hints: &[(&str, u8)], width: usize) -> String {
+    let mut shown = hints.to_vec();
+    loop {
+        let line = shown.iter().map(|(hint, _)| *hint).collect::<Vec<_>>().join("  ");
+        if line.width() <= width || shown.is_empty() {
+            return line;
+        }
+        let lowest = shown.iter().enumerate().rev().min_by_key(|(_, (_, priority))| *priority).map(|(i, _)| i);
+        shown.remove(lowest.expect("shown is not empty"));
+    }
+}
+
+/// The first of `options` that fits in `width`, or nothing.
+fn fit_first<'a>(options: &[&'a str], width: usize) -> &'a str {
+    options.iter().find(|option| option.width() <= width).copied().unwrap_or("")
+}
+
+/// `text` cut to `width` columns, ending with "…" if anything was cut.
+fn truncate(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.to_string();
+    }
+    let mut cut = String::new();
+    for c in text.chars() {
+        if cut.width() + c.width().unwrap_or(0) + 1 > width {
+            break;
+        }
+        cut.push(c);
+    }
+    if width > 0 {
+        cut.push('…');
+    }
+    cut
 }
 
 fn draw_confirm(frame: &mut Frame, app: &App) {
@@ -295,7 +357,11 @@ fn draw_help(frame: &mut Frame, help: &Help) {
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(Color::Magenta))
         .title(" Keybindings ".bold())
-        .title_bottom(Line::from(" ↑/↓ scroll · esc close ").centered().dim())
+        .title_bottom(
+            Line::from(fit_first(&[" ↑/↓ scroll · esc close ", " esc close "], area.width.saturating_sub(2) as usize))
+                .centered()
+                .dim(),
+        )
         .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
@@ -305,7 +371,8 @@ fn draw_help(frame: &mut Frame, help: &Help) {
         Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
     let prompt = "Search: ";
     let query = if help.query.is_empty() {
-        "type a key like x, or a word like undo".dark_gray()
+        let room = (search.width as usize).saturating_sub(prompt.width());
+        fit_first(&["type a key like x, or a word like undo", "a key or a word", "key or word"], room).dark_gray()
     } else {
         help.query.as_str().into()
     };
@@ -321,8 +388,12 @@ fn draw_help(frame: &mut Frame, help: &Help) {
     }
 
     // Line the descriptions up in one column, sized for every key so it
-    // doesn't shift as you search.
-    let keys_width = SECTIONS.iter().flat_map(|s| s.bindings).map(|(keys, _)| keys.chars().count()).max().unwrap_or(0);
+    // doesn't shift as you search, and wrap them. If that leaves too little
+    // room, put each description under its key instead.
+    let keys_width = SECTIONS.iter().flat_map(|s| s.bindings).map(|(keys, _)| keys.width()).max().unwrap_or(0);
+    let width = results.width as usize;
+    let column = width.saturating_sub(keys_width + 4);
+    let stacked = column < 16;
     let mut lines = Vec::new();
     for section in &matches {
         if !lines.is_empty() {
@@ -330,12 +401,23 @@ fn draw_help(frame: &mut Frame, help: &Help) {
         }
         lines.push(Line::from(section.title.bold()));
         for (keys, action) in &section.bindings {
-            lines.push(Line::from(vec![format!("  {keys:<keys_width$}  ").yellow(), (*action).into()]));
+            if stacked {
+                lines.push(Line::from(format!("  {keys}").yellow()));
+                for part in wrap(action, width.saturating_sub(4).max(1), usize::MAX) {
+                    lines.push(Line::from(format!("    {part}")));
+                }
+            } else {
+                for (n, part) in wrap(action, column, usize::MAX).into_iter().enumerate() {
+                    let keys = if n == 0 { keys } else { "" };
+                    lines.push(Line::from(vec![format!("  {keys:<keys_width$}  ").yellow(), part.into()]));
+                }
+            }
         }
     }
 
     let height = results.height as usize;
     help.height.set(height);
+    help.total.set(lines.len());
     let scroll = help.scroll.min(lines.len().saturating_sub(height));
     frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), results);
 }
@@ -734,6 +816,83 @@ mod tests {
         let (mut app, _dir) = app_with(&["one", "two", "three", "four", long]);
         let terminal = press_and_draw(&mut app, "jjjj", 40, 8);
         assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn fit_hints_drops_the_lowest_priority_first() {
+        let hints = [("a add", 2), ("d delete", 0), ("x done", 1), ("? help", 3)];
+        assert_eq!(fit_hints(&hints, 100), "a add  d delete  x done  ? help");
+        assert_eq!(fit_hints(&hints, 25), "a add  x done  ? help");
+        assert_eq!(fit_hints(&hints, 14), "a add  ? help");
+        assert_eq!(fit_hints(&hints, 6), "? help");
+        assert_eq!(fit_hints(&hints, 3), "");
+        // Of equal priorities, the rightmost goes first.
+        assert_eq!(fit_hints(&[("one", 0), ("two", 0)], 4), "one");
+    }
+
+    #[test]
+    fn truncate_ends_cut_text_with_an_ellipsis() {
+        assert_eq!(truncate("Write report", 20), "Write report");
+        assert_eq!(truncate("Write report", 12), "Write report");
+        assert_eq!(truncate("Write report", 8), "Write r…");
+        assert_eq!(truncate("日本語", 4), "日…");
+        assert_eq!(truncate("abc", 1), "…");
+        assert_eq!(truncate("abc", 0), "");
+    }
+
+    #[test]
+    fn fit_first_picks_the_first_option_that_fits() {
+        assert_eq!(fit_first(&["long option", "short", "s"], 20), "long option");
+        assert_eq!(fit_first(&["long option", "short", "s"], 5), "short");
+        assert_eq!(fit_first(&["long option", "short"], 2), "");
+    }
+
+    /// The list, notes, help and insert screens of a small app at `width`.
+    fn narrow_screens(width: u16) -> String {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write the quarterly report for the team"]);
+        app.store.set_notes(app.day, 1, "Ask for Q3 numbers".into()).unwrap();
+        let mut out = String::new();
+        let mut shot = |app: &App, name: &str| {
+            out.push_str(&format!("{name}\n{}\n", render_sized(app, width, 12).backend()));
+        };
+        shot(&app, "list");
+        type_str(&mut app, "a");
+        shot(&app, "adding");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        shot(&app, "notes");
+        type_str(&mut app, "?");
+        shot(&app, "help");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "l");
+        shot(&app, "empty day");
+        out
+    }
+
+    #[test]
+    fn screens_at_40_columns() {
+        assert_snapshot!(narrow_screens(40));
+    }
+
+    #[test]
+    fn screens_at_30_columns() {
+        assert_snapshot!(narrow_screens(30));
+    }
+
+    #[test]
+    fn help_scrolling_counts_wrapped_lines() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "?");
+        render_sized(&app, 30, 12);
+        for _ in 0..200 {
+            press(&mut app, KeyCode::Down);
+            render_sized(&app, 30, 12);
+        }
+        // The last binding is visible at the bottom once scrolled all the way.
+        let screen = render_sized(&app, 30, 12).backend().to_string();
+        assert!(screen.contains("Ctrl+C"), "{screen}");
     }
 
     #[test]

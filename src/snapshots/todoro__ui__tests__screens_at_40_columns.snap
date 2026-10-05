@@ -1,0 +1,73 @@
+---
+source: src/ui.rs
+expression: narrow_screens(40)
+---
+list
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│1. Buy milk                           │"
+"│2. Write the quarterly report for     │"
+"│   the team ≡                         │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" NORMAL   a add  e edit  x done  ? help "
+
+adding
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│1. Buy milk                           │"
+"│2.                                    │"
+"│3. Write the quarterly report for     │"
+"│   the team ≡                         │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" INSERT   ←/→ move  enter/esc save      "
+
+notes
+"╭─ 2. Write the quarterly report for… ─╮"
+"│ Ask for Q3 numbers                   │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰───────── esc/q back to list ─────────╯"
+" NORMAL   i/a/o insert  x delete  ? help"
+
+help
+"╭─ 2. Write the quarterly report for… ─╮"
+"│ ╭ Keybindings ─────────────────────╮ │"
+"│ │ Search: a key or a word          │ │"
+"│ │ ──────────────────────────────── │ │"
+"│ │ List                             │ │"
+"│ │   h / l                          │ │"
+"│ │     Previous / next day          │ │"
+"│ │   j / k                          │ │"
+"│ │     Move down / up               │ │"
+"│ │   a                              │ │"
+"╰─╰───── ↑/↓ scroll · esc close ─────╯─╯"
+" HELP   ↑/↓ scroll  esc close           "
+
+empty day
+"╭────── Tuesday, October 6 2026 ───────╮"
+"│Nothing to do. Press a to add an item.│"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" NORMAL   a add  e edit  x done  ? help "

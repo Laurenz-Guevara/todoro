@@ -8,5 +8,5 @@ expression: terminal.backend()
 "│5. Ring the council about the parking │"
 "│   permit renewal and ask whether the │"
 "│   visitor passes                     │"
-"╰k ↑ up · j ↓ down · next day → l ─────╯"
-" NORMAL   a add  e edit  x done  d delet"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" NORMAL   a add  e edit  x done  ? help "

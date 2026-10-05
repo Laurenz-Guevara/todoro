@@ -8,5 +8,5 @@ expression: terminal.backend()
 "│11. item 11                           │"
 "│12. item 12                           │"
 "│13. item 13                           │"
-"╰k ↑ up · j ↓ down · next day → l ─────╯"
-" NORMAL   a add  e edit  x done  d delet"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" NORMAL   a add  e edit  x done  ? help "

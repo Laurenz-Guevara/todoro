@@ -78,9 +78,11 @@ pub struct Help {
     pub query: String,
     /// First visible line of the results.
     pub scroll: usize,
-    /// How many result lines fit on screen, recorded when the popup is drawn,
-    /// so scrolling stops at the last page.
+    /// How many result lines fit on screen and how many there are once
+    /// wrapped, recorded when the popup is drawn, so scrolling stops at the
+    /// last page.
     pub height: Cell<usize>,
+    pub total: Cell<usize>,
 }
 
 impl Help {
@@ -123,8 +125,9 @@ impl Help {
             .collect()
     }
 
-    /// Number of result lines: a title per section, then its bindings, with a
-    /// blank line between sections.
+    /// Number of result lines when nothing wraps: a title per section, then
+    /// its bindings, with a blank line between sections.
+    #[cfg(test)]
     pub fn line_count(&self) -> usize {
         let matches = self.matches();
         let lines: usize = matches.iter().map(|section| section.bindings.len() + 1).sum();
@@ -137,7 +140,7 @@ impl Help {
     }
 
     fn scroll_by(&mut self, delta: isize) {
-        let max = self.line_count().saturating_sub(self.height.get());
+        let max = self.total.get().saturating_sub(self.height.get());
         self.scroll = self.scroll.saturating_add_signed(delta).min(max);
     }
 }
@@ -224,6 +227,7 @@ mod tests {
     fn typing_edits_the_search_and_resets_scrolling() {
         let mut h = help("");
         h.height.set(5);
+        h.total.set(h.line_count());
         press(&mut h, KeyCode::Down);
         assert_eq!(h.scroll, 1);
         for c in "undx".chars() {
@@ -250,6 +254,7 @@ mod tests {
     fn scrolling_stops_at_both_ends() {
         let mut h = help("");
         h.height.set(10);
+        h.total.set(h.line_count());
         let max = h.line_count() - 10;
         press(&mut h, KeyCode::Up);
         assert_eq!(h.scroll, 0);
@@ -267,6 +272,7 @@ mod tests {
     fn short_results_do_not_scroll() {
         let mut h = help("undo");
         h.height.set(10);
+        h.total.set(h.line_count());
         press(&mut h, KeyCode::Down);
         assert_eq!(h.scroll, 0);
     }

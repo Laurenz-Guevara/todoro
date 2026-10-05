@@ -42,6 +42,7 @@ Keep new bindings vim-like. When you add or change one, update `SECTIONS` in `sr
 - On disk an item is a plain string, or an object with `text` and optional `notes`, `done` and `pinned` (see `RawItem` in `store.rs`). Items with only text must stay plain strings so simple files stay readable by older versions.
 - `Store` saves after every change by writing a temp file and renaming it. Don't defer or batch saves.
 - `Insert { cursor }` is a byte offset that must stay on a char boundary. Use `prev_boundary`/`next_boundary` in `app.rs`.
+- The UI must work down to about 30 columns. Any text with a fixed length needs narrower fallbacks: `fit_first` (shorter alternatives), `fit_hints` (status bar hints by priority, `? help` last to go) or `truncate` (ends with "…"). The `screens_at_30_columns` and `screens_at_40_columns` snapshots cover every screen, so check them after any UI change.
 - Long text wraps rather than being cut off: list rows and the delete popup both use `wrap_ranges` in `ui.rs`, which keeps the text exactly as typed (so the cursor can be placed with `cursor_position`) and measures display width with `unicode-width`, not `chars().count()`. List rows can be several lines tall, so screen positions come from summing row heights.
 - The notes editor must keep vim's behavior where it differs from `ratatui-textarea`'s defaults: `h`/`l`/`x` never cross line boundaries, the normal-mode cursor never sits past the last character, and each command is one undo step.
 
