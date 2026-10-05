@@ -152,6 +152,7 @@ In normal mode:
 | `yy` | Copy the line (it flashes briefly to show it's copied) |
 | `p` / `P` | Paste below / above (also into another item's notes) |
 | `v` | Select text by moving the cursor; then `y` copies it, `d` cuts it, `J` / `K` move its lines down / up, and `Esc` cancels |
+| `V` | Select whole lines; `j` / `k` extend the selection, `J` / `K` move the lines, `y` copies them, `d` deletes them, and `Esc` deselects |
 | `J` / `K` | Move the line down / up |
 | `u` / `Ctrl+R` | Undo / redo |
 | `?` | Show all keybindings |

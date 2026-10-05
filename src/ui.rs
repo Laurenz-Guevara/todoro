@@ -283,16 +283,25 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(&editor.textarea, inner);
     highlight_cursor_line_number(frame.buffer_mut(), editor, inner);
+    if let Some(lines) = editor.selected_lines() {
+        paint_lines(frame.buffer_mut(), editor, inner, &lines, Style::new().bg(VISUAL_BG));
+    }
     if let Some((lines, _)) = &editor.flash {
-        flash_lines(frame.buffer_mut(), editor, inner, lines);
+        paint_lines(frame.buffer_mut(), editor, inner, lines, Style::new().bg(SELECTED_BG).add_modifier(Modifier::BOLD));
     }
 }
 
-/// Briefly highlights just-copied lines like a selected list item. The text
-/// area has no styling for this, so the lines' screen rows are found from the
-/// gutter: a numbered row starts a line, and any non-blank rows after it are
-/// that line wrapping.
-fn flash_lines(buffer: &mut Buffer, editor: &NotesEditor, area: Rect, lines: &std::ops::RangeInclusive<usize>) {
+/// Paints whole lines of the notes in `style`: lines selected with `V`, or
+/// just-copied lines flashing. The text area can't style lines like this, so
+/// their screen rows are found from the gutter: a numbered row starts a line,
+/// and any non-blank rows after it are that line wrapping.
+fn paint_lines(
+    buffer: &mut Buffer,
+    editor: &NotesEditor,
+    area: Rect,
+    lines: &std::ops::RangeInclusive<usize>,
+    style: Style,
+) {
     let gutter = editor.textarea.lines().len().to_string().len() as u16 + 2;
     let text = (area.left() + gutter).min(area.right())..area.right();
     let mut line = None;
@@ -305,7 +314,7 @@ fn flash_lines(buffer: &mut Buffer, editor: &NotesEditor, area: Rect, lines: &st
         }
         if line.is_some_and(|line| lines.contains(&line)) {
             for x in text.clone() {
-                buffer[(x, y)].set_style(Style::new().bg(SELECTED_BG).add_modifier(Modifier::BOLD));
+                buffer[(x, y)].set_style(style);
             }
         }
     }
@@ -380,6 +389,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             ],
         ),
         Mode::Notes(editor) if editor.insert => ("INSERT", Color::Green, &[("esc normal mode", 0)]),
+        Mode::Notes(editor) if editor.visual_lines => {
+            ("V-LINE", Color::Magenta, &[("y copy", 2), ("d delete", 2), ("J/K move", 1), ("esc cancel", 3)])
+        }
         Mode::Notes(editor) if editor.visual.is_some() => {
             ("VISUAL", Color::Magenta, &[("y copy", 2), ("d cut", 2), ("J/K move", 1), ("esc cancel", 3)])
         }
@@ -2192,6 +2204,21 @@ mod tests {
         app.mode = Mode::Changelog(ChangelogView::since(changes::parse_version(changes::VERSION).unwrap()));
         let terminal = render_sized(&app, 80, 40);
         assert!(terminal.backend().to_string().contains(" All ╯"));
+    }
+
+    #[test]
+    fn whole_lines_selected_with_capital_v_are_painted() {
+        let (mut app, _dir) = app_with(&["Sample item"]);
+        app.store.set_notes(app.day, 0, "one\ntwo\nthree\nfour".into()).unwrap();
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "jVj");
+        let terminal = render(&app);
+        let buffer = terminal.backend().buffer();
+        let painted: Vec<u16> = (1..9).filter(|&y| buffer[(10, y)].bg == VISUAL_BG).collect();
+        // Lines 2 and 3, across the whole width, not just up to the cursor.
+        assert_eq!(painted, [2, 3]);
+        assert_eq!(buffer[(50, 2)].bg, VISUAL_BG);
+        assert!(terminal.backend().to_string().contains("V-LINE"));
     }
 
     #[test]

@@ -22,8 +22,10 @@ pub struct NotesEditor {
     /// Text deleted or copied, for `p` and `P` to paste. The app keeps it
     /// between notes screens, so lines can move from one item's notes to another's.
     pub register: Option<Register>,
-    /// Where a `v` selection started, while selecting.
+    /// Where a `v` or `V` selection started, while selecting.
     pub visual: Option<(usize, usize)>,
+    /// Whether the selection is whole lines (`V`) rather than characters (`v`).
+    pub visual_lines: bool,
     /// Lines just copied, briefly highlighted to show it, and since when.
     pub flash: Option<(RangeInclusive<usize>, Instant)>,
     /// Undo history, kept here rather than in the text area so that every
@@ -71,6 +73,7 @@ impl NotesEditor {
             command: None,
             register: None,
             visual: None,
+            visual_lines: false,
             flash: None,
             undo: Vec::new(),
             redo: Vec::new(),
@@ -198,17 +201,37 @@ impl NotesEditor {
         // While selecting, motions extend the selection, y copies it, d or x
         // cuts it, and J or K move its lines. Other commands do nothing until
         // the selection ends.
+        let ((first, _), (last, _)) = self.selection(anchor);
         let action = match key.code {
-            KeyCode::Esc | KeyCode::Char('v') => {
+            KeyCode::Esc => {
                 self.end_visual();
                 Action::Stay
+            }
+            // v and V switch between selecting characters and whole lines, or
+            // stop selecting if it's already that kind.
+            KeyCode::Char(c @ ('v' | 'V')) if !ctrl => {
+                if self.visual_lines == (c == 'V') {
+                    self.end_visual();
+                } else {
+                    self.visual_lines = c == 'V';
+                }
+                Action::Stay
+            }
+            KeyCode::Char('y') if !ctrl && self.visual_lines => {
+                self.end_visual();
+                self.textarea.move_cursor(CursorMove::Jump(first as u16, 0));
+                self.yank_lines(first, last - first + 1);
+                self.first_non_blank()
+            }
+            KeyCode::Char('d' | 'x') if !ctrl && self.visual_lines => {
+                self.end_visual();
+                self.delete_lines(first, last - first + 1)
             }
             KeyCode::Char('y') if !ctrl => self.yank_selection(anchor),
             KeyCode::Char('d' | 'x') if !ctrl => self.cut_selection(anchor),
             KeyCode::Char('J' | 'K') if !ctrl => {
                 let times = self.count.take().unwrap_or(1) as isize;
                 let by = if key.code == KeyCode::Char('J') { times } else { -times };
-                let ((first, _), (last, _)) = self.selection(anchor);
                 // The selection moves with its lines, so J or K can be pressed again.
                 let moved = self.move_lines(first..=last, by);
                 self.visual = Some((anchor.0.saturating_add_signed(moved), anchor.1));
@@ -218,10 +241,20 @@ impl NotesEditor {
             KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => self.command_key(key, ctrl),
             _ => Action::Stay,
         };
-        if let Some(anchor) = self.visual {
-            self.show_selection(anchor);
+        // Characters are highlighted by the text area; whole lines are painted
+        // by the UI instead, since the text area only highlights up to the cursor.
+        match self.visual {
+            Some(anchor) if !self.visual_lines => self.show_selection(anchor),
+            _ => self.textarea.cancel_selection(),
         }
         action
+    }
+
+    /// The lines selected with `V`, if selecting whole lines.
+    pub fn selected_lines(&self) -> Option<RangeInclusive<usize>> {
+        let anchor = self.visual.filter(|_| self.visual_lines)?;
+        let row = self.textarea.cursor().0;
+        Some(anchor.0.min(row)..=anchor.0.max(row))
     }
 
     fn command_key(&mut self, key: KeyEvent, ctrl: bool) -> Action {
@@ -255,8 +288,8 @@ impl NotesEditor {
 
         match (self.pending.take(), c) {
             (Some('g'), 'g') => self.go_to_line(count.unwrap_or(1)),
-            (Some('d'), 'd') => self.delete_lines(times),
-            (Some('y'), 'y') => self.yank_lines(times),
+            (Some('d'), 'd') => self.delete_lines(self.textarea.cursor().0, times),
+            (Some('y'), 'y') => self.yank_lines(self.textarea.cursor().0, times),
             (_, 'g' | 'd' | 'y') => {
                 self.pending = Some(c);
                 // Keep the count for the second key, as in 3dd.
@@ -267,10 +300,13 @@ impl NotesEditor {
                 self.command = Some(LineInput::default());
                 Action::Stay
             }
-            (_, 'v') => {
+            (_, 'v' | 'V') => {
                 let cursor = self.textarea.cursor();
                 self.visual = Some((cursor.0, cursor.1));
-                self.show_selection((cursor.0, cursor.1));
+                self.visual_lines = c == 'V';
+                if c == 'v' {
+                    self.show_selection((cursor.0, cursor.1));
+                }
                 Action::Stay
             }
             (_, 'q') => Action::Close,
@@ -362,6 +398,7 @@ impl NotesEditor {
     fn end_visual(&mut self) {
         self.textarea.cancel_selection();
         self.visual = None;
+        self.visual_lines = false;
     }
 
     /// The selection's first and last characters, in order.
@@ -473,10 +510,9 @@ impl NotesEditor {
         Action::Stay
     }
 
-    /// Deletes `count` lines from the cursor's, keeping them to paste.
-    fn delete_lines(&mut self, count: usize) -> Action {
+    /// Deletes `count` lines from `row`, keeping them to paste.
+    fn delete_lines(&mut self, row: usize, count: usize) -> Action {
         let mut lines = self.textarea.lines().to_vec();
-        let row = self.textarea.cursor().0;
         let end = (row + count).min(lines.len());
         let removed: Vec<String> = lines.drain(row..end).collect();
         self.register = Some(Register { text: removed.join("\n"), linewise: true });
@@ -487,9 +523,8 @@ impl NotesEditor {
         self.first_non_blank()
     }
 
-    /// Copies `count` lines from the cursor's, to paste.
-    fn yank_lines(&mut self, count: usize) -> Action {
-        let row = self.textarea.cursor().0;
+    /// Copies `count` lines from `row`, to paste.
+    fn yank_lines(&mut self, row: usize, count: usize) -> Action {
         let lines = self.textarea.lines();
         let end = (row + count).min(lines.len());
         self.register = Some(Register { text: lines[row..end].join("\n"), linewise: true });
@@ -1260,6 +1295,84 @@ mod tests {
         let mut ed = editor("one\ntwo\nthree");
         send(&mut ed, "vjJ<esc>u");
         assert_eq!(ed.notes(), "one\ntwo\nthree");
+    }
+
+    #[test]
+    fn capital_v_selects_whole_lines_and_j_and_k_extend_it() {
+        let mut ed = editor("one\ntwo\nthree\nfour");
+        send(&mut ed, "jlV");
+        assert!(ed.visual_lines);
+        assert_eq!(ed.selected_lines(), Some(1..=1));
+        send(&mut ed, "jj");
+        assert_eq!(ed.selected_lines(), Some(1..=3));
+        send(&mut ed, "kkk");
+        assert_eq!(ed.selected_lines(), Some(0..=1));
+        // The text area's own highlight isn't used for whole lines.
+        assert!(ed.textarea.selection_range().is_none());
+    }
+
+    #[test]
+    fn esc_or_capital_v_again_deselects() {
+        let mut ed = editor("one\ntwo");
+        assert_eq!(send(&mut ed, "Vj<esc>"), Action::Stay);
+        assert!(ed.visual.is_none() && !ed.visual_lines);
+        assert_eq!(ed.selected_lines(), None);
+        send(&mut ed, "VV");
+        assert!(ed.visual.is_none());
+    }
+
+    #[test]
+    fn capital_j_and_k_move_whole_selected_lines() {
+        let mut ed = editor("one\ntwo\nthree\nfour\nfive");
+        send(&mut ed, "jVjJ");
+        assert_eq!(ed.notes(), "one\nfour\ntwo\nthree\nfive");
+        assert_eq!(ed.selected_lines(), Some(2..=3));
+        send(&mut ed, "2K");
+        assert_eq!(ed.notes(), "two\nthree\none\nfour\nfive");
+        assert_eq!(ed.selected_lines(), Some(0..=1));
+    }
+
+    #[test]
+    fn y_copies_whole_lines_and_flashes_them() {
+        let mut ed = editor("one\n  two\nthree");
+        send(&mut ed, "GVky");
+        assert!(ed.visual.is_none());
+        assert_eq!(register(&ed), ("  two\nthree", true));
+        assert_eq!(flashed(&ed), Some(1..=2));
+        // The cursor goes to the first line, on its text.
+        assert_eq!(cursor(&ed), (1, 2));
+        send(&mut ed, "ggp");
+        assert_eq!(ed.notes(), "one\n  two\nthree\n  two\nthree");
+    }
+
+    #[test]
+    fn d_deletes_whole_lines_to_paste() {
+        let mut ed = editor("one\ntwo\nthree\nfour");
+        send(&mut ed, "jlVjd");
+        assert_eq!(ed.notes(), "one\nfour");
+        assert_eq!(register(&ed), ("two\nthree", true));
+        send(&mut ed, "p");
+        assert_eq!(ed.notes(), "one\nfour\ntwo\nthree");
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "one\nfour");
+    }
+
+    #[test]
+    fn v_and_capital_v_switch_between_characters_and_lines() {
+        let mut ed = editor("hello world\nsecond");
+        send(&mut ed, "wV");
+        assert!(ed.visual_lines);
+        send(&mut ed, "v");
+        assert!(!ed.visual_lines && ed.visual.is_some());
+        send(&mut ed, "ey");
+        assert_eq!(register(&ed), ("world", false));
+    }
+
+    #[test]
+    fn v_highlights_straight_away() {
+        let mut ed = editor("abc");
+        send(&mut ed, "lv");
+        assert!(ed.textarea.selection_range().is_some());
     }
 
     #[test]
