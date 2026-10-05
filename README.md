@@ -56,6 +56,7 @@ todoro
 | `h` / `l` | Previous / next day |
 | `t` | Go to today |
 | `j` / `k` | Move down / up |
+| `gg` / `G` | Jump to the first / last item |
 | `J` / `K` | Move the selected item down / up the list |
 | `H` / `L` | Move the selected item to the previous / next day, and go with it |
 | `a` | Add an item below the cursor |

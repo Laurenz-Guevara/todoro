@@ -18,6 +18,7 @@ pub const SECTIONS: &[Section] = &[
             ("h / l", "Previous / next day"),
             ("t", "Go to today"),
             ("j / k", "Move down / up"),
+            ("gg / G", "First / last item"),
             ("J / K", "Move the item down / up the list"),
             ("H / L", "Move the item to the previous / next day"),
             ("a", "Add an item below the cursor"),
@@ -237,7 +238,7 @@ mod tests {
 
     #[test]
     fn single_key_search_is_case_sensitive() {
-        assert_eq!(found("G"), ["Notes: gg / G"]);
+        assert_eq!(found("G"), ["List: gg / G", "Notes: gg / G"]);
         assert_eq!(found("O"), ["Notes: o / O"]);
         assert!(found("g").contains(&"Notes: gg / G".to_string()));
         assert!(!found("A").contains(&"List: a".to_string()));

@@ -66,6 +66,8 @@ pub struct App {
     /// The state when the notes screen was opened. Everything typed there is
     /// one change for the list's undo.
     notes_before: Option<State>,
+    /// First key of a two-key command (`gg`) waiting for its second key.
+    pending: Option<char>,
 }
 
 impl App {
@@ -83,6 +85,7 @@ impl App {
             undo: Vec::new(),
             redo: Vec::new(),
             notes_before: None,
+            pending: None,
         }
     }
 
@@ -254,7 +257,15 @@ impl App {
         let slot = self.slot(self.selected);
         let len = self.slots().len();
         let open = self.carried() + self.store.open_count(self.day);
+        // Any other key cancels an unfinished two-key command, then does its
+        // own thing, as in vim.
+        if let (Some('g'), KeyCode::Char('g')) = (self.pending.take(), code) {
+            self.selected = 0;
+            return Ok(());
+        }
         match code {
+            KeyCode::Char('g') => self.pending = Some('g'),
+            KeyCode::Char('G') => self.selected = len.saturating_sub(1),
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('o') => self.mode = Mode::Options(Options::default()),
@@ -1488,6 +1499,35 @@ mod tests {
         type_str(&mut app, "u");
         assert!(app.settings.semantic_icons);
         assert!(!app.items()[0].done);
+    }
+
+    #[test]
+    fn gg_and_capital_g_jump_to_the_first_and_last_item() {
+        let (mut app, _dir) = app_with(&["one", "two", "three", "four"]);
+        type_str(&mut app, "x");
+        type_str(&mut app, "G");
+        // The last row, below the completed header.
+        assert_eq!(app.selected, 3);
+        assert_eq!(app.items()[3].text, "one");
+        type_str(&mut app, "gg");
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn a_single_g_then_another_key_does_that_key() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "Ggk");
+        assert_eq!(app.selected, 1);
+        // The pending g was cancelled, so one more g doesn't jump.
+        type_str(&mut app, "g");
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn g_and_capital_g_on_an_empty_day_do_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "Ggg");
+        assert_eq!(app.selected, 0);
     }
 
     #[test]
