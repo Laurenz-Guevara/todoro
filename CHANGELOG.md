@@ -2,6 +2,20 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [0.2.0] - 2026-10-05
+
+### Breaking
+
+- Pinning items moves from `p` to `m`, because `p` now pastes.
+
+### Features
+
+- Copy an item with `yy` and paste it below or above the cursor with `p` or `P`, on any day. Deleting also keeps the item to paste, so `dd` then `p` moves it.
+- Select several items with `V`, then complete, pin, triage, delete, copy or move them to another day all at once.
+- Tag items by writing `#words` in them. Tags are coloured on the list, and `#` lists every tag so you can see all of a tag's items across every day.
+- Jump to the first or last item with `gg` and `G`.
+- If todoro is open at midnight, it moves on to the new day and carries pinned items over.
+
 ## [0.1.0] - 2026-10-05
 
 The first release.
