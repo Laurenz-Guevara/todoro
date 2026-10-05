@@ -3,6 +3,7 @@ use std::io;
 use chrono::{Days, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::help::Help;
 use crate::notes::{Action, NotesEditor};
 use crate::store::{Item, Store};
 
@@ -15,6 +16,8 @@ pub enum Mode {
     ConfirmDelete,
     /// The notes screen for the selected item.
     Notes(Box<NotesEditor>),
+    /// The keybinding help popup, over the screen in `back`.
+    Help { help: Help, back: Box<Mode> },
 }
 
 pub struct App {
@@ -96,8 +99,15 @@ impl App {
                 if notes != self.items()[self.selected].notes {
                     self.store.set_notes(self.day, self.selected, notes)?;
                 }
-                if action == Action::Close {
-                    self.mode = Mode::Normal;
+                match action {
+                    Action::Stay => {}
+                    Action::Close => self.mode = Mode::Normal,
+                    Action::Help => self.open_help(),
+                }
+            }
+            Mode::Help { help, back } => {
+                if help.handle_key(key) {
+                    self.mode = std::mem::replace(back.as_mut(), Mode::Normal);
                 }
             }
         }
@@ -109,6 +119,7 @@ impl App {
         let open = self.store.open_count(self.day);
         match code {
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('h') | KeyCode::Left => self.change_day(-1),
             KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
             KeyCode::Char('j') | KeyCode::Down if self.selected + 1 < len => self.selected += 1,
@@ -134,6 +145,11 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    fn open_help(&mut self) {
+        let back = std::mem::replace(&mut self.mode, Mode::Normal);
+        self.mode = Mode::Help { help: Help::default(), back: Box::new(back) };
     }
 
     fn change_day(&mut self, delta: i64) {
@@ -493,6 +509,64 @@ mod tests {
         assert!(app.items()[1].done);
         type_str(&mut app, "dd");
         assert_eq!(items(&app), ["two"]);
+    }
+
+    #[test]
+    fn question_mark_opens_help_and_esc_returns_to_the_list() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "j?");
+        assert!(matches!(app.mode, Mode::Help { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn keys_typed_in_help_search_instead_of_acting_on_the_list() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "?xjdaq");
+        let Mode::Help { help, .. } = &app.mode else { panic!("help should still be open") };
+        assert_eq!(help.query, "xjdaq");
+        assert_eq!(items(&app), ["one", "two"]);
+        assert!(app.items().iter().all(|item| !item.done));
+        assert_eq!(app.selected, 0);
+        assert!(!app.quit);
+    }
+
+    #[test]
+    fn help_from_notes_returns_to_the_notes_as_they_were() {
+        let (mut app, _dir) = app_with(&["one"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "idraft");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "?undo");
+        assert!(matches!(app.mode, Mode::Help { .. }));
+        press(&mut app, KeyCode::Esc);
+        let Mode::Notes(editor) = &app.mode else { panic!("should be back on the notes screen") };
+        assert!(!editor.insert);
+        assert_eq!(editor.notes(), "draft");
+        // The help search didn't leak into the notes.
+        assert_eq!(app.items()[0].notes, "draft");
+    }
+
+    #[test]
+    fn question_mark_while_typing_is_text() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "e?");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one?"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "iwhy?");
+        let Mode::Notes(editor) = &app.mode else { panic!("should be on the notes screen") };
+        assert_eq!(editor.notes(), "why?");
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_help() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "?");
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap();
+        assert!(app.quit);
     }
 
     #[test]

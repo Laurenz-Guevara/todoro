@@ -5,19 +5,27 @@ use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padd
 use ratatui::Frame;
 
 use crate::app::{App, Mode};
+use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [main, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
 
-    match &app.mode {
+    // The help popup is drawn over whichever screen it was opened from.
+    let screen = match &app.mode {
+        Mode::Help { back, .. } => back.as_ref(),
+        mode => mode,
+    };
+    match screen {
         Mode::Notes(editor) => draw_notes(frame, app, editor, main),
         _ => draw_list(frame, app, main),
     }
     draw_status(frame, app, status);
 
-    if let Mode::ConfirmDelete = app.mode {
-        draw_confirm(frame, app);
+    match &app.mode {
+        Mode::ConfirmDelete => draw_confirm(frame, app),
+        Mode::Help { help, .. } => draw_help(frame, help),
+        _ => {}
     }
 }
 
@@ -126,12 +134,13 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let (mode, color, hints) = match &app.mode {
-        Mode::Normal => ("NORMAL", Color::Blue, "a add  e edit  x done  d delete  ↵ notes  q quit"),
+        Mode::Normal => ("NORMAL", Color::Blue, "a add  e edit  x done  d delete  ↵ notes  ? help"),
         Mode::Insert { editing: false, .. } => ("INSERT", Color::Green, "←/→ move  enter/esc save  (empty discards)"),
         Mode::Insert { editing: true, .. } => ("INSERT", Color::Green, "←/→ move  enter/esc save  (empty asks to delete)"),
         Mode::ConfirmDelete => ("DELETE", Color::Red, "d confirm  c cancel"),
         Mode::Notes(editor) if editor.insert => ("INSERT", Color::Green, "esc normal mode"),
-        Mode::Notes(_) => ("NORMAL", Color::Blue, "i/a/o insert  x delete  dd delete line  u undo"),
+        Mode::Notes(_) => ("NORMAL", Color::Blue, "i/a/o insert  x delete  dd delete line  ? help"),
+        Mode::Help { .. } => ("HELP", Color::Magenta, "type to search  ↑/↓ scroll  esc close"),
     };
     let line = Line::from(vec![
         format!(" {mode} ").bold().fg(Color::Black).bg(color),
@@ -157,6 +166,58 @@ fn draw_confirm(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(body).block(block), area);
 }
 
+fn draw_help(frame: &mut Frame, help: &Help) {
+    let screen = frame.area();
+    let area = centered(screen, screen.width.saturating_sub(4).min(72), screen.height.saturating_sub(2));
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Magenta))
+        .title(" Keybindings ".bold())
+        .title_bottom(Line::from(" ↑/↓ scroll · esc close ").centered().dim())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let [search, rule, results] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let prompt = "Search: ";
+    let query = if help.query.is_empty() {
+        "type a key like x, or a word like undo".dark_gray()
+    } else {
+        help.query.as_str().into()
+    };
+    frame.render_widget(Line::from(vec![prompt.dim(), query]), search);
+    frame.render_widget("─".repeat(rule.width as usize).dark_gray(), rule);
+    let typed = (prompt.chars().count() + help.query.chars().count()) as u16;
+    frame.set_cursor_position(Position::new(search.x + typed.min(search.width), search.y));
+
+    let matches = help.matches();
+    if matches.is_empty() {
+        frame.render_widget(Line::from(format!("No keys match \"{}\"", help.query)).dim(), results);
+        return;
+    }
+
+    // Line the descriptions up in one column, sized for every key so it
+    // doesn't shift as you search.
+    let keys_width = SECTIONS.iter().flat_map(|s| s.bindings).map(|(keys, _)| keys.chars().count()).max().unwrap_or(0);
+    let mut lines = Vec::new();
+    for section in &matches {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(section.title.bold()));
+        for (keys, action) in &section.bindings {
+            lines.push(Line::from(vec![format!("  {keys:<keys_width$}  ").yellow(), (*action).into()]));
+        }
+    }
+
+    let height = results.height as usize;
+    help.height.set(height);
+    let scroll = help.scroll.min(lines.len().saturating_sub(height));
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), results);
+}
+
 fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let [area] = Layout::horizontal([Constraint::Length(width)]).flex(Flex::Center).areas(area);
     let [area] = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center).areas(area);
@@ -174,7 +235,11 @@ mod tests {
     use crate::test_util::{app_with, press, type_str};
 
     fn render(app: &App) -> Terminal<TestBackend> {
-        let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        render_sized(app, 60, 10)
+    }
+
+    fn render_sized(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
         terminal
     }
@@ -280,6 +345,57 @@ mod tests {
         // Border, then row 1 (open item) + row 2 (header) puts the item on row 3.
         // The cursor follows "✓ " and "Buy milk".
         assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 8, 3));
+    }
+
+    #[test]
+    fn help_popup() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "?");
+        let mut terminal = render_sized(&app, 80, 24);
+        assert_snapshot!(terminal.backend());
+        // The 72-wide popup starts at x=4, then border, padding and "Search: ".
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(4 + 1 + 1 + 8, 2));
+    }
+
+    #[test]
+    fn help_popup_scrolled_to_the_end() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "?");
+        render_sized(&app, 80, 24);
+        for _ in 0..100 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_snapshot!(render_sized(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn help_popup_searching_for_a_key() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "?x");
+        assert_snapshot!(render_sized(&app, 80, 16).backend());
+    }
+
+    #[test]
+    fn help_popup_searching_for_a_word() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "?delete");
+        assert_snapshot!(render_sized(&app, 80, 16).backend());
+    }
+
+    #[test]
+    fn help_popup_with_no_matches() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "?zzz");
+        assert_snapshot!(render_sized(&app, 80, 16).backend());
+    }
+
+    #[test]
+    fn help_popup_over_the_notes_screen() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.store.set_notes(app.day, 0, "oat milk".into()).unwrap();
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "?undo");
+        assert_snapshot!(render_sized(&app, 80, 16).backend());
     }
 
     #[test]

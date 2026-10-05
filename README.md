@@ -10,8 +10,10 @@ A terminal todo app with vim-style keys. It opens on today's list, and you move 
 │✓  Call mom                                               │
 │✓  Write report ≡                                         │
 ╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯
- NORMAL   a add  e edit  x done  d delete  ↵ notes  q quit
+ NORMAL   a add  e edit  x done  d delete  ↵ notes  ? help
 ```
+
+Press `?` at any time for a searchable list of every key.
 
 ## Install
 
@@ -48,6 +50,7 @@ todoro
 | `x` | Mark the selected item done, or not done again |
 | `d` | Delete the selected item (asks to confirm) |
 | `Enter` | Open the selected item's notes |
+| `?` | Show all keybindings |
 | `q` | Quit |
 
 Items that have notes are marked with `≡`.
@@ -89,9 +92,14 @@ In normal mode:
 | `x` | Delete the character under the cursor |
 | `dd` | Delete the line |
 | `u` / `Ctrl+R` | Undo / redo |
+| `?` | Show all keybindings |
 | `Esc` / `q` | Back to the list |
 
 In insert mode, type as normal (`Enter` starts a new line) and press `Esc` to go back to normal mode.
+
+### Help
+
+`?` opens a popup listing every key, from the main list or the notes screen. Start typing to search: a single character such as `x` or `G` finds that key, and a word such as `undo` or `esc` finds keys by name or by what they do. `↑` / `↓` scroll and `Esc` closes it.
 
 ### Delete popup
 

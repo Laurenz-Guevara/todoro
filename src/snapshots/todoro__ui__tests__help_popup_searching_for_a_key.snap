@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 80, 16).backend()"
+---
+"╭─────────────────────── Monday, October 5 2026 (today) ───────────────────────╮"
+"│1. ╭ Keybindings ─────────────────────────────────────────────────────────╮   │"
+"│   │ Search: x                                                            │   │"
+"│   │ ──────────────────────────────────────────────────────────────────── │   │"
+"│   │ List                                                                 │   │"
+"│   │   x                   Mark the selected item done / not done         │   │"
+"│   │                                                                      │   │"
+"│   │ Notes                                                                │   │"
+"│   │   x                   Delete the character under the cursor          │   │"
+"│   │                                                                      │   │"
+"│   │                                                                      │   │"
+"│   │                                                                      │   │"
+"│   │                                                                      │   │"
+"│   │                                                                      │   │"
+"╰───╰─────────────────────── ↑/↓ scroll · esc close ───────────────────────╯───╯"
+" HELP   type to search  ↑/↓ scroll  esc close                                   "

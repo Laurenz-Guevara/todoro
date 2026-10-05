@@ -1,4 +1,5 @@
 mod app;
+mod help;
 mod notes;
 mod store;
 #[cfg(test)]

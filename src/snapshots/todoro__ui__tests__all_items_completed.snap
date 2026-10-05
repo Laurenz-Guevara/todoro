@@ -11,4 +11,4 @@ expression: render(&app).backend()
 "│                                                          │"
 "│                                                          │"
 "╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
-" NORMAL   a add  e edit  x done  d delete  ↵ notes  q quit  "
+" NORMAL   a add  e edit  x done  d delete  ↵ notes  ? help  "

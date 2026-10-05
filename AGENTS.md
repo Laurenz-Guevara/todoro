@@ -14,22 +14,25 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 ## Layout
 
 - `src/main.rs`: terminal setup/teardown and the event loop
-- `src/app.rs`: app state, modes (`Normal`, `Insert`, `ConfirmDelete`, `Notes`) and key handling
+- `src/app.rs`: app state, modes (`Normal`, `Insert`, `ConfirmDelete`, `Notes`, `Help`) and key handling
 - `src/notes.rs`: the notes editor, a vim key layer over `ratatui-textarea`
-- `src/ui.rs`: all rendering (list, status bar, delete popup)
+- `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
+- `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
 - `src/test_util.rs`: helpers shared by the tests
 - `src/snapshots/`: saved screen snapshots for the UI tests
 
 ## Keybindings
 
-Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `q` quit.
+Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `?` help, `q` quit.
 
 Insert mode: type to insert at the cursor, `←`/`→`/`Home`/`End` move, `Backspace`/`Delete` remove, `Enter`/`Esc` save. Saving an empty new item discards it. Saving an edited item as empty opens the delete popup.
 
-Notes screen, normal mode: `h`/`j`/`k`/`l`, `w`/`b`/`e`, `0`/`$`, `gg`/`G` move; `i`/`a`/`I`/`A`/`o`/`O` enter insert mode; `x` deletes a character, `dd` a line; `u`/`Ctrl+R` undo/redo; `Esc`/`q` back to the list. Notes insert mode: type freely, `Esc` back to normal mode. Anything not listed here is not implemented (no visual mode, `:` commands or counts).
+Notes screen, normal mode: `h`/`j`/`k`/`l`, `w`/`b`/`e`, `0`/`$`, `gg`/`G` move; `i`/`a`/`I`/`A`/`o`/`O` enter insert mode; `x` deletes a character, `dd` a line; `u`/`Ctrl+R` undo/redo; `?` help; `Esc`/`q` back to the list. Notes insert mode: type freely, `Esc` back to normal mode. Anything not listed here is not implemented (no visual mode, `:` commands or counts).
 
-Keep new bindings vim-like. When you add or change one, update the hints in `src/ui.rs` (bottom border and status bar), the list above and the tables in `README.md`.
+Help popup (from the list or notes normal mode): every typed character goes into the search, `↑`/`↓`/`Ctrl+N`/`Ctrl+P`/`PageUp`/`PageDown` scroll, `Backspace` and `Ctrl+U` edit the search, `Esc` returns to the screen it was opened from. One-character searches match key names only (case-sensitive); longer ones match keys or descriptions (case-insensitive).
+
+Keep new bindings vim-like. When you add or change one, update `SECTIONS` in `src/help.rs` (what `?` shows), the hints in `src/ui.rs` (bottom border and status bar), the list above and the tables in `README.md`.
 
 ## Conventions
 
@@ -45,6 +48,7 @@ Keep new bindings vim-like. When you add or change one, update the hints in `src
 Every new feature or bug fix comes with tests in the same commit. Tests live in a `#[cfg(test)] mod tests` at the bottom of the file they cover:
 
 - `app.rs`: key handling. Build an app with `test_util::app_with(&[...])` and send keys with `press` and `type_str`. Cover the behavior, edge cases (empty list, first/last item, multibyte text) and that keys meant for one mode do nothing in the others.
+- `help.rs`: search matching and the popup's own keys.
 - `notes.rs`: the notes editor's keys, driven with the `send` helper (`<esc>` and `<cr>` stand for Escape and Enter).
 - `store.rs`: persistence, always against a temporary file.
 - `ui.rs`: screen snapshots with [insta](https://insta.rs). Add one for any new screen or popup.

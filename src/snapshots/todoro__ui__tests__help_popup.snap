@@ -1,0 +1,28 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭─────────────────────── Monday, October 5 2026 (today) ───────────────────────╮"
+"│1. ╭ Keybindings ─────────────────────────────────────────────────────────╮   │"
+"│   │ Search: type a key like x, or a word like undo                       │   │"
+"│   │ ──────────────────────────────────────────────────────────────────── │   │"
+"│   │ List                                                                 │   │"
+"│   │   h / l               Previous / next day                            │   │"
+"│   │   j / k               Move down / up                                 │   │"
+"│   │   a                   Add an item below the cursor                   │   │"
+"│   │   e                   Edit the selected item                         │   │"
+"│   │   x                   Mark the selected item done / not done         │   │"
+"│   │   d                   Delete the selected item                       │   │"
+"│   │   Enter               Open the selected item's notes                 │   │"
+"│   │   ?                   Show this help                                 │   │"
+"│   │   q                   Quit                                           │   │"
+"│   │                                                                      │   │"
+"│   │ Adding or editing an item                                            │   │"
+"│   │   ← / →               Move the cursor                                │   │"
+"│   │   Home / End          Jump to the start / end of the line            │   │"
+"│   │   Backspace / Delete  Delete before / under the cursor               │   │"
+"│   │   Enter / Esc         Save                                           │   │"
+"│   │                                                                      │   │"
+"│   │ Delete popup                                                         │   │"
+"╰───╰─────────────────────── ↑/↓ scroll · esc close ───────────────────────╯───╯"
+" HELP   type to search  ↑/↓ scroll  esc close                                   "

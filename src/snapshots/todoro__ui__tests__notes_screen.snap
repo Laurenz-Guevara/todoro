@@ -11,4 +11,4 @@ expression: render(&app).backend()
 "│                                                          │"
 "│                                                          │"
 "╰─────────────────── esc/q back to list ───────────────────╯"
-" NORMAL   i/a/o insert  x delete  dd delete line  u undo    "
+" NORMAL   i/a/o insert  x delete  dd delete line  ? help    "

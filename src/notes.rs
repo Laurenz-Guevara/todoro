@@ -16,6 +16,8 @@ pub struct NotesEditor {
 pub enum Action {
     Stay,
     Close,
+    /// Open the keybinding help.
+    Help,
 }
 
 impl NotesEditor {
@@ -79,6 +81,7 @@ impl NotesEditor {
                 Action::Stay
             }
             (_, 'q') => Action::Close,
+            (_, '?') => Action::Help,
             (_, 'h') => self.motion(CursorMove::Back),
             (_, 'l') => self.motion(CursorMove::Forward),
             (_, 'j') => self.motion(CursorMove::Down),
@@ -397,6 +400,12 @@ mod tests {
         send(&mut ed, "jdd");
         ed.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert_eq!(ed.notes(), "one");
+    }
+
+    #[test]
+    fn question_mark_asks_for_help_from_normal_mode_only() {
+        assert_eq!(send(&mut editor(""), "?"), Action::Help);
+        assert_eq!(send(&mut editor(""), "i?"), Action::Stay);
     }
 
     #[test]
