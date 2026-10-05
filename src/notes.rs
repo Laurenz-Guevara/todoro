@@ -15,12 +15,22 @@ pub struct NotesEditor {
     count: Option<usize>,
     /// The `:` command being typed, if any.
     pub command: Option<LineInput>,
+    /// Text deleted or copied, for `p` and `P` to paste. The app keeps it
+    /// between notes screens, so lines can move from one item's notes to another's.
+    pub register: Option<Register>,
     /// Undo history, kept here rather than in the text area so that every
     /// command (and a whole visit to insert mode) is exactly one step.
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     /// The text from before insert mode began, recorded when it ends.
     insert_before: Option<Snapshot>,
+}
+
+/// Text to paste: whole lines (from `dd`, `yy`) or part of a line (from `v`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Register {
+    pub text: String,
+    pub linewise: bool,
 }
 
 /// The text and cursor at one point, for undo.
@@ -48,6 +58,7 @@ impl NotesEditor {
             pending: None,
             count: None,
             command: None,
+            register: None,
             undo: Vec::new(),
             redo: Vec::new(),
             insert_before: None,
@@ -195,13 +206,9 @@ impl NotesEditor {
 
         match (self.pending.take(), c) {
             (Some('g'), 'g') => self.go_to_line(count.unwrap_or(1)),
-            (Some('d'), 'd') => {
-                for _ in 0..times {
-                    self.delete_line();
-                }
-                Action::Stay
-            }
-            (_, 'g' | 'd') => {
+            (Some('d'), 'd') => self.delete_lines(times),
+            (Some('y'), 'y') => self.yank_lines(times),
+            (_, 'g' | 'd' | 'y') => {
                 self.pending = Some(c);
                 // Keep the count for the second key, as in 3dd.
                 self.count = count;
@@ -222,6 +229,8 @@ impl NotesEditor {
             (_, 'e') => self.repeat(times, CursorMove::WordEnd),
             (_, '0') => self.motion(CursorMove::Head),
             (_, '_' | '^') => self.first_non_blank(),
+            (_, 'p') => self.paste(times, true),
+            (_, 'P') => self.paste(times, false),
             // Move the line down or up, like J and K on the list.
             (_, 'J') => self.move_line(times as isize),
             (_, 'K') => self.move_line(-(times as isize)),
@@ -335,30 +344,58 @@ impl NotesEditor {
         Action::Stay
     }
 
-    /// Deletes the cursor's line as a single undo step.
-    fn delete_line(&mut self) {
-        let ta = &mut self.textarea;
-        let (row, rows) = (ta.cursor().0, ta.lines().len());
-        if rows == 1 {
-            ta.move_cursor(CursorMove::Head);
-            ta.start_selection();
-            ta.move_cursor(CursorMove::End);
-        } else if row + 1 < rows {
-            // Select from the start of this line to the start of the next.
-            ta.move_cursor(CursorMove::Head);
-            ta.start_selection();
-            ta.move_cursor(CursorMove::Down);
-            ta.move_cursor(CursorMove::Head);
-        } else {
-            // Last line: select from the end of the previous line instead.
-            ta.move_cursor(CursorMove::Up);
-            ta.move_cursor(CursorMove::End);
-            ta.start_selection();
-            ta.move_cursor(CursorMove::Down);
-            ta.move_cursor(CursorMove::End);
+    /// Deletes `count` lines from the cursor's, keeping them to paste.
+    fn delete_lines(&mut self, count: usize) -> Action {
+        let mut lines = self.textarea.lines().to_vec();
+        let row = self.textarea.cursor().0;
+        let end = (row + count).min(lines.len());
+        let removed: Vec<String> = lines.drain(row..end).collect();
+        self.register = Some(Register { text: removed.join("\n"), linewise: true });
+        if lines.is_empty() {
+            lines.push(String::new());
         }
-        ta.cut();
-        ta.move_cursor(CursorMove::Head);
+        self.set_lines(lines, (row, 0));
+        self.first_non_blank()
+    }
+
+    /// Copies `count` lines from the cursor's, to paste.
+    fn yank_lines(&mut self, count: usize) -> Action {
+        let row = self.textarea.cursor().0;
+        let lines = self.textarea.lines();
+        let end = (row + count).min(lines.len());
+        self.register = Some(Register { text: lines[row..end].join("\n"), linewise: true });
+        Action::Stay
+    }
+
+    /// Pastes the register `times` times: whole lines below (`after`) or above
+    /// the cursor's line, or text after or at the cursor.
+    fn paste(&mut self, times: usize, after: bool) -> Action {
+        let Some(register) = self.register.clone() else { return Action::Stay };
+        let text = vec![register.text.as_str(); times].join(if register.linewise { "\n" } else { "" });
+        let mut lines = self.textarea.lines().to_vec();
+        let (row, col) = (self.textarea.cursor().0, self.textarea.cursor().1);
+        if register.linewise {
+            // Lines go below or above, with the cursor on the first of them.
+            let at = if after { row + 1 } else { row };
+            lines.splice(at..at, text.split('\n').map(String::from));
+            self.set_lines(lines, (at, 0));
+            return self.first_non_blank();
+        }
+        // Text goes after the cursor's character (or at it), with the cursor
+        // ending on its last character.
+        let col = if after && !lines[row].is_empty() { col + 1 } else { col };
+        let at = lines[row].char_indices().nth(col).map_or(lines[row].len(), |(i, _)| i);
+        let rest = lines[row].split_off(at);
+        let parts: Vec<&str> = text.split('\n').collect();
+        lines[row].push_str(parts[0]);
+        let mut end = (row, col + parts[0].chars().count());
+        for (n, part) in parts.iter().enumerate().skip(1) {
+            lines.insert(row + n, part.to_string());
+            end = (row + n, part.chars().count());
+        }
+        lines[end.0].push_str(&rest);
+        self.set_lines(lines, (end.0, end.1.saturating_sub(1)));
+        Action::Stay
     }
 
     fn set_insert(&mut self, insert: bool) {
@@ -749,6 +786,61 @@ mod tests {
         send(&mut ed, "2Ju");
         assert_eq!(ed.notes(), "one\ntwo\nthree");
         assert_eq!(cursor(&ed), (0, 0));
+    }
+
+    #[test]
+    fn dd_then_p_moves_a_line_down() {
+        let mut ed = editor("one\ntwo\nthree");
+        send(&mut ed, "ddp");
+        assert_eq!(ed.notes(), "two\none\nthree");
+        assert_eq!(cursor(&ed), (1, 0));
+    }
+
+    #[test]
+    fn capital_p_pastes_above() {
+        let mut ed = editor("one\ntwo\nthree");
+        send(&mut ed, "Gdd");
+        send(&mut ed, "ggP");
+        assert_eq!(ed.notes(), "three\none\ntwo");
+        assert_eq!(cursor(&ed), (0, 0));
+    }
+
+    #[test]
+    fn yy_copies_lines_and_counts_work_on_both() {
+        let mut ed = editor("one\ntwo\nthree");
+        send(&mut ed, "2yyGp");
+        assert_eq!(ed.notes(), "one\ntwo\nthree\none\ntwo");
+        assert_eq!(cursor(&ed), (3, 0));
+        send(&mut ed, "gg3dd");
+        assert_eq!(ed.notes(), "one\ntwo");
+        send(&mut ed, "2P");
+        assert_eq!(ed.notes(), "one\ntwo\nthree\none\ntwo\nthree\none\ntwo");
+    }
+
+    #[test]
+    fn pasted_lines_keep_their_indent_and_the_cursor_lands_on_the_text() {
+        let mut ed = editor("  - item\nnext");
+        send(&mut ed, "yyjp");
+        assert_eq!(ed.notes(), "  - item\nnext\n  - item");
+        assert_eq!(cursor(&ed), (2, 2));
+    }
+
+    #[test]
+    fn pasting_is_one_undo_step_and_nothing_to_paste_does_nothing() {
+        let mut ed = editor("one\ntwo");
+        send(&mut ed, "pP");
+        assert_eq!(ed.notes(), "one\ntwo");
+        send(&mut ed, "yy3pu");
+        assert_eq!(ed.notes(), "one\ntwo");
+    }
+
+    #[test]
+    fn deleting_every_line_leaves_one_empty_line() {
+        let mut ed = editor("one\ntwo");
+        send(&mut ed, "5dd");
+        assert_eq!(ed.textarea.lines(), [""]);
+        send(&mut ed, "p");
+        assert_eq!(ed.textarea.lines(), ["", "one", "two"]);
     }
 
     #[test]

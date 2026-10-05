@@ -8,7 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::calendar::{self, Calendar};
 use crate::help::Help;
 use crate::input::LineInput;
-use crate::notes::{Action, NotesEditor};
+use crate::notes::{Action, NotesEditor, Register};
 use crate::options::{self, Options, Settings, TOGGLES};
 use crate::search::{self, Search};
 use crate::tags::{self, TagPicker};
@@ -80,6 +80,9 @@ pub struct App {
     count: Option<usize>,
     /// The items last copied (`yy`) or deleted, for `p` and `P` to paste.
     pub register: Vec<Item>,
+    /// Text last copied or deleted in any item's notes, kept for the next
+    /// notes screen as vim keeps its register.
+    notes_register: Option<Register>,
 }
 
 impl App {
@@ -100,6 +103,7 @@ impl App {
             pending: None,
             count: None,
             register: Vec::new(),
+            notes_register: None,
         }
     }
 
@@ -221,6 +225,7 @@ impl App {
                 let action = editor.handle_key(key);
                 // Save on every change, like the rest of the app.
                 let notes = editor.notes();
+                let register = editor.register.clone();
                 if let Some(slot) = self.slot(self.selected)
                     && notes != self.store.items(slot.day)[slot.index].notes
                 {
@@ -229,6 +234,7 @@ impl App {
                 match action {
                     Action::Stay => {}
                     Action::Close => {
+                        self.notes_register = register;
                         self.mode = Mode::Normal;
                         if let Some(before) = self.notes_before.take() {
                             self.record(before);
@@ -390,7 +396,8 @@ impl App {
             }
             KeyCode::Enter if len > 0 => {
                 self.notes_before = Some(self.state());
-                let editor = NotesEditor::new(&self.items()[self.selected].notes);
+                let mut editor = NotesEditor::new(&self.items()[self.selected].notes);
+                editor.register = self.notes_register.clone();
                 self.mode = Mode::Notes(Box::new(editor));
             }
             _ => {}
@@ -2193,6 +2200,19 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.items()[0].notes, "note");
+    }
+
+    #[test]
+    fn lines_deleted_in_one_items_notes_can_be_pasted_in_anothers() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        app.store.set_notes(today(), 0, "keep\nmove me".into()).unwrap();
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "jddq");
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Pq");
+        assert_eq!(app.items()[0].notes, "keep");
+        assert_eq!(app.items()[1].notes, "move me");
     }
 
     #[test]

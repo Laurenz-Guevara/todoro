@@ -147,7 +147,9 @@ In normal mode:
 | `I` / `A` | Insert at the start / end of the line |
 | `o` / `O` | Open a new line below / above |
 | `x` | Delete the character under the cursor |
-| `dd` | Delete the line |
+| `dd` | Delete the line, keeping it to paste |
+| `yy` | Copy the line |
+| `p` / `P` | Paste below / above (also into another item's notes) |
 | `J` / `K` | Move the line down / up |
 | `u` / `Ctrl+R` | Undo / redo |
 | `?` | Show all keybindings |
