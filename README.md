@@ -53,8 +53,11 @@ todoro
 | `p` | Pin or unpin the selected item, so it moves to the next day until done |
 | `d` | Delete the selected item (asks to confirm) |
 | `Enter` | Open the selected item's notes |
+| `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `?` | Show all keybindings |
 | `q` | Quit |
+
+Undo covers everything you change from the list, including moving items between days and a whole visit to an item's notes, and takes you back to where the change was made.
 
 Pinned items are marked with `⚲` and items that have notes with `≡`.
 

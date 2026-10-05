@@ -55,6 +55,10 @@ impl From<Item> for RawItem {
     }
 }
 
+/// A copy of every item, to restore for undo.
+#[derive(Clone, PartialEq)]
+pub struct Snapshot(BTreeMap<String, Vec<Item>>);
+
 /// Todo items keyed by day, persisted as JSON. Each day's items are kept with
 /// the open ones first and the completed ones after them.
 pub struct Store {
@@ -120,6 +124,16 @@ impl Store {
                 items.iter().enumerate().filter(|(_, item)| item.pinned && !item.done).map(move |(i, _)| (date, i))
             })
             .collect()
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot(self.days.clone())
+    }
+
+    /// Replaces every item with a snapshot's and saves.
+    pub fn restore(&mut self, snapshot: Snapshot) -> io::Result<()> {
+        self.days = snapshot.0;
+        self.save()
     }
 
     /// How many items on `day` are not completed. They come first in `items`.
@@ -554,6 +568,20 @@ mod tests {
         assert!(store.items(today()).is_empty());
         assert!(!fs::read_to_string(&path).unwrap().contains("2026-10-05"));
         assert_eq!(store.move_to(today(), 0, day(1)).unwrap(), None);
+    }
+
+    #[test]
+    fn restore_brings_back_a_snapshot_and_saves_it() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "one".into()).unwrap();
+        let snapshot = store.snapshot();
+        store.insert(today(), 1, "two".into()).unwrap();
+        store.toggle_done(today(), 0).unwrap();
+        assert!(store.snapshot() != snapshot);
+        store.restore(snapshot.clone()).unwrap();
+        assert!(store.snapshot() == snapshot);
+        assert_eq!(texts(&Store::open(path).unwrap(), today()), ["one"]);
     }
 
     #[test]

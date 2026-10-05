@@ -25,6 +25,7 @@ pub const SECTIONS: &[Section] = &[
             ("p", "Pin / unpin: move to today until done"),
             ("d", "Delete the selected item"),
             ("Enter", "Open the selected item's notes"),
+            ("u / Ctrl+R", "Undo / redo a change to the list"),
             ("?", "Show this help"),
             ("q", "Quit"),
         ],
@@ -208,13 +209,13 @@ mod tests {
 
     #[test]
     fn longer_search_matches_descriptions_ignoring_case() {
-        assert_eq!(found("UNDO"), ["Notes: u / Ctrl+R"]);
+        assert_eq!(found("UNDO"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R"]);
         assert_eq!(found("next day"), ["List: h / l"]);
     }
 
     #[test]
     fn longer_search_matches_key_names_ignoring_case() {
-        assert_eq!(found("ctrl"), ["Notes: u / Ctrl+R", "Anywhere: Ctrl+C"]);
+        assert_eq!(found("ctrl"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R", "Anywhere: Ctrl+C"]);
         assert!(found("esc").contains(&"Delete popup: c / Esc".to_string()));
         assert!(found("dd").contains(&"Notes: dd".to_string()));
     }

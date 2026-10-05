@@ -6,7 +6,17 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::help::Help;
 use crate::notes::{Action, NotesEditor};
-use crate::store::{Item, Store};
+use crate::store::{Item, Snapshot, Store};
+
+/// How many changes `u` can undo.
+const UNDO_LIMIT: usize = 200;
+
+/// Every item, plus the day and row on screen, from before (or after) a change.
+struct State {
+    snapshot: Snapshot,
+    day: NaiveDate,
+    selected: usize,
+}
 
 pub enum Mode {
     Normal,
@@ -38,6 +48,11 @@ pub struct App {
     pub list_offset: Cell<usize>,
     pub mode: Mode,
     pub quit: bool,
+    undo: Vec<State>,
+    redo: Vec<State>,
+    /// The state when the notes screen was opened. Everything typed there is
+    /// one change for the list's undo.
+    notes_before: Option<State>,
 }
 
 impl App {
@@ -50,6 +65,9 @@ impl App {
             list_offset: Cell::new(0),
             mode: Mode::Normal,
             quit: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            notes_before: None,
         }
     }
 
@@ -84,10 +102,29 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> io::Result<()> {
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && key.code == KeyCode::Char('c') {
             self.quit = true;
             return Ok(());
         }
+        if let Mode::Normal = self.mode {
+            match key.code {
+                KeyCode::Char('u') if !ctrl => return self.undo(),
+                KeyCode::Char('r') if ctrl => return self.redo(),
+                _ => {}
+            }
+        }
+        // Any change made from the list is undoable. The notes screen records
+        // its own change when it closes, and help changes nothing.
+        let before = matches!(self.mode, Mode::Normal | Mode::Insert { .. } | Mode::ConfirmDelete).then(|| self.state());
+        self.mode_key(key)?;
+        if let Some(before) = before {
+            self.record(before);
+        }
+        Ok(())
+    }
+
+    fn mode_key(&mut self, key: KeyEvent) -> io::Result<()> {
         match &mut self.mode {
             Mode::Normal => self.normal_key(key.code)?,
             Mode::Insert { index, text, cursor, editing } => match key.code {
@@ -150,7 +187,12 @@ impl App {
                 }
                 match action {
                     Action::Stay => {}
-                    Action::Close => self.mode = Mode::Normal,
+                    Action::Close => {
+                        self.mode = Mode::Normal;
+                        if let Some(before) = self.notes_before.take() {
+                            self.record(before);
+                        }
+                    }
                     Action::Help => self.open_help(),
                 }
             }
@@ -208,6 +250,7 @@ impl App {
                 }
             }
             KeyCode::Enter if len > 0 => {
+                self.notes_before = Some(self.state());
                 let editor = NotesEditor::new(&self.items()[self.selected].notes);
                 self.mode = Mode::Notes(Box::new(editor));
             }
@@ -238,6 +281,51 @@ impl App {
             self.change_day(delta);
             self.selected = self.carried() + index;
         }
+        Ok(())
+    }
+
+    fn state(&self) -> State {
+        State { snapshot: self.store.snapshot(), day: self.day, selected: self.selected }
+    }
+
+    /// Adds `before` to the undo history if the items have changed since.
+    fn record(&mut self, before: State) {
+        if before.snapshot == self.store.snapshot() {
+            return;
+        }
+        if self.undo.len() == UNDO_LIMIT {
+            self.undo.remove(0);
+        }
+        self.undo.push(before);
+        self.redo.clear();
+    }
+
+    fn undo(&mut self) -> io::Result<()> {
+        if let Some(state) = self.undo.pop() {
+            self.redo.push(self.state());
+            self.restore(state)?;
+        }
+        Ok(())
+    }
+
+    fn redo(&mut self) -> io::Result<()> {
+        if let Some(state) = self.redo.pop() {
+            self.undo.push(self.state());
+            self.restore(state)?;
+        }
+        Ok(())
+    }
+
+    /// Puts the items back and returns to the day and row the change was made
+    /// on, so you can see what was undone.
+    fn restore(&mut self, state: State) -> io::Result<()> {
+        self.store.restore(state.snapshot)?;
+        if self.day != state.day {
+            self.day = state.day;
+            self.list_offset.set(0);
+        }
+        self.selected = state.selected;
+        self.clamp_selection();
         Ok(())
     }
 
@@ -932,6 +1020,141 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert_eq!(items(&app), ["one", "<>"]);
         assert_eq!(app.day, today());
+    }
+
+    fn ctrl(app: &mut App, c: char) {
+        app.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)).unwrap();
+    }
+
+    #[test]
+    fn u_undoes_completing_and_ctrl_r_redoes_it() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "x");
+        assert_eq!(items(&app), ["two", "one"]);
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["one", "two"]);
+        assert!(app.items().iter().all(|item| !item.done));
+        ctrl(&mut app, 'r');
+        assert_eq!(items(&app), ["two", "one"]);
+        assert!(app.items()[1].done);
+    }
+
+    #[test]
+    fn u_brings_back_a_deleted_item_and_selects_it() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "jdd");
+        assert_eq!(items(&app), ["one", "three"]);
+        type_str(&mut app, "ju");
+        assert_eq!(items(&app), ["one", "two", "three"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn u_undoes_adding_editing_pinning_and_reordering() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "atwo");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "e!");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "pK");
+        assert_eq!(items(&app), ["two!", "one"]);
+        assert!(app.items()[0].pinned);
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["one", "two!"]);
+        type_str(&mut app, "u");
+        assert!(!app.items()[1].pinned);
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["one", "two"]);
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["one"]);
+        // Nothing left to undo.
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["one"]);
+    }
+
+    #[test]
+    fn u_after_moving_to_another_day_goes_back_with_the_item() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "j>>");
+        type_str(&mut app, "u");
+        assert_eq!(app.day, today().succ_opt().unwrap());
+        assert_eq!(items(&app), ["two"]);
+        type_str(&mut app, "u");
+        assert_eq!(app.day, today());
+        assert_eq!(items(&app), ["one", "two"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn u_undoes_a_whole_notes_visit_in_one_step() {
+        let (mut app, _dir) = app_with(&["one"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "ifirst line");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "second");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "?");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "q");
+        assert_eq!(app.items()[0].notes, "first line\nsecond");
+        type_str(&mut app, "u");
+        assert_eq!(app.items()[0].notes, "");
+        ctrl(&mut app, 'r');
+        assert_eq!(app.items()[0].notes, "first line\nsecond");
+    }
+
+    #[test]
+    fn opening_notes_without_changing_them_is_not_a_change() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "x");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "q");
+        type_str(&mut app, "u");
+        assert!(!app.items()[0].done);
+    }
+
+    #[test]
+    fn moving_the_cursor_and_changing_day_are_not_changes() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "x");
+        type_str(&mut app, "jkllhhJ");
+        type_str(&mut app, "u");
+        assert!(app.items().iter().all(|item| !item.done));
+    }
+
+    #[test]
+    fn a_new_change_clears_redo() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "xu");
+        type_str(&mut app, "p");
+        ctrl(&mut app, 'r');
+        assert!(app.items().iter().all(|item| !item.done));
+        assert!(app.items()[0].pinned);
+    }
+
+    #[test]
+    fn undo_is_saved_to_disk() {
+        let (mut app, dir) = app_with(&["one"]);
+        type_str(&mut app, "ddu");
+        let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
+        assert_eq!(reloaded.items(today())[0].text, "one");
+    }
+
+    #[test]
+    fn u_while_typing_is_text() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "au");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one", "u"]);
+    }
+
+    #[test]
+    fn undo_history_is_limited() {
+        let (mut app, _dir) = app_with(&["one"]);
+        for _ in 0..UNDO_LIMIT + 10 {
+            type_str(&mut app, "p");
+        }
+        assert_eq!(app.undo.len(), UNDO_LIMIT);
     }
 
     #[test]

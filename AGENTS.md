@@ -24,7 +24,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 ## Keybindings
 
-Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `>`/`<` move the item to the day after/before the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `?` help, `q` quit.
+Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `>`/`<` move the item to the day after/before the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `u`/`Ctrl+R` undo/redo, `?` help, `q` quit.
 
 Insert mode: type to insert at the cursor, `←`/`→`/`Home`/`End` move, `Backspace`/`Delete` remove, `Enter`/`Esc` save. Saving an empty new item discards it. Saving an edited item as empty opens the delete popup.
 
@@ -41,6 +41,7 @@ Keep new bindings vim-like. When you add or change one, update `SECTIONS` in `sr
 - A future day also shows the pinned, open items from earlier days (`Store::pinned_before`), first, without moving them. So screen positions aren't always store positions: `App::slots()` maps each row on screen to the `(day, index)` where its item is stored. Use it (or `App::items()`) for anything that reads or changes the selected item, never `store.items(app.day)[app.selected]`.
 - On disk an item is a plain string, or an object with `text` and optional `notes`, `done` and `pinned` (see `RawItem` in `store.rs`). Items with only text must stay plain strings so simple files stay readable by older versions.
 - `Store` saves after every change by writing a temp file and renaming it. Don't defer or batch saves.
+- List undo is automatic: `App::handle_key` snapshots the store before each key in `Normal`, `Insert` and `ConfirmDelete` mode and records it if the key changed anything. A notes visit is recorded as one change when it closes (`notes_before`). New list actions need no undo code, but must change the store only through `App::handle_key`.
 - `Insert { cursor }` is a byte offset that must stay on a char boundary. Use `prev_boundary`/`next_boundary` in `app.rs`.
 - The UI must work down to about 30 columns. Any text with a fixed length needs narrower fallbacks: `fit_first` (shorter alternatives), `fit_hints` (status bar hints by priority, `? help` last to go) or `truncate` (ends with "…"). The `screens_at_30_columns` and `screens_at_40_columns` snapshots cover every screen, so check them after any UI change.
 - Long text wraps rather than being cut off: list rows and the delete popup both use `wrap_ranges` in `ui.rs`, which keeps the text exactly as typed (so the cursor can be placed with `cursor_position`) and measures display width with `unicode-width`, not `chars().count()`. List rows can be several lines tall, so screen positions come from summing row heights.
