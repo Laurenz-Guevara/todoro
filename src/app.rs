@@ -20,6 +20,13 @@ pub enum Mode {
     Help { help: Help, back: Box<Mode> },
 }
 
+/// Where an item on the current screen is stored.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slot {
+    pub day: NaiveDate,
+    pub index: usize,
+}
+
 pub struct App {
     pub store: Store,
     pub today: NaiveDate,
@@ -41,8 +48,34 @@ impl App {
         }
     }
 
-    pub fn items(&self) -> &[Item] {
-        self.store.items(self.day)
+    /// Every item shown for the current day, in screen order. A future day also
+    /// shows the pinned items that will have moved to it by then, first.
+    pub fn slots(&self) -> Vec<Slot> {
+        let mut slots: Vec<Slot> = if self.day > self.today {
+            self.store.pinned_before(self.day).into_iter().map(|(day, index)| Slot { day, index }).collect()
+        } else {
+            Vec::new()
+        };
+        slots.extend((0..self.store.items(self.day).len()).map(|index| Slot { day: self.day, index }));
+        slots
+    }
+
+    /// The items shown for the current day, in screen order.
+    pub fn items(&self) -> Vec<&Item> {
+        self.slots().into_iter().map(|slot| &self.store.items(slot.day)[slot.index]).collect()
+    }
+
+    /// How many shown items come from earlier days.
+    pub fn carried(&self) -> usize {
+        self.slots().iter().take_while(|slot| slot.day != self.day).count()
+    }
+
+    fn slot(&self, index: usize) -> Option<Slot> {
+        self.slots().get(index).copied()
+    }
+
+    fn clamp_selection(&mut self) {
+        self.selected = self.selected.min(self.slots().len().saturating_sub(1));
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> io::Result<()> {
@@ -58,11 +91,18 @@ impl App {
                     self.mode = Mode::Normal;
                     match (editing, text.is_empty()) {
                         (true, true) => self.mode = Mode::ConfirmDelete,
-                        (true, false) => self.store.set_text(self.day, index, text)?,
+                        (true, false) => {
+                            if let Some(slot) = self.slot(index) {
+                                self.store.set_text(slot.day, slot.index, text)?;
+                            }
+                        }
                         (false, true) => {}
                         (false, false) => {
+                            // New items belong to the day on screen, after any carried ones.
+                            let carried = self.carried();
+                            let index = index.saturating_sub(carried).min(self.store.open_count(self.day));
                             self.store.insert(self.day, index, text)?;
-                            self.selected = index;
+                            self.selected = carried + index;
                         }
                     }
                 }
@@ -85,8 +125,10 @@ impl App {
             },
             Mode::ConfirmDelete => match key.code {
                 KeyCode::Char('d') => {
-                    self.store.remove(self.day, self.selected)?;
-                    self.selected = self.selected.min(self.items().len().saturating_sub(1));
+                    if let Some(slot) = self.slot(self.selected) {
+                        self.store.remove(slot.day, slot.index)?;
+                    }
+                    self.clamp_selection();
                     self.mode = Mode::Normal;
                 }
                 KeyCode::Char('c') | KeyCode::Esc => self.mode = Mode::Normal,
@@ -96,8 +138,10 @@ impl App {
                 let action = editor.handle_key(key);
                 // Save on every change, like the rest of the app.
                 let notes = editor.notes();
-                if notes != self.items()[self.selected].notes {
-                    self.store.set_notes(self.day, self.selected, notes)?;
+                if let Some(slot) = self.slot(self.selected)
+                    && notes != self.store.items(slot.day)[slot.index].notes
+                {
+                    self.store.set_notes(slot.day, slot.index, notes)?;
                 }
                 match action {
                     Action::Stay => {}
@@ -115,8 +159,9 @@ impl App {
     }
 
     fn normal_key(&mut self, code: KeyCode) -> io::Result<()> {
-        let len = self.items().len();
-        let open = self.store.open_count(self.day);
+        let slot = self.slot(self.selected);
+        let len = self.slots().len();
+        let open = self.carried() + self.store.open_count(self.day);
         match code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.open_help(),
@@ -137,8 +182,20 @@ impl App {
             }
             KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete,
             // The cursor stays put, so you can tick off several items in a row.
-            KeyCode::Char('x') if len > 0 => self.store.toggle_done(self.day, self.selected)?,
-            KeyCode::Char('p') if len > 0 => self.store.toggle_pinned(self.day, self.selected)?,
+            // A carried item is changed where it's stored, which can take it off
+            // this day's screen, hence the clamp.
+            KeyCode::Char('x') => {
+                if let Some(slot) = slot {
+                    self.store.toggle_done(slot.day, slot.index)?;
+                    self.clamp_selection();
+                }
+            }
+            KeyCode::Char('p') => {
+                if let Some(slot) = slot {
+                    self.store.toggle_pinned(slot.day, slot.index)?;
+                    self.clamp_selection();
+                }
+            }
             KeyCode::Enter if len > 0 => {
                 let editor = NotesEditor::new(&self.items()[self.selected].notes);
                 self.mode = Mode::Notes(Box::new(editor));
@@ -179,7 +236,7 @@ mod tests {
     use crate::test_util::{app_with, press, today, type_str};
 
     fn items(app: &App) -> Vec<&str> {
-        app.items().iter().map(|item| item.text.as_str()).collect()
+        app.items().into_iter().map(|item| item.text.as_str()).collect()
     }
 
     #[test]
@@ -604,6 +661,110 @@ mod tests {
         type_str(&mut app, "px");
         assert!(app.items()[0].done);
         assert!(app.items()[0].pinned);
+    }
+
+    /// An app with `items` today and `future` on the day after tomorrow, with
+    /// today's items that start with "pin" pinned.
+    fn app_with_future(items: &[&str], future: &[&str]) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(items);
+        for (i, text) in items.iter().enumerate() {
+            if text.starts_with("pin") {
+                app.store.toggle_pinned(today(), i).unwrap();
+            }
+        }
+        let later = today() + chrono::Duration::days(2);
+        for (i, text) in future.iter().enumerate() {
+            app.store.insert(later, i, text.to_string()).unwrap();
+        }
+        (app, dir)
+    }
+
+    #[test]
+    fn future_days_show_pinned_items_first() {
+        let (mut app, _dir) = app_with_future(&["pin a", "plain", "pin b"], &["later"]);
+        type_str(&mut app, "l");
+        assert_eq!(items(&app), ["pin a", "pin b"]);
+        assert_eq!(app.carried(), 2);
+        type_str(&mut app, "l");
+        assert_eq!(items(&app), ["pin a", "pin b", "later"]);
+        // Today and past days are unchanged.
+        type_str(&mut app, "hh");
+        assert_eq!(items(&app), ["pin a", "plain", "pin b"]);
+        assert_eq!(app.carried(), 0);
+        type_str(&mut app, "h");
+        assert!(app.items().is_empty());
+    }
+
+    #[test]
+    fn completed_pinned_items_do_not_show_on_future_days() {
+        let (mut app, _dir) = app_with_future(&["pin a", "pin b"], &[]);
+        type_str(&mut app, "x");
+        type_str(&mut app, "l");
+        assert_eq!(items(&app), ["pin b"]);
+    }
+
+    #[test]
+    fn x_on_a_carried_item_completes_it_where_it_is_stored() {
+        let (mut app, _dir) = app_with_future(&["pin a", "pin b"], &["later"]);
+        type_str(&mut app, "llx");
+        assert_eq!(items(&app), ["pin b", "later"]);
+        assert_eq!(app.selected, 0);
+        assert!(app.store.items(today()).iter().any(|item| item.text == "pin a" && item.done));
+    }
+
+    #[test]
+    fn x_on_the_last_carried_item_keeps_the_cursor_in_range() {
+        let (mut app, _dir) = app_with_future(&["pin a"], &[]);
+        type_str(&mut app, "lx");
+        assert!(app.items().is_empty());
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn p_on_a_carried_item_unpins_it_back_to_its_day() {
+        let (mut app, _dir) = app_with_future(&["pin a"], &["later"]);
+        type_str(&mut app, "llp");
+        assert_eq!(items(&app), ["later"]);
+        assert!(!app.store.items(today())[0].pinned);
+    }
+
+    #[test]
+    fn editing_and_notes_on_a_carried_item_change_the_original() {
+        let (mut app, _dir) = app_with_future(&["pin a"], &["later"]);
+        type_str(&mut app, "lle!");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "inote");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.store.items(today())[0].text, "pin a!");
+        assert_eq!(app.store.items(today())[0].notes, "note");
+        let later = today() + chrono::Duration::days(2);
+        assert_eq!(app.store.items(later)[0].text, "later");
+        assert_eq!(app.store.items(later)[0].notes, "");
+    }
+
+    #[test]
+    fn d_on_a_carried_item_deletes_the_original() {
+        let (mut app, _dir) = app_with_future(&["pin a", "plain"], &[]);
+        type_str(&mut app, "ldd");
+        assert!(app.items().is_empty());
+        assert_eq!(app.store.items(today()).len(), 1);
+        assert_eq!(app.store.items(today())[0].text, "plain");
+    }
+
+    #[test]
+    fn a_on_a_future_day_adds_to_that_day_after_carried_items() {
+        let (mut app, _dir) = app_with_future(&["pin a", "pin b"], &["later"]);
+        type_str(&mut app, "ll");
+        // From the first carried item, the new item still goes after all of them.
+        type_str(&mut app, "anew");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["pin a", "pin b", "new", "later"]);
+        assert_eq!(app.selected, 2);
+        let later = today() + chrono::Duration::days(2);
+        assert_eq!(app.store.items(later).len(), 2);
+        assert_eq!(app.store.items(today()).len(), 2);
     }
 
     #[test]

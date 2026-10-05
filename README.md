@@ -64,6 +64,8 @@ Pinned items are marked with `»` and items that have notes with `≡`.
 
 Items stay on their day by default, so something like "Dentist at 3pm" doesn't follow you around. Pin an item with `p` if it should: when you start todoro, pinned items you didn't complete on earlier days move to the top of today's list, keeping their notes. They stay pinned, so they keep moving forward each day until you complete or unpin them.
 
+Looking ahead with `l` shows pinned items on future days too, at the top of the list, as they'll be when that day comes. They're the same items, so completing, editing or unpinning one there changes it on the day it's on now.
+
 Completed items always stay on the day you completed them, so you can go back with `h` to see what you did.
 
 ### Insert mode

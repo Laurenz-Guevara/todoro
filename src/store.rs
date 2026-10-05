@@ -110,6 +110,18 @@ impl Store {
         self.save()
     }
 
+    /// Where the pinned, open items from days before `day` are, as `(day,
+    /// index)`, oldest day first. These are what `roll_over` would move to `day`.
+    pub fn pinned_before(&self, day: NaiveDate) -> Vec<(NaiveDate, usize)> {
+        self.days
+            .range(..key(day))
+            .filter_map(|(k, items)| Some((NaiveDate::parse_from_str(k, "%Y-%m-%d").ok()?, items)))
+            .flat_map(|(date, items)| {
+                items.iter().enumerate().filter(|(_, item)| item.pinned && !item.done).map(move |(i, _)| (date, i))
+            })
+            .collect()
+    }
+
     /// How many items on `day` are not completed. They come first in `items`.
     pub fn open_count(&self, day: NaiveDate) -> usize {
         self.items(day).iter().take_while(|item| !item.done).count()
@@ -452,6 +464,21 @@ mod tests {
         store.roll_over(today()).unwrap();
         assert_eq!(texts(&store, today()), ["carried", "done today"]);
         assert_eq!(store.open_count(today()), 1);
+    }
+
+    #[test]
+    fn pinned_before_lists_what_roll_over_would_move() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        insert_pinned(&mut store, day(-1), "older");
+        store.insert(today(), 0, "not pinned".into()).unwrap();
+        insert_pinned(&mut store, today(), "today");
+        insert_pinned(&mut store, today(), "done");
+        store.toggle_done(today(), 2).unwrap();
+        insert_pinned(&mut store, day(2), "later");
+        assert_eq!(store.pinned_before(day(2)), [(day(-1), 0), (today(), 1)]);
+        assert_eq!(store.pinned_before(day(3)), [(day(-1), 0), (today(), 1), (day(2), 0)]);
+        assert!(store.pinned_before(day(-1)).is_empty());
     }
 
     #[test]

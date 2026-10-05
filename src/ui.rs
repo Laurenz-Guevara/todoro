@@ -45,7 +45,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     // among) the saved ones, so the numbering below it is already right.
     let mut rows: Vec<Row> = app
         .items()
-        .iter()
+        .into_iter()
         .map(|item| Row {
             text: &item.text,
             pinned: item.pinned,
@@ -164,7 +164,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_confirm(frame: &mut Frame, app: &App) {
-    let text = app.items().get(app.selected).map(|item| item.text.as_str()).unwrap_or_default();
+    let items = app.items();
+    let text = items.get(app.selected).map(|item| item.text.as_str()).unwrap_or_default();
     let area = centered(frame.area(), 50, 5);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -416,6 +417,18 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom"]);
         app.store.set_notes(app.day, 1, "notes".into()).unwrap();
         type_str(&mut app, "pjpjpx");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn future_day_with_carried_pinned_items() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report"]);
+        app.store.toggle_pinned(app.day, 1).unwrap();
+        let tomorrow = app.day.succ_opt().unwrap();
+        app.store.insert(tomorrow, 0, "Call mom".into()).unwrap();
+        app.store.insert(tomorrow, 1, "Book dentist".into()).unwrap();
+        app.store.toggle_done(tomorrow, 1).unwrap();
+        type_str(&mut app, "l");
         assert_snapshot!(render(&app).backend());
     }
 
