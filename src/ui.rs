@@ -138,11 +138,19 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             heights.push(1);
         }
         // A triaged item's number takes its priority's colour.
+        // The selected item's number stands out as the current line's does in
+        // the notes, even over a triaged item's priority colour.
+        let current = selected == Some(i);
         let (prefix, prefix_style, text_style) = if row.done {
             let crossed = Style::new().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT);
-            (format!("{:>width$}  ", "✓"), Style::new().fg(Color::DarkGray), crossed)
+            let tick = if current { CURSOR_LINE_NUMBER } else { Style::new().fg(Color::DarkGray) };
+            (format!("{:>width$}  ", "✓"), tick, crossed)
         } else {
-            let number_style = row.priority.map_or(Style::new().fg(Color::DarkGray), priority_style);
+            let number_style = match row.priority {
+                _ if current => CURSOR_LINE_NUMBER,
+                Some(priority) => priority_style(priority),
+                None => Style::new().fg(Color::DarkGray),
+            };
             (format!("{:>width$}. ", i + 1), number_style, Style::new())
         };
 
@@ -295,8 +303,8 @@ fn highlight_cursor_line_number(buffer: &mut Buffer, editor: &NotesEditor, area:
     }
 }
 
-/// The current line's number in the notes: bold, so it still stands out
-/// without colour.
+/// The current line's number in the notes, and the selected item's on the
+/// list: bold, so it still stands out without colour.
 const CURSOR_LINE_NUMBER: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -1908,6 +1916,26 @@ mod tests {
         let screen = terminal.backend().to_string();
         assert!(screen.contains("\":2 "), "{screen}");
         assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(2, 9));
+    }
+
+    #[test]
+    fn the_selected_items_number_is_highlighted_even_if_triaged() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        app.store.cycle_priority(app.day, 2).unwrap();
+        type_str(&mut app, "j");
+        let number = |app: &App, y: u16| render(app).backend().buffer()[(1, y)].style();
+        assert_eq!(number(&app, 2).fg, Some(Color::Yellow));
+        assert!(number(&app, 2).add_modifier.contains(Modifier::BOLD));
+        assert_eq!(number(&app, 1).fg, Some(Color::DarkGray));
+        // A selected High item is highlighted too, and red again once left.
+        assert_eq!(number(&app, 3).fg, Some(Color::Red));
+        type_str(&mut app, "j");
+        assert_eq!(number(&app, 3).fg, Some(Color::Yellow));
+        assert_eq!(number(&app, 2).fg, Some(Color::DarkGray));
+        // A selected completed item's tick is highlighted too.
+        type_str(&mut app, "kxG");
+        assert_eq!(render(&app).backend().buffer()[(1, 4)].symbol(), "✓");
+        assert_eq!(number(&app, 4).fg, Some(Color::Yellow));
     }
 
     #[test]
