@@ -11,6 +11,7 @@ mod test_util;
 mod ui;
 
 use std::io;
+use std::time::Duration;
 
 use chrono::Local;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
@@ -35,11 +36,14 @@ fn main() -> io::Result<()> {
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
     while !app.quit {
         terminal.draw(|frame| ui::draw(frame, app))?;
-        if let Event::Key(key) = event::read()?
+        // Wake up now and then even without a key, to notice midnight.
+        if event::poll(Duration::from_secs(30))?
+            && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
             app.handle_key(key)?;
         }
+        app.set_today(Local::now().date_naive())?;
     }
     Ok(())
 }

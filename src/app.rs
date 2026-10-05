@@ -401,6 +401,25 @@ impl App {
         self.mode = Mode::Help { help: Help::default(), back: Box::new(back) };
     }
 
+    /// Moves "today" on when the date changes while todoro is open, carrying
+    /// pinned items over as at startup. It waits until you're back on the
+    /// list, so nothing moves while you're typing or in a popup. Undo history
+    /// is cleared, so `u` can't undo the carry-over by accident.
+    pub fn set_today(&mut self, today: NaiveDate) -> io::Result<()> {
+        if today == self.today || !matches!(self.mode, Mode::Normal) {
+            return Ok(());
+        }
+        self.store.roll_over(today)?;
+        if self.day == self.today {
+            self.show_day(today);
+        }
+        self.today = today;
+        self.undo.clear();
+        self.redo.clear();
+        self.pending = None;
+        Ok(())
+    }
+
     fn change_day(&mut self, delta: i64) {
         let days = Days::new(delta.unsigned_abs());
         let next = if delta < 0 { self.day.checked_sub_days(days) } else { self.day.checked_add_days(days) };
@@ -1528,6 +1547,66 @@ mod tests {
         let (mut app, _dir) = app_with(&[]);
         type_str(&mut app, "Ggg");
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn at_midnight_the_list_moves_on_to_the_new_today() {
+        let (mut app, _dir) = app_with(&["pinned", "plain"]);
+        app.store.toggle_pinned(today(), 0).unwrap();
+        let tomorrow = today().succ_opt().unwrap();
+        type_str(&mut app, "j");
+        app.set_today(tomorrow).unwrap();
+        assert_eq!(app.today, tomorrow);
+        assert_eq!(app.day, tomorrow);
+        assert_eq!(app.selected, 0);
+        // The pinned item was carried over; the other stayed behind.
+        assert_eq!(texts_on(&app, tomorrow), ["pinned"]);
+        assert_eq!(texts_on(&app, today()), ["plain"]);
+    }
+
+    #[test]
+    fn at_midnight_another_day_on_screen_stays_put() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "lll");
+        let shown = app.day;
+        app.set_today(today().succ_opt().unwrap()).unwrap();
+        assert_eq!(app.day, shown);
+    }
+
+    #[test]
+    fn midnight_waits_until_you_are_back_on_the_list() {
+        let (mut app, _dir) = app_with(&["pinned"]);
+        app.store.toggle_pinned(today(), 0).unwrap();
+        let tomorrow = today().succ_opt().unwrap();
+        type_str(&mut app, "e!");
+        app.set_today(tomorrow).unwrap();
+        assert_eq!(app.today, today());
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[0].text, "pinned!");
+        app.set_today(tomorrow).unwrap();
+        assert_eq!(app.today, tomorrow);
+        assert_eq!(texts_on(&app, tomorrow), ["pinned!"]);
+    }
+
+    #[test]
+    fn midnight_clears_undo_so_the_carry_over_stays() {
+        let (mut app, _dir) = app_with(&["pinned"]);
+        type_str(&mut app, "p");
+        let tomorrow = today().succ_opt().unwrap();
+        app.set_today(tomorrow).unwrap();
+        type_str(&mut app, "u");
+        assert_eq!(texts_on(&app, tomorrow), ["pinned"]);
+        assert!(app.store.items(tomorrow)[0].pinned);
+    }
+
+    #[test]
+    fn the_same_date_changes_nothing() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "xl");
+        app.set_today(today()).unwrap();
+        assert_eq!(app.day, today().succ_opt().unwrap());
+        type_str(&mut app, "hu");
+        assert!(!app.items()[0].done);
     }
 
     #[test]
