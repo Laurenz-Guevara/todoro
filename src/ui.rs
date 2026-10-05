@@ -67,7 +67,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let mut selected = (!rows.is_empty()).then_some(app.selected);
-    if let Mode::Insert { index, text, editing, .. } = &app.mode {
+    if let Mode::Insert { index, input, editing } = &app.mode {
+        let text = &input.text;
         if *editing {
             rows[*index] = Row { text, typing: true, ..rows[*index] };
         } else {
@@ -108,8 +109,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         let markers_width: usize = markers.iter().filter(|(shown, _)| *shown).map(|(_, m)| m.width()).sum();
         let text_width = (inner.width as usize).saturating_sub(prefix_width + markers_width).max(1);
         let ranges = wrap_ranges(row.text, text_width);
-        if let (true, Mode::Insert { cursor, .. }) = (row.typing, &app.mode) {
-            typing_cursor = cursor_position(row.text, &ranges, *cursor, text_width);
+        if let (true, Mode::Insert { input, .. }) = (row.typing, &app.mode) {
+            typing_cursor = cursor_position(row.text, &ranges, input.cursor, text_width);
         }
 
         let mut lines: Vec<Line> = ranges

@@ -5,6 +5,7 @@ use chrono::{Days, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::help::Help;
+use crate::input::LineInput;
 use crate::notes::{Action, NotesEditor};
 use crate::store::{Item, Snapshot, Store};
 
@@ -21,9 +22,8 @@ struct State {
 pub enum Mode {
     Normal,
     /// Typing an item at `index`. When `editing`, it replaces the existing item
-    /// there; otherwise it is inserted as a new one. `cursor` is a byte offset
-    /// into `text`, always on a char boundary.
-    Insert { index: usize, text: String, cursor: usize, editing: bool },
+    /// there; otherwise it is inserted as a new one.
+    Insert { index: usize, input: LineInput, editing: bool },
     ConfirmDelete,
     /// The notes screen for the selected item.
     Notes(Box<NotesEditor>),
@@ -129,9 +129,9 @@ impl App {
     fn mode_key(&mut self, key: KeyEvent) -> io::Result<()> {
         match &mut self.mode {
             Mode::Normal => self.normal_key(key.code)?,
-            Mode::Insert { index, text, cursor, editing } => match key.code {
-                KeyCode::Esc | KeyCode::Enter => {
-                    let (index, text, editing) = (*index, text.trim().to_string(), *editing);
+            Mode::Insert { index, input, editing } => {
+                if input.handle_key(key.code) {
+                    let (index, text, editing) = (*index, input.text.trim().to_string(), *editing);
                     self.mode = Mode::Normal;
                     match (editing, text.is_empty()) {
                         (true, true) => self.mode = Mode::ConfirmDelete,
@@ -150,23 +150,7 @@ impl App {
                         }
                     }
                 }
-                KeyCode::Left => *cursor = prev_boundary(text, *cursor),
-                KeyCode::Right => *cursor = next_boundary(text, *cursor),
-                KeyCode::Home => *cursor = 0,
-                KeyCode::End => *cursor = text.len(),
-                KeyCode::Backspace if *cursor > 0 => {
-                    *cursor = prev_boundary(text, *cursor);
-                    text.remove(*cursor);
-                }
-                KeyCode::Delete if *cursor < text.len() => {
-                    text.remove(*cursor);
-                }
-                KeyCode::Char(c) => {
-                    text.insert(*cursor, c);
-                    *cursor += c.len_utf8();
-                }
-                _ => {}
-            },
+            }
             Mode::ConfirmDelete => match key.code {
                 KeyCode::Char('d') => {
                     if let Some(slot) = self.slot(self.selected) {
@@ -228,12 +212,11 @@ impl App {
             // empty day), append to the end of the open items instead.
             KeyCode::Char('a') => {
                 let index = if self.selected < open { self.selected + 1 } else { open };
-                self.mode = Mode::Insert { index, text: String::new(), cursor: 0, editing: false };
+                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false };
             }
             KeyCode::Char('e') if len > 0 => {
-                let text = self.items()[self.selected].text.clone();
-                let cursor = text.len();
-                self.mode = Mode::Insert { index: self.selected, text, cursor, editing: true };
+                let input = LineInput::new(&self.items()[self.selected].text);
+                self.mode = Mode::Insert { index: self.selected, input, editing: true };
             }
             KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete,
             // The cursor stays put, so you can tick off several items in a row.
@@ -345,14 +328,6 @@ impl App {
             self.list_offset.set(0);
         }
     }
-}
-
-fn prev_boundary(text: &str, cursor: usize) -> usize {
-    text[..cursor].char_indices().next_back().map_or(0, |(i, _)| i)
-}
-
-fn next_boundary(text: &str, cursor: usize) -> usize {
-    text[cursor..].chars().next().map_or(cursor, |c| cursor + c.len_utf8())
 }
 
 #[cfg(test)]

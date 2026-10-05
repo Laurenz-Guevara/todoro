@@ -15,6 +15,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 - `src/main.rs`: terminal setup/teardown and the event loop
 - `src/app.rs`: app state, modes (`Normal`, `Insert`, `ConfirmDelete`, `Notes`, `Help`) and key handling
+- `src/input.rs`: `LineInput`, single-line typing with a movable cursor
 - `src/notes.rs`: the notes editor, a vim key layer over `ratatui-textarea`
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
 - `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
@@ -42,7 +43,7 @@ Keep new bindings vim-like. When you add or change one, update `SECTIONS` in `sr
 - On disk an item is a plain string, or an object with `text` and optional `notes`, `done` and `pinned` (see `RawItem` in `store.rs`). Items with only text must stay plain strings so simple files stay readable by older versions.
 - `Store` saves after every change by writing a temp file and renaming it. Don't defer or batch saves.
 - List undo is automatic: `App::handle_key` snapshots the store before each key in `Normal`, `Insert` and `ConfirmDelete` mode and records it if the key changed anything. A notes visit is recorded as one change when it closes (`notes_before`). New list actions need no undo code, but must change the store only through `App::handle_key`.
-- `Insert { cursor }` is a byte offset that must stay on a char boundary. Use `prev_boundary`/`next_boundary` in `app.rs`.
+- Single-line typing (the list's insert mode) goes through `LineInput` in `input.rs`. Its `cursor` is a byte offset that must stay on a char boundary.
 - The UI must work down to about 30 columns. Any text with a fixed length needs narrower fallbacks: `fit_first` (shorter alternatives), `fit_hints` (status bar hints by priority, `? help` last to go) or `truncate` (ends with "…"). The `screens_at_30_columns` and `screens_at_40_columns` snapshots cover every screen, so check them after any UI change.
 - Long text wraps rather than being cut off: list rows and the delete popup both use `wrap_ranges` in `ui.rs`, which keeps the text exactly as typed (so the cursor can be placed with `cursor_position`) and measures display width with `unicode-width`, not `chars().count()`. List rows can be several lines tall, so screen positions come from summing row heights.
 - The notes editor must keep vim's behavior where it differs from `ratatui-textarea`'s defaults: `h`/`l`/`x` never cross line boundaries, the normal-mode cursor never sits past the last character, and each command is one undo step.
