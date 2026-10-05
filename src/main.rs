@@ -20,10 +20,10 @@ fn main() -> io::Result<()> {
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
     while !app.quit {
         terminal.draw(|frame| ui::draw(frame, app))?;
-        if let Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press {
-                app.handle_key(key)?;
-            }
+        if let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            app.handle_key(key)?;
         }
     }
     Ok(())
