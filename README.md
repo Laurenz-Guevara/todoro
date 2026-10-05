@@ -201,7 +201,7 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 ### What's new
 
-The first time you start todoro after updating, it shows what's new in the versions since the one you last used. `N` shows the notes for every release at any time; `j` / `k` scroll and `Esc` closes them. The notes are built into todoro, so they always match the version you have.
+The first time you start todoro after updating, it shows what's new in the versions since the one you last used. `N` shows the notes for every release at any time; `j` / `k` scroll (`Space` a page, `g` / `G` to the top or bottom), the corner shows where you are (`Top`, a percentage, `Bot`, or `All` when it all fits), and `Esc` closes them. The notes are built into todoro, so they always match the version you have.
 
 ### Help
 

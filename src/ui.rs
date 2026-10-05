@@ -1085,11 +1085,8 @@ fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(Color::Cyan))
         .title(title.bold())
-        .title_bottom(Line::from(fit_first(&[" j/k scroll · esc close ", " esc close "], room)).centered().dim())
         .padding(Padding::horizontal(1));
     let inner = block.inner(area);
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
 
     let width = inner.width as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -1104,8 +1101,31 @@ fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
     let height = inner.height as usize;
     view.height.set(height);
     view.total.set(lines.len());
-    let scroll = view.scroll.min(lines.len().saturating_sub(height));
+    let max = lines.len().saturating_sub(height);
+    let scroll = view.scroll.min(max);
+
+    // Where you are, as vim shows it, in the bottom-right corner, with the
+    // hint centred in the room left beside it.
+    let position = format!(" {} ", scroll_position(scroll, max));
+    let hint_room = room.saturating_sub(2 * (position.width() + 1));
+    let hint = fit_first(&[" j/k scroll · esc close ", " esc close "], hint_room);
+    let block = block
+        .title_bottom(Line::from(hint).centered().dim())
+        .title_bottom(Line::from(position).right_aligned().dim());
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
+}
+
+/// How far through something scrollable you are, as vim shows it: "All" if
+/// it all fits, "Top" and "Bot" at the ends, and a percentage between.
+fn scroll_position(scroll: usize, max: usize) -> String {
+    match (scroll, max) {
+        (_, 0) => "All".to_string(),
+        (0, _) => "Top".to_string(),
+        (s, m) if s >= m => "Bot".to_string(),
+        (s, m) => format!("{}%", s * 100 / m),
+    }
 }
 
 /// The little Markdown the changelog uses, wrapped to `width`: `###`
@@ -2129,6 +2149,49 @@ mod tests {
         let screen = render_sized(&app, 30, 12).backend().to_string();
         // The oldest release's last note ends the last line.
         assert!(screen.contains("macOS and Windows."), "{screen}");
+    }
+
+    #[test]
+    fn scroll_position_reads_like_vims() {
+        assert_eq!(scroll_position(0, 0), "All");
+        assert_eq!(scroll_position(0, 40), "Top");
+        assert_eq!(scroll_position(10, 40), "25%");
+        assert_eq!(scroll_position(39, 40), "97%");
+        assert_eq!(scroll_position(40, 40), "Bot");
+    }
+
+    #[test]
+    fn the_changelog_shows_where_you_are() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.mode = Mode::Changelog(ChangelogView::all());
+        let bottom = |app: &App, width: u16| -> String {
+            let terminal = render_sized(app, width, 16);
+            let buffer = terminal.backend().buffer().clone();
+            (0..width).map(|x| buffer[(x, 14)].symbol().to_string()).collect()
+        };
+        assert!(bottom(&app, 80).contains(" Top ╯"), "{}", bottom(&app, 80));
+        for _ in 0..5 {
+            press(&mut app, KeyCode::Char('j'));
+        }
+        let border = bottom(&app, 80);
+        assert!(border.contains("% ╯") && border.contains("esc close"), "{border}");
+        press(&mut app, KeyCode::Char('G'));
+        assert!(bottom(&app, 80).contains(" Bot ╯"));
+        // Narrow screens keep the position and drop the hint first. Lines
+        // wrap more there, so go to the end again at this width.
+        bottom(&app, 30);
+        press(&mut app, KeyCode::Char('G'));
+        let narrow = bottom(&app, 30);
+        assert!(narrow.contains(" Bot ╯") && narrow.contains("esc close"), "{narrow}");
+    }
+
+    #[test]
+    fn short_notes_say_all() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        // Only this release, on a tall screen, fits without scrolling.
+        app.mode = Mode::Changelog(ChangelogView::since(changes::parse_version(changes::VERSION).unwrap()));
+        let terminal = render_sized(&app, 80, 40);
+        assert!(terminal.backend().to_string().contains(" All ╯"));
     }
 
     #[test]
