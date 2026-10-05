@@ -281,6 +281,32 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(&editor.textarea, inner);
     highlight_cursor_line_number(frame.buffer_mut(), editor, inner);
+    if let Some((lines, _)) = &editor.flash {
+        flash_lines(frame.buffer_mut(), editor, inner, lines);
+    }
+}
+
+/// Briefly highlights just-copied lines like a selected list item. The text
+/// area has no styling for this, so the lines' screen rows are found from the
+/// gutter: a numbered row starts a line, and any non-blank rows after it are
+/// that line wrapping.
+fn flash_lines(buffer: &mut Buffer, editor: &NotesEditor, area: Rect, lines: &std::ops::RangeInclusive<usize>) {
+    let gutter = editor.textarea.lines().len().to_string().len() as u16 + 2;
+    let text = (area.left() + gutter).min(area.right())..area.right();
+    let mut line = None;
+    for y in area.top()..area.bottom() {
+        let number: String = (area.left()..text.start).map(|x| buffer[(x, y)].symbol().to_string()).collect();
+        match number.trim().parse::<usize>() {
+            Ok(n) => line = Some(n - 1),
+            Err(_) if text.clone().all(|x| buffer[(x, y)].symbol() == " ") => line = None,
+            Err(_) => {}
+        }
+        if line.is_some_and(|line| lines.contains(&line)) {
+            for x in text.clone() {
+                buffer[(x, y)].set_style(Style::new().bg(SELECTED_BG).add_modifier(Modifier::BOLD));
+            }
+        }
+    }
 }
 
 /// Colours the number of the line the cursor is on, as vim does. The text
@@ -1936,6 +1962,27 @@ mod tests {
         type_str(&mut app, "kxG");
         assert_eq!(render(&app).backend().buffer()[(1, 4)].symbol(), "✓");
         assert_eq!(number(&app, 4).fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn copied_lines_flash_like_a_selected_item() {
+        let (mut app, _dir) = app_with(&["Write report"]);
+        app.store.set_notes(app.day, 0, "one\ntwo\nthree\nfour".into()).unwrap();
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "j2yy");
+        let flashing = |app: &App| -> Vec<u16> {
+            let terminal = render(app);
+            let buffer = terminal.backend().buffer().clone();
+            (1..9).filter(|&y| buffer[(10, y)].bg == SELECTED_BG).collect()
+        };
+        // Lines 2 and 3, on screen rows 2 and 3; not the blank rows below.
+        assert_eq!(flashing(&app), [2, 3]);
+        let Mode::Notes(editor) = &app.mode else { panic!("in the notes") };
+        let ends = editor.flash_ends().unwrap();
+        assert_eq!(app.redraw_at(), Some(ends));
+        app.tick(ends);
+        assert!(flashing(&app).is_empty());
+        assert_eq!(app.redraw_at(), None);
     }
 
     #[test]

@@ -1,5 +1,8 @@
 //! The notes screen: a multi-line text area with a small set of vim keys.
 
+use std::ops::RangeInclusive;
+use std::time::{Duration, Instant};
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui_textarea::{CursorMove, TextArea};
@@ -20,6 +23,8 @@ pub struct NotesEditor {
     pub register: Option<Register>,
     /// Where a `v` selection started, while selecting.
     pub visual: Option<(usize, usize)>,
+    /// Lines just copied, briefly highlighted to show it, and since when.
+    pub flash: Option<(RangeInclusive<usize>, Instant)>,
     /// Undo history, kept here rather than in the text area so that every
     /// command (and a whole visit to insert mode) is exactly one step.
     undo: Vec<Snapshot>,
@@ -27,6 +32,9 @@ pub struct NotesEditor {
     /// The text from before insert mode began, recorded when it ends.
     insert_before: Option<Snapshot>,
 }
+
+/// How long copied lines stay highlighted.
+pub const FLASH: Duration = Duration::from_millis(100);
 
 /// Text to paste: whole lines (from `dd`, `yy`) or part of a line (from `v`).
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +70,7 @@ impl NotesEditor {
             command: None,
             register: None,
             visual: None,
+            flash: None,
             undo: Vec::new(),
             redo: Vec::new(),
             insert_before: None,
@@ -121,6 +130,8 @@ impl NotesEditor {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        // Any key ends a copy's flash early.
+        self.flash = None;
         if self.insert {
             if key.code == KeyCode::Esc {
                 self.set_insert(false);
@@ -364,7 +375,8 @@ impl NotesEditor {
     /// Copies the selection to paste, and ends it with the cursor at its start.
     fn yank_selection(&mut self, anchor: (usize, usize)) -> Action {
         self.register = Some(Register { text: self.selected_text(anchor), linewise: false });
-        let (start, _) = self.selection(anchor);
+        let (start, end) = self.selection(anchor);
+        self.flash = Some((start.0..=end.0, Instant::now()));
         self.end_visual();
         self.textarea.move_cursor(CursorMove::Jump(start.0 as u16, start.1 as u16));
         Action::Stay
@@ -455,7 +467,20 @@ impl NotesEditor {
         let lines = self.textarea.lines();
         let end = (row + count).min(lines.len());
         self.register = Some(Register { text: lines[row..end].join("\n"), linewise: true });
+        self.flash = Some((row..=end - 1, Instant::now()));
         Action::Stay
+    }
+
+    /// When the current flash should end, if there is one.
+    pub fn flash_ends(&self) -> Option<Instant> {
+        self.flash.as_ref().map(|(_, since)| *since + FLASH)
+    }
+
+    /// Ends the flash once its time is up at `now`.
+    pub fn expire_flash(&mut self, now: Instant) {
+        if self.flash_ends().is_some_and(|end| now >= end) {
+            self.flash = None;
+        }
     }
 
     /// Pastes the register `times` times: whole lines below (`after`) or above
@@ -1027,6 +1052,54 @@ mod tests {
         // Undo puts the cursor back where the cut started, on line 2.
         send(&mut ed, "u$vggy");
         assert_eq!(register(&ed), ("one\ntwo", false));
+    }
+
+    fn flashed(ed: &NotesEditor) -> Option<RangeInclusive<usize>> {
+        ed.flash.as_ref().map(|(lines, _)| lines.clone())
+    }
+
+    #[test]
+    fn copying_lines_flashes_them() {
+        let mut ed = editor("one\ntwo\nthree\nfour");
+        send(&mut ed, "jyy");
+        assert_eq!(flashed(&ed), Some(1..=1));
+        send(&mut ed, "j");
+        assert_eq!(flashed(&ed), None);
+        send(&mut ed, "k3yy");
+        assert_eq!(flashed(&ed), Some(1..=3));
+        // Past the end, only the lines that exist.
+        send(&mut ed, "G5yy");
+        assert_eq!(flashed(&ed), Some(3..=3));
+    }
+
+    #[test]
+    fn copying_a_selection_flashes_its_lines() {
+        let mut ed = editor("one\ntwo\nthree");
+        send(&mut ed, "lvjy");
+        assert_eq!(flashed(&ed), Some(0..=1));
+    }
+
+    #[test]
+    fn deleting_or_pasting_does_not_flash() {
+        let mut ed = editor("one\ntwo");
+        send(&mut ed, "yy");
+        send(&mut ed, "p");
+        assert_eq!(flashed(&ed), None);
+        send(&mut ed, "dd");
+        assert_eq!(flashed(&ed), None);
+    }
+
+    #[test]
+    fn the_flash_ends_after_its_time() {
+        let mut ed = editor("one");
+        send(&mut ed, "yy");
+        let (_, since) = ed.flash.clone().unwrap();
+        assert_eq!(ed.flash_ends(), Some(since + FLASH));
+        ed.expire_flash(since + FLASH / 2);
+        assert!(ed.flash.is_some());
+        ed.expire_flash(since + FLASH);
+        assert!(ed.flash.is_none());
+        assert_eq!(ed.flash_ends(), None);
     }
 
     #[test]

@@ -563,6 +563,25 @@ impl App {
         Ok(())
     }
 
+    /// When something on screen (a copy's flash) needs redrawing, if ever.
+    pub fn redraw_at(&self) -> Option<std::time::Instant> {
+        match &self.mode {
+            Mode::Notes(editor) => editor.flash_ends(),
+            Mode::Help { back, .. } => match back.as_ref() {
+                Mode::Notes(editor) => editor.flash_ends(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Ends anything timed (a copy's flash) whose time is up at `now`.
+    pub fn tick(&mut self, now: std::time::Instant) {
+        if let Mode::Notes(editor) = &mut self.mode {
+            editor.expire_flash(now);
+        }
+    }
+
     fn state(&self) -> State {
         State { snapshot: self.store.snapshot(), day: self.day, selected: self.selected }
     }

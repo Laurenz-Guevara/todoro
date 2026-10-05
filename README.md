@@ -148,7 +148,7 @@ In normal mode:
 | `o` / `O` | Open a new line below / above |
 | `x` | Delete the character under the cursor |
 | `dd` | Delete the line, keeping it to paste |
-| `yy` | Copy the line |
+| `yy` | Copy the line (it flashes briefly to show it's copied) |
 | `p` / `P` | Paste below / above (also into another item's notes) |
 | `v` | Select text by moving the cursor; then `y` copies it, `d` cuts it and `Esc` cancels |
 | `J` / `K` | Move the line down / up |
