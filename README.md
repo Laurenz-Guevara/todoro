@@ -1,6 +1,6 @@
 # todoro
 
-A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and pin the ones you want to follow you to the next day with `p`. Any item can have longer notes, which you open with `Enter`, and a calendar (`c`) lets you plan weeks or months ahead.
+A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and pin the ones you want to follow you to the next day with `m`. Any item can have longer notes, which you open with `Enter`, and a calendar (`c`) lets you plan weeks or months ahead.
 
 ```
 ╭───────────── Monday, October 5 2026 (today) ─────────────╮
@@ -62,7 +62,7 @@ todoro
 | `a` | Add an item below the cursor |
 | `e` | Edit the selected item |
 | `x` | Mark the selected item done, or not done again |
-| `p` | Pin or unpin the selected item, so it moves to the next day until done |
+| `m` | Pin or unpin the selected item, so it moves to the next day until done |
 | `!` | Triage the selected item: High, Medium, Low, then no priority again |
 | `d` | Delete the selected item (asks to confirm) |
 | `Enter` | Open the selected item's notes |
@@ -83,7 +83,7 @@ Pinned items are marked with `⚲` and items that have notes with `≡`. A triag
 
 ### Pinned items
 
-Items stay on their day by default, so something like "Dentist at 3pm" doesn't follow you around. Pin an item with `p` if it should: when you start todoro, pinned items you didn't complete on earlier days move to the top of today's list, keeping their notes. They stay pinned, so they keep moving forward each day until you complete or unpin them.
+Items stay on their day by default, so something like "Dentist at 3pm" doesn't follow you around. Pin an item with `m` if it should: when you start todoro, pinned items you didn't complete on earlier days move to the top of today's list, keeping their notes. They stay pinned, so they keep moving forward each day until you complete or unpin them.
 
 Looking ahead with `l` shows pinned items on future days too, at the top of the list, as they'll be when that day comes. In general, an unfinished pinned item shows on its own day and every day after it, so if you move one to an earlier day with `H`, it still shows today. They're the same items, so completing, editing or unpinning one there changes it on the day it's on now.
 

@@ -1131,7 +1131,7 @@ mod tests {
     fn pinned_items_are_marked() {
         let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom"]);
         app.store.set_notes(app.day, 1, "notes".into()).unwrap();
-        type_str(&mut app, "pjpjpx");
+        type_str(&mut app, "mjmjmx");
         assert_snapshot!(render(&app).backend());
     }
 
@@ -1591,7 +1591,7 @@ mod tests {
     fn no_colour_removes_every_colour_but_keeps_highlights() {
         let (mut app, _dir) = app_with(&["Fix the tap", "Book flights"]);
         app.store.set_notes(app.day, 0, "notes".into()).unwrap();
-        type_str(&mut app, "!jp");
+        type_str(&mut app, "!jm");
         app.settings.no_colour = true;
         let mut screens = vec![render(&app)];
         type_str(&mut app, "c");

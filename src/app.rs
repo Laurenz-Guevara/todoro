@@ -310,7 +310,8 @@ impl App {
                     self.store.cycle_priority(slot.day, slot.index)?;
                 }
             }
-            KeyCode::Char('p') => {
+            // Pin: "mark" the item to carry forward.
+            KeyCode::Char('m') => {
                 if let Some(slot) = slot {
                     self.store.toggle_pinned(slot.day, slot.index)?;
                     self.clamp_selection();
@@ -840,37 +841,37 @@ mod tests {
     }
 
     #[test]
-    fn p_pins_and_unpins_the_selected_item_in_place() {
+    fn m_pins_and_unpins_the_selected_item_in_place() {
         let (mut app, _dir) = app_with(&["one", "two"]);
-        type_str(&mut app, "jp");
+        type_str(&mut app, "jm");
         assert_eq!(items(&app), ["one", "two"]);
         assert!(!app.items()[0].pinned);
         assert!(app.items()[1].pinned);
         assert_eq!(app.selected, 1);
-        type_str(&mut app, "p");
+        type_str(&mut app, "m");
         assert!(!app.items()[1].pinned);
     }
 
     #[test]
-    fn p_on_an_empty_day_does_nothing() {
+    fn m_on_an_empty_day_does_nothing() {
         let (mut app, _dir) = app_with(&[]);
-        type_str(&mut app, "p");
+        type_str(&mut app, "m");
         assert!(app.items().is_empty());
     }
 
     #[test]
-    fn p_while_typing_is_text() {
+    fn m_while_typing_is_text() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "e p");
+        type_str(&mut app, "e m");
         press(&mut app, KeyCode::Enter);
-        assert_eq!(items(&app), ["one p"]);
+        assert_eq!(items(&app), ["one m"]);
         assert!(!app.items()[0].pinned);
     }
 
     #[test]
     fn completing_a_pinned_item_keeps_it_pinned() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "px");
+        type_str(&mut app, "mx");
         assert!(app.items()[0].done);
         assert!(app.items()[0].pinned);
     }
@@ -933,9 +934,9 @@ mod tests {
     }
 
     #[test]
-    fn p_on_a_carried_item_unpins_it_back_to_its_day() {
+    fn m_on_a_carried_item_unpins_it_back_to_its_day() {
         let (mut app, _dir) = app_with_future(&["pin a"], &["later"]);
-        type_str(&mut app, "llp");
+        type_str(&mut app, "llm");
         assert_eq!(items(&app), ["later"]);
         assert!(!app.store.items(today())[0].pinned);
     }
@@ -1147,7 +1148,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "e!");
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "pK");
+        type_str(&mut app, "mK");
         assert_eq!(items(&app), ["two!", "one"]);
         assert!(app.items()[0].pinned);
         type_str(&mut app, "u");
@@ -1217,7 +1218,7 @@ mod tests {
     fn a_new_change_clears_redo() {
         let (mut app, _dir) = app_with(&["one", "two"]);
         type_str(&mut app, "xu");
-        type_str(&mut app, "p");
+        type_str(&mut app, "m");
         ctrl(&mut app, 'r');
         assert!(app.items().iter().all(|item| !item.done));
         assert!(app.items()[0].pinned);
@@ -1243,7 +1244,7 @@ mod tests {
     fn undo_history_is_limited() {
         let (mut app, _dir) = app_with(&["one"]);
         for _ in 0..UNDO_LIMIT + 10 {
-            type_str(&mut app, "p");
+            type_str(&mut app, "m");
         }
         assert_eq!(app.undo.len(), UNDO_LIMIT);
     }
@@ -1267,10 +1268,10 @@ mod tests {
         let (mut app, _dir) = app_with(&["plain"]);
         let yesterday = today().pred_opt().unwrap();
         app.store.insert(yesterday, 0, "old".into()).unwrap();
-        type_str(&mut app, "hpl");
+        type_str(&mut app, "hml");
         assert_eq!(items(&app), ["old", "plain"]);
         // Unpinning it from today sends it back to its own day only.
-        type_str(&mut app, "p");
+        type_str(&mut app, "m");
         assert_eq!(items(&app), ["plain"]);
         type_str(&mut app, "h");
         assert_eq!(items(&app), ["old"]);
@@ -1591,7 +1592,7 @@ mod tests {
     #[test]
     fn midnight_clears_undo_so_the_carry_over_stays() {
         let (mut app, _dir) = app_with(&["pinned"]);
-        type_str(&mut app, "p");
+        type_str(&mut app, "m");
         let tomorrow = today().succ_opt().unwrap();
         app.set_today(tomorrow).unwrap();
         type_str(&mut app, "u");
