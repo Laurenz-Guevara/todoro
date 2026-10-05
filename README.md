@@ -159,6 +159,8 @@ In normal mode:
 
 In insert mode, type as normal (`Enter` starts a new line) and press `Esc` to go back to normal mode.
 
+You can paste text from elsewhere straight into notes, in either mode: it goes in at the cursor with its lines kept, and `u` undoes the whole paste. Pasting into a single-line box, like adding an item or searching, puts it on one line.
+
 ### Tags
 
 Write `#words` in an item to tag it, like "Call #work about the #budget". Tags are coloured on the list and ignore case, so `#Work` and `#work` are the same tag. `#` lists every tag with how many items have it; pick one with `j` / `k` and press `Enter` to see all its items across every day, where you can type to narrow them down and press `Enter` to go to one.

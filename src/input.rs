@@ -15,6 +15,14 @@ impl LineInput {
         Self { text: text.to_string(), cursor: text.len() }
     }
 
+    /// Inserts pasted text at the cursor. This is one line, so line breaks
+    /// become spaces.
+    pub fn paste(&mut self, text: &str) {
+        let text = text.lines().map(str::trim_end).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" ");
+        self.text.insert_str(self.cursor, &text);
+        self.cursor += text.len();
+    }
+
     /// Handles a key and returns `true` when typing is finished (Enter or Esc).
     pub fn handle_key(&mut self, code: KeyCode) -> bool {
         let (text, cursor) = (&mut self.text, &mut self.cursor);
@@ -47,4 +55,18 @@ fn prev_boundary(text: &str, cursor: usize) -> usize {
 
 fn next_boundary(text: &str, cursor: usize) -> usize {
     text[cursor..].chars().next().map_or(cursor, |c| cursor + c.len_utf8())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pasting_inserts_at_the_cursor_on_one_line() {
+        let mut input = LineInput::new("ab");
+        input.handle_key(KeyCode::Left);
+        input.paste("first line\r\nsecond line  \n\nthird");
+        assert_eq!(input.text, "afirst line second line thirdb");
+        assert_eq!(input.cursor, "afirst line second line third".len());
+    }
 }

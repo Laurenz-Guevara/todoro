@@ -85,6 +85,13 @@ impl Search {
         Action::Stay
     }
 
+    /// Adds pasted text to the query, on one line.
+    pub fn paste(&mut self, text: &str) {
+        self.input.paste(text);
+        self.selected = 0;
+        self.offset.set(0);
+    }
+
     pub fn find(&self, store: &Store, today: NaiveDate) -> Vec<Hit> {
         find(store, &self.input.text, self.notes, self.tag.as_deref(), today)
     }

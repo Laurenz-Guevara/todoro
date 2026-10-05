@@ -475,6 +475,34 @@ impl NotesEditor {
         Action::Stay
     }
 
+    /// Inserts pasted text at the cursor, keeping its lines, as one undo step.
+    /// In normal mode it goes where `i` would type it. A paste while typing a
+    /// `:` command goes into the command, on one line; while selecting, it's ignored.
+    pub fn paste_text(&mut self, text: &str) {
+        self.flash = None;
+        if let Some(input) = &mut self.command {
+            input.paste(text);
+            return;
+        }
+        if self.visual.is_some() {
+            return;
+        }
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if self.insert {
+            // Recorded with the rest of the typing when insert mode ends.
+            self.textarea.insert_str(&text);
+            return;
+        }
+        let before = self.snapshot();
+        self.pending = None;
+        self.count = None;
+        self.textarea.insert_str(&text);
+        // Back onto the last character pasted, as after leaving insert mode.
+        self.back();
+        self.clamp();
+        self.record(before);
+    }
+
     /// When the current flash should end, if there is one.
     pub fn flash_ends(&self) -> Option<Instant> {
         self.flash.as_ref().map(|(_, since)| *since + FLASH)
@@ -1104,6 +1132,64 @@ mod tests {
         ed.expire_flash(since + FLASH);
         assert!(ed.flash.is_none());
         assert_eq!(ed.flash_ends(), None);
+    }
+
+    #[test]
+    fn pasting_in_normal_mode_keeps_the_lines_as_one_undo_step() {
+        let mut ed = editor("start");
+        send(&mut ed, "$");
+        ed.paste_text("first line\nsecond line\nthird line");
+        assert_eq!(ed.notes(), "starfirst line\nsecond line\nthird linet");
+        // The cursor is on the last character pasted, in normal mode.
+        assert!(!ed.insert);
+        assert_eq!(cursor(&ed), (2, 9));
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "start");
+    }
+
+    #[test]
+    fn pasting_while_typing_continues_the_typing() {
+        let mut ed = editor("");
+        send(&mut ed, "ibefore ");
+        ed.paste_text("one\ntwo");
+        send(&mut ed, " after<esc>");
+        assert_eq!(ed.notes(), "before one\ntwo after");
+        // Everything typed and pasted in that visit undoes together.
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "");
+    }
+
+    #[test]
+    fn pasted_windows_line_endings_become_plain_lines() {
+        let mut ed = editor("");
+        ed.paste_text("one\r\ntwo\rthree");
+        assert_eq!(ed.textarea.lines(), ["one", "two", "three"]);
+    }
+
+    #[test]
+    fn pasted_text_is_never_run_as_commands() {
+        let mut ed = editor("keep");
+        ed.paste_text("dd\nx\n:q");
+        assert_eq!(ed.notes(), "dd\nx\n:qkeep");
+        assert!(ed.command.is_none());
+    }
+
+    #[test]
+    fn pasting_into_a_command_keeps_it_on_one_line() {
+        let mut ed = editor("one\ntwo\nthree");
+        send(&mut ed, ":");
+        ed.paste_text("3\n");
+        assert_eq!(send(&mut ed, "<cr>"), Action::Stay);
+        assert_eq!(cursor(&ed), (2, 0));
+    }
+
+    #[test]
+    fn pasting_while_selecting_is_ignored() {
+        let mut ed = editor("abc");
+        send(&mut ed, "vl");
+        ed.paste_text("zzz");
+        assert_eq!(ed.notes(), "abc");
+        assert!(ed.visual.is_some());
     }
 
     #[test]

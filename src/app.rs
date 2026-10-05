@@ -230,14 +230,8 @@ impl App {
             }
             Mode::Notes(editor) => {
                 let action = editor.handle_key(key);
-                // Save on every change, like the rest of the app.
-                let notes = editor.notes();
                 let register = editor.register.clone();
-                if let Some(slot) = self.slot(self.selected)
-                    && notes != self.store.items(slot.day)[slot.index].notes
-                {
-                    self.store.set_notes(slot.day, slot.index, notes)?;
-                }
+                self.save_open_notes()?;
                 match action {
                     Action::Stay => {}
                     Action::Close => {
@@ -568,6 +562,46 @@ impl App {
         if let Some(index) = self.store.move_to(slot.day, slot.index, to)? {
             self.change_day(delta);
             self.selected = self.carried() + index;
+        }
+        Ok(())
+    }
+
+    /// Handles text pasted into the terminal, which arrives in one piece
+    /// (bracketed paste) rather than as keys, so it's never run as commands.
+    /// Notes keep its lines; single-line inputs get it on one line; anywhere
+    /// else it's ignored.
+    pub fn handle_paste(&mut self, text: &str) -> io::Result<()> {
+        match &mut self.mode {
+            Mode::Notes(editor) => {
+                editor.paste_text(text);
+                self.save_open_notes()?;
+            }
+            Mode::Insert { input, .. } => input.paste(text),
+            Mode::Search(search) => search.paste(text),
+            Mode::Calendar(calendar) => {
+                if let Some(input) = &mut calendar.adding {
+                    input.paste(text);
+                }
+            }
+            Mode::Normal => {
+                if let Some(input) = &mut self.command {
+                    input.paste(text);
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Saves the open notes screen's text to its item if it has changed, so
+    /// notes save as you type like the rest of the app.
+    fn save_open_notes(&mut self) -> io::Result<()> {
+        let Mode::Notes(editor) = &self.mode else { return Ok(()) };
+        let notes = editor.notes();
+        if let Some(slot) = self.slot(self.selected)
+            && notes != self.store.items(slot.day)[slot.index].notes
+        {
+            self.store.set_notes(slot.day, slot.index, notes)?;
         }
         Ok(())
     }
@@ -2389,6 +2423,52 @@ mod tests {
         type_str(&mut app, "jkN");
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(items(&app), ["one"]);
+    }
+
+    #[test]
+    fn pasting_into_notes_keeps_the_lines_and_saves() {
+        let (mut app, dir) = app_with(&["one"]);
+        press(&mut app, KeyCode::Enter);
+        app.handle_paste("first line\nsecond line\nthird line").unwrap();
+        let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
+        assert_eq!(reloaded.items(today())[0].notes, "first line\nsecond line\nthird line");
+        // Leaving the notes keeps it, and it's one step for the list's undo.
+        type_str(&mut app, "q");
+        type_str(&mut app, "u");
+        assert_eq!(app.items()[0].notes, "");
+    }
+
+    #[test]
+    fn pasting_on_the_list_does_nothing() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        app.handle_paste("dd\nx\nq\nj").unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["one", "two"]);
+        assert!(app.items().iter().all(|item| !item.done));
+        assert!(!app.quit);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn pasting_while_adding_an_item_keeps_it_on_one_line() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "a");
+        app.handle_paste("first line\nsecond line").unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["first line second line"]);
+    }
+
+    #[test]
+    fn pasting_into_search_and_the_command_line() {
+        let (mut app, _dir) = app_with(&["alpha", "beta", "gamma"]);
+        type_str(&mut app, "s");
+        app.handle_paste("gam\n").unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected, 2);
+        type_str(&mut app, ":");
+        app.handle_paste("2").unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected, 1);
     }
 
     #[test]
