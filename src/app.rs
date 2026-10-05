@@ -11,7 +11,7 @@ use crate::input::LineInput;
 use crate::notes::{Action, NotesEditor};
 use crate::options::{self, Options, Settings, TOGGLES};
 use crate::search::{self, Search};
-use crate::store::{Item, Snapshot, Store};
+use crate::store::{Item, Priority, Snapshot, Store};
 
 /// How many changes `u` can undo.
 const UNDO_LIMIT: usize = 200;
@@ -28,7 +28,10 @@ pub enum Mode {
     /// Typing an item at `index`. When `editing`, it replaces the existing item
     /// there; otherwise it is inserted as a new one.
     Insert { index: usize, input: LineInput, editing: bool },
-    ConfirmDelete,
+    /// Asking whether to delete the items at these screen rows.
+    ConfirmDelete { rows: Vec<usize> },
+    /// Selecting several items, from the row `anchor` to the selected row.
+    Visual { anchor: usize },
     /// The notes screen for the selected item.
     Notes(Box<NotesEditor>),
     /// The options popup.
@@ -145,7 +148,10 @@ impl App {
         }
         // Any change made from the list or calendar is undoable. The notes
         // screen records its own change when it closes, and help changes nothing.
-        let before = matches!(self.mode, Mode::Normal | Mode::Insert { .. } | Mode::ConfirmDelete | Mode::Calendar(_))
+        let before = matches!(
+            self.mode,
+            Mode::Normal | Mode::Insert { .. } | Mode::ConfirmDelete { .. } | Mode::Visual { .. } | Mode::Calendar(_)
+        )
             .then(|| self.state());
         self.mode_key(key)?;
         if let Some(before) = before {
@@ -162,7 +168,7 @@ impl App {
                     let (index, text, editing) = (*index, input.text.trim().to_string(), *editing);
                     self.mode = Mode::Normal;
                     match (editing, text.is_empty()) {
-                        (true, true) => self.mode = Mode::ConfirmDelete,
+                        (true, true) => self.mode = Mode::ConfirmDelete { rows: vec![index] },
                         (true, false) => {
                             if let Some(slot) = self.slot(index) {
                                 self.store.set_text(slot.day, slot.index, text)?;
@@ -179,19 +185,25 @@ impl App {
                     }
                 }
             }
-            Mode::ConfirmDelete => match key.code {
+            Mode::ConfirmDelete { rows } => match key.code {
                 KeyCode::Char('d') => {
-                    if let Some(slot) = self.slot(self.selected) {
-                        // Deleting keeps the item to paste, as in vim, so dd then p moves it.
-                        self.register = vec![self.store.items(slot.day)[slot.index].clone()];
-                        self.store.remove(slot.day, slot.index)?;
-                    }
-                    self.clamp_selection();
+                    let rows = std::mem::take(rows);
                     self.mode = Mode::Normal;
+                    // Deleting keeps the items to paste, as in vim, so dd then p moves one.
+                    self.register = rows.iter().map(|&row| self.items()[row].clone()).collect();
+                    for (day, indices) in self.group_by_day(&rows) {
+                        self.store.remove_many(day, &indices)?;
+                    }
+                    self.selected = rows[0];
+                    self.clamp_selection();
                 }
                 KeyCode::Char('c') | KeyCode::Esc => self.mode = Mode::Normal,
                 _ => {}
             },
+            Mode::Visual { anchor } => {
+                let anchor = *anchor;
+                self.visual_key(key.code, anchor)?;
+            }
             Mode::Notes(editor) => {
                 let action = editor.handle_key(key);
                 // Save on every change, like the rest of the app.
@@ -309,7 +321,8 @@ impl App {
                 let input = LineInput::new(&self.items()[self.selected].text);
                 self.mode = Mode::Insert { index: self.selected, input, editing: true };
             }
-            KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete,
+            KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete { rows: vec![self.selected] },
+            KeyCode::Char('V') if len > 0 => self.mode = Mode::Visual { anchor: self.selected },
             // The cursor stays put, so you can tick off several items in a row.
             // A carried item is changed where it's stored, which can take it off
             // this day's screen, hence the clamp.
@@ -341,6 +354,95 @@ impl App {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// The screen rows selected in visual mode, top to bottom.
+    pub fn visual_rows(&self, anchor: usize) -> std::ops::RangeInclusive<usize> {
+        anchor.min(self.selected)..=anchor.max(self.selected)
+    }
+
+    /// The store positions of the items at screen `rows`, grouped by the day
+    /// they're stored on (carried items live on earlier days).
+    fn group_by_day(&self, rows: &[usize]) -> Vec<(NaiveDate, Vec<usize>)> {
+        let slots = self.slots();
+        let mut groups: Vec<(NaiveDate, Vec<usize>)> = Vec::new();
+        for slot in rows.iter().filter_map(|&row| slots.get(row)) {
+            match groups.iter_mut().find(|(day, _)| *day == slot.day) {
+                Some((_, indices)) => indices.push(slot.index),
+                None => groups.push((slot.day, vec![slot.index])),
+            }
+        }
+        groups
+    }
+
+    /// Keys while selecting several items. Each action applies to the whole
+    /// selection and returns to the list, as in vim's visual mode.
+    fn visual_key(&mut self, code: KeyCode, anchor: usize) -> io::Result<()> {
+        let rows: Vec<usize> = self.visual_rows(anchor).collect();
+        let len = self.slots().len();
+        let first = rows[0];
+        let items: Vec<Item> = rows.iter().map(|&row| self.items()[row].clone()).collect();
+        let groups = self.group_by_day(&rows);
+        match code {
+            KeyCode::Esc | KeyCode::Char('V') => {}
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.selected = (self.selected + 1).min(len - 1);
+                return Ok(());
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                return Ok(());
+            }
+            KeyCode::Char('G') => {
+                self.selected = len - 1;
+                return Ok(());
+            }
+            // Complete them all, or reopen them all if they're all complete.
+            KeyCode::Char('x') => {
+                let done = items.iter().any(|item| !item.done);
+                for (day, indices) in groups {
+                    self.store.set_done_many(day, &indices, done)?;
+                }
+            }
+            // Pin them all, or unpin them all if they're all pinned.
+            KeyCode::Char('m') => {
+                let pinned = items.iter().any(|item| !item.pinned);
+                for (day, indices) in groups {
+                    self.store.update_many(day, &indices, |item| item.pinned = pinned)?;
+                }
+            }
+            // The next priority after the first item's, for them all.
+            KeyCode::Char('!') => {
+                let priority = Priority::cycle(items[0].priority);
+                for (day, indices) in groups {
+                    self.store.update_many(day, &indices, |item| item.priority = priority)?;
+                }
+            }
+            KeyCode::Char('y') => self.register = items,
+            KeyCode::Char('d') => {
+                self.mode = Mode::ConfirmDelete { rows };
+                return Ok(());
+            }
+            KeyCode::Char('H' | 'L') => {
+                let delta = if code == KeyCode::Char('L') { 1 } else { -1 };
+                let Some(to) = self.day.checked_add_signed(chrono::Duration::days(delta)) else { return Ok(()) };
+                let mut landed = None;
+                for (day, indices) in groups {
+                    let index = self.store.move_many(day, &indices, to)?;
+                    landed = landed.or(index);
+                }
+                self.mode = Mode::Normal;
+                self.change_day(delta);
+                self.selected = self.carried() + landed.unwrap_or(0);
+                self.clamp_selection();
+                return Ok(());
+            }
+            _ => return Ok(()),
+        }
+        self.mode = Mode::Normal;
+        self.selected = first;
+        self.clamp_selection();
         Ok(())
     }
 
@@ -555,7 +657,7 @@ mod tests {
     fn d_then_c_cancels_the_delete() {
         let (mut app, _dir) = app_with(&["one"]);
         type_str(&mut app, "d");
-        assert!(matches!(app.mode, Mode::ConfirmDelete));
+        assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
         type_str(&mut app, "c");
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(items(&app), ["one"]);
@@ -565,7 +667,7 @@ mod tests {
     fn other_keys_do_not_dismiss_the_delete_popup() {
         let (mut app, _dir) = app_with(&["one"]);
         type_str(&mut app, "djkx");
-        assert!(matches!(app.mode, Mode::ConfirmDelete));
+        assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
     }
 
     #[test]
@@ -607,7 +709,7 @@ mod tests {
         press(&mut app, KeyCode::Backspace);
         press(&mut app, KeyCode::Backspace);
         press(&mut app, KeyCode::Enter);
-        assert!(matches!(app.mode, Mode::ConfirmDelete));
+        assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
         // Cancelling keeps the original text.
         type_str(&mut app, "c");
         assert_eq!(items(&app), ["ab"]);
@@ -1725,6 +1827,145 @@ mod tests {
         let (mut app, _dir) = app_with(&["one"]);
         type_str(&mut app, "yypu");
         assert_eq!(items(&app), ["one"]);
+    }
+
+    fn visual(app: &App) -> Vec<usize> {
+        let Mode::Visual { anchor } = app.mode else { panic!("should be selecting") };
+        app.visual_rows(anchor).collect()
+    }
+
+    #[test]
+    fn capital_v_selects_and_j_and_k_extend_either_way() {
+        let (mut app, _dir) = app_with(&["one", "two", "three", "four"]);
+        type_str(&mut app, "jV");
+        assert_eq!(visual(&app), [1]);
+        type_str(&mut app, "jj");
+        assert_eq!(visual(&app), [1, 2, 3]);
+        type_str(&mut app, "kkk");
+        assert_eq!(visual(&app), [0, 1]);
+        type_str(&mut app, "kG");
+        assert_eq!(visual(&app), [1, 2, 3]);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        type_str(&mut app, "VV");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn x_completes_the_selection_or_reopens_it_if_all_complete() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "jVjx");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["one", "two", "three"]);
+        assert_eq!(app.items().iter().map(|item| item.done).collect::<Vec<_>>(), [false, true, true]);
+        // A mix of open and complete: all complete.
+        type_str(&mut app, "ggVjjx");
+        assert!(app.items().iter().all(|item| item.done));
+        // All complete: all reopened.
+        type_str(&mut app, "ggVGx");
+        assert!(app.items().iter().all(|item| !item.done));
+    }
+
+    #[test]
+    fn m_pins_the_selection_or_unpins_it_if_all_pinned() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "mVjm");
+        assert!(app.items()[..2].iter().all(|item| item.pinned));
+        assert!(!app.items()[2].pinned);
+        type_str(&mut app, "ggVjm");
+        assert!(app.items().iter().all(|item| !item.pinned));
+    }
+
+    #[test]
+    fn exclamation_mark_gives_the_selection_the_next_priority() {
+        use crate::store::Priority;
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "!!jj!Vkk!");
+        // The cursor ended on "one" (Medium), so all become Low.
+        let priorities: Vec<_> = app.items().iter().map(|item| item.priority).collect();
+        assert_eq!(priorities, [Some(Priority::Low); 3]);
+    }
+
+    #[test]
+    fn d_asks_once_then_deletes_the_selection_and_keeps_it_to_paste() {
+        let (mut app, _dir) = app_with(&["one", "two", "three", "four"]);
+        type_str(&mut app, "jVjd");
+        let Mode::ConfirmDelete { rows } = &app.mode else { panic!("should be confirming") };
+        assert_eq!(rows, &[1, 2]);
+        type_str(&mut app, "d");
+        assert_eq!(items(&app), ["one", "four"]);
+        assert_eq!(app.selected, 1);
+        type_str(&mut app, "lp");
+        assert_eq!(items(&app), ["two", "three"]);
+    }
+
+    #[test]
+    fn cancelling_a_selected_delete_keeps_everything() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "VGdc");
+        assert_eq!(items(&app), ["one", "two"]);
+    }
+
+    #[test]
+    fn y_copies_the_selection_for_pasting() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "Vjy");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.selected, 0);
+        type_str(&mut app, "Gp");
+        assert_eq!(items(&app), ["one", "two", "three", "one", "two"]);
+    }
+
+    #[test]
+    fn capital_l_moves_the_selection_and_follows_it() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        let tomorrow = today().succ_opt().unwrap();
+        app.store.insert(tomorrow, 0, "t".into()).unwrap();
+        type_str(&mut app, "jVjL");
+        assert_eq!(app.day, tomorrow);
+        assert_eq!(items(&app), ["t", "two", "three"]);
+        assert_eq!(app.selected, 1);
+        assert_eq!(texts_on(&app, today()), ["one"]);
+        type_str(&mut app, "VjH");
+        assert_eq!(app.day, today());
+        assert_eq!(items(&app), ["one", "two", "three"]);
+    }
+
+    #[test]
+    fn a_selection_can_include_carried_items() {
+        let (mut app, _dir) = app_with_future(&["pin a", "plain"], &["later"]);
+        type_str(&mut app, "llVjx");
+        // The carried item is completed where it's stored, today.
+        assert!(app.store.items(today()).iter().any(|item| item.text == "pin a" && item.done));
+        assert_eq!(items(&app), ["later"]);
+        assert!(app.items()[0].done);
+    }
+
+    #[test]
+    fn u_undoes_a_whole_selection_change_in_one_step() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "VGxu");
+        assert!(app.items().iter().all(|item| !item.done));
+        // Undo put the cursor back where it was, on the last row.
+        type_str(&mut app, "ggVGdd");
+        assert!(app.items().is_empty());
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["one", "two", "three"]);
+    }
+
+    #[test]
+    fn other_keys_while_selecting_do_nothing() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "Vaetqc");
+        assert_eq!(visual(&app), [0]);
+        assert_eq!(items(&app), ["one", "two"]);
+    }
+
+    #[test]
+    fn capital_v_on_an_empty_day_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "V");
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]

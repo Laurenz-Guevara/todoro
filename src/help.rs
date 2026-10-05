@@ -25,6 +25,7 @@ pub const SECTIONS: &[Section] = &[
             ("e", "Edit the selected item"),
             ("x", "Mark the selected item done / not done"),
             ("m", "Pin / unpin: move to today until done"),
+            ("V", "Select several items"),
             ("!", "Triage: High, Medium, Low, then none"),
             ("d", "Delete the selected item"),
             ("yy", "Copy the selected item"),
@@ -72,6 +73,19 @@ pub const SECTIONS: &[Section] = &[
     Section {
         title: "Notes, insert mode",
         bindings: &[("Enter", "Start a new line"), ("Esc", "Back to normal mode")],
+    },
+    Section {
+        title: "Selecting several (V)",
+        bindings: &[
+            ("j / k", "Extend the selection down / up"),
+            ("x", "Complete them (or reopen if all complete)"),
+            ("m", "Pin them (or unpin if all pinned)"),
+            ("!", "Triage them all to the next priority"),
+            ("d", "Delete them"),
+            ("y", "Copy them"),
+            ("H / L", "Move them to the previous / next day"),
+            ("Esc / V", "Stop selecting"),
+        ],
     },
     Section {
         title: "Options",
@@ -233,7 +247,7 @@ mod tests {
 
     #[test]
     fn single_key_matches_key_names_only() {
-        assert_eq!(found("x"), ["List: x", "Notes: x"]);
+        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x"]);
         assert_eq!(found("?"), ["List: ?", "Notes: ?", "Calendar: ?"]);
         assert_eq!(found("$"), ["Notes: 0 / $"]);
     }
@@ -249,7 +263,7 @@ mod tests {
     #[test]
     fn longer_search_matches_descriptions_ignoring_case() {
         assert_eq!(found("UNDO"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R", "Calendar: u / Ctrl+R"]);
-        assert_eq!(found("next day"), ["List: h / l", "List: H / L"]);
+        assert_eq!(found("next day"), ["List: h / l", "List: H / L", "Selecting several (V): H / L"]);
     }
 
     #[test]

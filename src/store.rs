@@ -245,6 +245,73 @@ impl Store {
         Ok(Some(boundary))
     }
 
+    /// Completes or reopens the items at `indices` on `day`. Like `toggle_done`,
+    /// they move to the boundary between open and completed items, keeping
+    /// their order.
+    pub fn set_done_many(&mut self, day: NaiveDate, indices: &[usize], done: bool) -> io::Result<()> {
+        let Some(items) = self.days.get_mut(&key(day)) else { return Ok(()) };
+        let mut changed = Vec::new();
+        let mut rest = Vec::new();
+        for (i, item) in std::mem::take(items).into_iter().enumerate() {
+            if indices.contains(&i) && item.done != done {
+                changed.push(Item { done, ..item });
+            } else {
+                rest.push(item);
+            }
+        }
+        let boundary = rest.iter().take_while(|item| !item.done).count();
+        rest.splice(boundary..boundary, changed);
+        *items = rest;
+        self.save()
+    }
+
+    /// Applies `change` to each item at `indices` on `day`, saving once.
+    pub fn update_many(&mut self, day: NaiveDate, indices: &[usize], mut change: impl FnMut(&mut Item)) -> io::Result<()> {
+        if let Some(items) = self.days.get_mut(&key(day)) {
+            for &i in indices {
+                if let Some(item) = items.get_mut(i) {
+                    change(item);
+                }
+            }
+        }
+        self.save()
+    }
+
+    /// Removes the items at `indices` on `day` and returns them, in order.
+    pub fn remove_many(&mut self, day: NaiveDate, indices: &[usize]) -> io::Result<Vec<Item>> {
+        let k = key(day);
+        let Some(items) = self.days.get_mut(&k) else { return Ok(Vec::new()) };
+        let mut removed = Vec::new();
+        let mut kept = Vec::new();
+        for (i, item) in std::mem::take(items).into_iter().enumerate() {
+            if indices.contains(&i) { removed.push(item) } else { kept.push(item) }
+        }
+        if kept.is_empty() {
+            self.days.remove(&k);
+        } else {
+            *items = kept;
+        }
+        self.save()?;
+        Ok(removed)
+    }
+
+    /// Moves the items at `indices` on `day` to the day `to`, at the boundary
+    /// between its open and completed items like `move_to`, keeping their
+    /// order. Returns where the first one went.
+    pub fn move_many(&mut self, day: NaiveDate, indices: &[usize], to: NaiveDate) -> io::Result<Option<usize>> {
+        let mut moved = self.remove_many(day, indices)?;
+        if moved.is_empty() {
+            return Ok(None);
+        }
+        // Open ones first, so the completed ones stay after them.
+        moved.sort_by_key(|item| item.done);
+        let items = self.days.entry(key(to)).or_default();
+        let boundary = items.iter().take_while(|item| !item.done).count();
+        items.splice(boundary..boundary, moved);
+        self.save()?;
+        Ok(Some(boundary))
+    }
+
     /// Swaps two items on `day` if both are open or both completed, so the
     /// open items always stay above the completed ones. Returns whether it did.
     pub fn swap(&mut self, day: NaiveDate, a: usize, b: usize) -> io::Result<bool> {
@@ -268,19 +335,6 @@ impl Store {
 
     fn item_mut(&mut self, day: NaiveDate, index: usize) -> Option<&mut Item> {
         self.days.get_mut(&key(day)).and_then(|items| items.get_mut(index))
-    }
-
-    pub fn remove(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
-        let k = key(day);
-        if let Some(items) = self.days.get_mut(&k) {
-            if index < items.len() {
-                items.remove(index);
-            }
-            if items.is_empty() {
-                self.days.remove(&k);
-            }
-        }
-        self.save()
     }
 
     fn save(&self) -> io::Result<()> {
@@ -330,7 +384,7 @@ mod tests {
         store.insert(today(), 1, "middle".into()).unwrap();
         store.set_text(today(), 0, "uno".into()).unwrap();
         store.set_notes(today(), 1, "line 1\nline 2".into()).unwrap();
-        store.remove(today(), 2).unwrap();
+        store.remove_many(today(), &[2]).unwrap();
 
         let reloaded = Store::open(path).unwrap();
         assert_eq!(texts(&reloaded, today()), ["uno", "middle"]);
@@ -687,6 +741,64 @@ mod tests {
         assert_eq!(store.items(today())[1], Item { done: false, ..copy });
     }
 
+    /// A store with ["a", "b", "c", "d" (done), "e" (done)] today.
+    fn five_items() -> (tempfile::TempDir, Store) {
+        let (dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        for (i, text) in ["a", "b", "c", "d", "e"].into_iter().enumerate() {
+            store.insert(today(), i, text.into()).unwrap();
+        }
+        store.set_done_many(today(), &[3, 4], true).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn set_done_many_moves_items_to_the_boundary_in_order() {
+        let (_dir, mut store) = five_items();
+        assert_eq!(texts(&store, today()), ["a", "b", "c", "d", "e"]);
+        assert_eq!(store.open_count(today()), 3);
+        store.set_done_many(today(), &[0, 2], true).unwrap();
+        assert_eq!(texts(&store, today()), ["b", "a", "c", "d", "e"]);
+        assert_eq!(store.open_count(today()), 1);
+        store.set_done_many(today(), &[1, 4], false).unwrap();
+        assert_eq!(texts(&store, today()), ["b", "a", "e", "c", "d"]);
+        assert_eq!(store.open_count(today()), 3);
+        // Items already in the requested state stay where they are.
+        store.set_done_many(today(), &[0, 3], true).unwrap();
+        assert_eq!(texts(&store, today()), ["a", "e", "b", "c", "d"]);
+    }
+
+    #[test]
+    fn update_many_changes_only_the_given_items() {
+        let (_dir, mut store) = five_items();
+        store.update_many(today(), &[1, 3, 99], |item| item.pinned = true).unwrap();
+        let pinned: Vec<bool> = store.items(today()).iter().map(|item| item.pinned).collect();
+        assert_eq!(pinned, [false, true, false, true, false]);
+    }
+
+    #[test]
+    fn remove_many_returns_the_items_in_order() {
+        let (_dir, mut store) = five_items();
+        let removed = store.remove_many(today(), &[3, 0]).unwrap();
+        assert_eq!(removed.iter().map(|item| item.text.as_str()).collect::<Vec<_>>(), ["a", "d"]);
+        assert_eq!(texts(&store, today()), ["b", "c", "e"]);
+        store.remove_many(today(), &[0, 1, 2]).unwrap();
+        assert!(store.all().next().is_none());
+    }
+
+    #[test]
+    fn move_many_keeps_open_items_above_completed_ones() {
+        let (_dir, mut store) = five_items();
+        store.insert(day(1), 0, "t".into()).unwrap();
+        store.insert(day(1), 1, "t done".into()).unwrap();
+        store.toggle_done(day(1), 1).unwrap();
+        assert_eq!(store.move_many(today(), &[3, 1], day(1)).unwrap(), Some(1));
+        assert_eq!(texts(&store, day(1)), ["t", "b", "d", "t done"]);
+        assert_eq!(store.open_count(day(1)), 2);
+        assert_eq!(texts(&store, today()), ["a", "c", "e"]);
+        assert_eq!(store.move_many(today(), &[], day(1)).unwrap(), None);
+    }
+
     #[test]
     fn roll_over_with_nothing_to_move_does_not_write_the_file() {
         let (_dir, path) = temp_path();
@@ -700,7 +812,7 @@ mod tests {
         let (_dir, path) = temp_path();
         let mut store = Store::open(path.clone()).unwrap();
         store.insert(today(), 0, "one".into()).unwrap();
-        store.remove(today(), 0).unwrap();
+        store.remove_many(today(), &[0]).unwrap();
         assert_eq!(fs::read_to_string(path).unwrap(), "{}");
     }
 
@@ -712,7 +824,7 @@ mod tests {
         store.insert(today(), 99, "two".into()).unwrap();
         store.set_text(today(), 99, "nope".into()).unwrap();
         store.set_notes(today(), 99, "nope".into()).unwrap();
-        store.remove(today(), 99).unwrap();
+        store.remove_many(today(), &[99]).unwrap();
         assert_eq!(texts(&store, today()), ["one", "two"]);
     }
 

@@ -67,6 +67,7 @@ todoro
 | `d` | Delete the selected item (asks to confirm) |
 | `yy` | Copy the selected item |
 | `p` / `P` | Paste the copied (or last deleted) item below / above the cursor |
+| `V` | Select several items |
 | `Enter` | Open the selected item's notes |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `c` | Open the calendar |
@@ -78,6 +79,20 @@ todoro
 Undo covers everything you change from the list, including moving items between days and a whole visit to an item's notes, and takes you back to where the change was made.
 
 Pinned items are marked with `⚲` and items that have notes with `≡`. A triaged item's number is coloured by its priority: red for High, yellow for Medium and green for Low. If colours are hard to tell apart, turn on semantic icons in the options (`o`) to also show `∧` High, `–` Medium and `∨` Low.
+
+### Selecting several items
+
+`V` starts selecting at the cursor, and `j` / `k` extend the selection. Then:
+
+| Key | Action |
+|---|---|
+| `x` | Complete them all, or reopen them if they're all complete |
+| `m` | Pin them all, or unpin them if they're all pinned |
+| `!` | Give them all the next priority |
+| `d` | Delete them (asks once) |
+| `y` | Copy them, to paste with `p` |
+| `H` / `L` | Move them to the previous / next day, and go with them |
+| `Esc` / `V` | Stop selecting |
 
 ### Completed items
 

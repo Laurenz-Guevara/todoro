@@ -35,7 +35,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_status(frame, app, status);
 
     match &app.mode {
-        Mode::ConfirmDelete => draw_confirm(frame, app),
+        Mode::ConfirmDelete { rows } => draw_confirm(frame, app, rows),
         Mode::Help { help, .. } => draw_help(frame, help),
         Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, calendar),
         Mode::Search(search) => draw_search(frame, app, search),
@@ -180,7 +180,17 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         if row.has_notes {
             last.push_span(NOTES_MARKER.dim());
         }
-        let style = if row.typing { Style::new().fg(Color::Yellow) } else { Style::new() };
+        let selecting = match app.mode {
+            Mode::Visual { anchor } => app.visual_rows(anchor).contains(&i),
+            _ => false,
+        };
+        let style = if row.typing {
+            Style::new().fg(Color::Yellow)
+        } else if selecting {
+            Style::new().bg(VISUAL_BG)
+        } else {
+            Style::new()
+        };
         heights.push(lines.len());
         items.push(ListItem::new(lines).style(style));
     }
@@ -271,7 +281,20 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Insert { editing: true, .. } => {
             ("INSERT", Color::Green, &[("←/→ move", 1), ("enter/esc save", 2), ("(empty asks to delete)", 0)])
         }
-        Mode::ConfirmDelete => ("DELETE", Color::Red, &[("d confirm", 1), ("c cancel", 1)]),
+        Mode::ConfirmDelete { .. } => ("DELETE", Color::Red, &[("d confirm", 1), ("c cancel", 1)]),
+        Mode::Visual { .. } => (
+            "VISUAL",
+            Color::Magenta,
+            &[
+                ("x done", 4),
+                ("m pin", 2),
+                ("! triage", 1),
+                ("d delete", 3),
+                ("y copy", 2),
+                ("H/L move", 1),
+                ("esc cancel", 5),
+            ],
+        ),
         Mode::Notes(editor) if editor.insert => ("INSERT", Color::Green, &[("esc normal mode", 0)]),
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
@@ -333,36 +356,41 @@ fn truncate(text: &str, width: usize) -> String {
     cut
 }
 
-fn draw_confirm(frame: &mut Frame, app: &App) {
+fn draw_confirm(frame: &mut Frame, app: &App, rows: &[usize]) {
     let items = app.items();
-    let Some(item) = items.get(app.selected) else { return };
-    // Same prefix as on the list: completed items aren't numbered.
-    let prefix = if item.done { "✓  ".to_string() } else { format!("{}. ", app.selected + 1) };
-
-    // Wrap long text under itself, growing the popup up to the screen height.
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(50);
-    let text_width = (width as usize).saturating_sub(2 + prefix.width()).max(1);
     // Room for the borders, a blank line and the d/c hint, and a line of margin.
     let max_lines = (screen.height as usize).saturating_sub(6).max(1);
-    let lines = wrap(&item.text, text_width, max_lines);
 
-    let indent = " ".repeat(prefix.width());
-    let mut body: Vec<Line> = lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| Line::from(format!("{}{line}", if i == 0 { &prefix } else { &indent })))
-        .collect();
+    // Each item as on the list (completed ones aren't numbered), its long text
+    // wrapped under itself, until the popup reaches the screen height.
+    let mut body: Vec<Line> = Vec::new();
+    for (n, &row) in rows.iter().enumerate() {
+        let Some(item) = items.get(row) else { continue };
+        let prefix = if item.done { "✓  ".to_string() } else { format!("{}. ", row + 1) };
+        let text_width = (width as usize).saturating_sub(2 + prefix.width()).max(1);
+        let room = max_lines.saturating_sub(body.len());
+        if room == 0 || (room == 1 && n + 1 < rows.len()) {
+            body.push(Line::from(format!("…and {} more", rows.len() - n)).dim());
+            break;
+        }
+        let indent = " ".repeat(prefix.width());
+        for (i, line) in wrap(&item.text, text_width, room).into_iter().enumerate() {
+            body.push(Line::from(format!("{}{line}", if i == 0 { &prefix } else { &indent })));
+        }
+    }
     body.push(Line::default());
     body.push(
         Line::from(vec!["d".bold().fg(Color::Red), " delete   ".into(), "c".bold(), " cancel".into()]).centered(),
     );
 
+    let title = if rows.len() == 1 { " Delete item? ".to_string() } else { format!(" Delete {} items? ", rows.len()) };
     let area = centered(screen, width, body.len() as u16 + 2);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(Color::Red))
-        .title(" Delete item? ".bold());
+        .title(title.bold());
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(body).block(block), area);
 }
@@ -431,6 +459,9 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 
 /// Background of the selected row or day.
 const SELECTED_BG: Color = Color::Rgb(50, 50, 60);
+
+/// Background of the rows selected with `V`.
+const VISUAL_BG: Color = Color::Rgb(70, 50, 90);
 
 fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
     let cursor = calendar.cursor;
@@ -1608,6 +1639,37 @@ mod tests {
         assert!(list[(5, 2)].modifier.contains(Modifier::REVERSED), "selected row");
         assert!(!list[(5, 1)].modifier.contains(Modifier::REVERSED), "other row");
         assert!(list[(2, 9)].modifier.contains(Modifier::REVERSED), "mode label");
+    }
+
+    #[test]
+    fn selecting_several_items() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom", "Book dentist"]);
+        type_str(&mut app, "jVj");
+        let terminal = render(&app);
+        assert_snapshot!(terminal.backend());
+        // The selected rows have the selection background; the others don't.
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(5, 2)].bg, VISUAL_BG);
+        assert_eq!(buffer[(5, 3)].bg, SELECTED_BG);
+        assert_eq!(buffer[(5, 1)].bg, Color::Reset);
+        assert_eq!(buffer[(5, 4)].bg, Color::Reset);
+    }
+
+    #[test]
+    fn delete_popup_for_several_items() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write the quarterly report for the team", "Call mom", "Book dentist"]);
+        type_str(&mut app, "VGd");
+        assert_snapshot!(render_sized(&app, 60, 12).backend());
+    }
+
+    #[test]
+    fn delete_popup_for_more_items_than_fit() {
+        let items: Vec<String> = (1..=12).map(|i| format!("item {i}")).collect();
+        let (mut app, _dir) = app_with(&items.iter().map(String::as_str).collect::<Vec<_>>());
+        type_str(&mut app, "VGd");
+        let screen = render_sized(&app, 60, 12).backend().to_string();
+        assert!(screen.contains("Delete 12 items?"), "{screen}");
+        assert!(screen.contains("…and 7 more"), "{screen}");
     }
 
     #[test]

@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 12).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Buy milk                                               │"
+"│2. W╭ Delete 4 items? ───────────────────────────────╮    │"
+"│3. C│1. Buy milk                                     │    │"
+"│4. B│2. Write the quarterly report for the team      │    │"
+"│    │3. Call mom                                     │    │"
+"│    │4. Book dentist                                 │    │"
+"│    │                                                │    │"
+"│    │               d delete   c cancel              │    │"
+"│    ╰────────────────────────────────────────────────╯    │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" DELETE   d confirm  c cancel                               "
