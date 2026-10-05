@@ -17,18 +17,28 @@ Press `?` at any time for a searchable list of every key.
 
 ## Install
 
-You need Rust 1.88 or newer. Install it with [rustup](https://rustup.rs) if you don't have it.
+**macOS and Linux:**
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Laurenz-Guevara/todoro/releases/latest/download/todoro-installer.sh | sh
+```
+
+**Windows** (PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/Laurenz-Guevara/todoro/releases/latest/download/todoro-installer.ps1 | iex"
+```
+
+Both put `todoro` in `~/.local/bin` and add it to your `PATH` if needed, so you may need to open a new terminal afterwards. Then run `todoro`.
+
+You can also download the program yourself from the [latest release](https://github.com/Laurenz-Guevara/todoro/releases/latest): there are builds for Linux and macOS (Intel and ARM) and Windows. Unpack it and put `todoro` (or `todoro.exe`) somewhere on your `PATH`.
+
+### From source
+
+With Rust 1.88 or newer (install it with [rustup](https://rustup.rs)):
 
 ```sh
 cargo install --git https://github.com/Laurenz-Guevara/todoro
-```
-
-Or from a local clone:
-
-```sh
-git clone https://github.com/Laurenz-Guevara/todoro
-cd todoro
-cargo install --path .
 ```
 
 This puts `todoro` in `~/.cargo/bin`, which rustup adds to your `PATH`.

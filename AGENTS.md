@@ -90,6 +90,17 @@ Todos are stored in `~/.local/share/todoro/todos.json` by default, and settings 
 
 To drive the real TUI, use a separate tmux server (`tmux -L todoro-test ...`) and target sessions with an exact match (`-t '=name:'`). The user runs their own tmux, and a plain `-t name` can prefix-match their windows and send keystrokes into them.
 
+## Releasing
+
+Releases are built by [dist](https://github.com/axodotdev/cargo-dist) in `.github/workflows/release.yml`, which runs when a version tag is pushed. It builds Linux and macOS (x86_64 and ARM) and Windows (x86_64), and publishes them to GitHub Releases with `curl | sh` and PowerShell installers.
+
+To release a new version, with the user's go-ahead:
+
+1. Set `version` in `Cargo.toml` (run `cargo build` so `Cargo.lock` updates too), and commit as `chore: release vX.Y.Z`.
+2. `git tag vX.Y.Z` and `git push origin main vX.Y.Z`. The tag must match the version.
+
+`dist-workspace.toml` holds dist's settings. Don't edit `release.yml` by hand: change the settings and run `dist generate` to regenerate it. `ci.yml` (tests on all three systems) is hand-written.
+
 ## Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org): `<type>[optional scope]: <description>`, with the description in lowercase imperative mood and no trailing period.
