@@ -66,8 +66,10 @@ pub struct App {
     /// The state when the notes screen was opened. Everything typed there is
     /// one change for the list's undo.
     notes_before: Option<State>,
-    /// First key of a two-key command (`gg`) waiting for its second key.
+    /// First key of a two-key command (`gg`, `yy`) waiting for its second key.
     pending: Option<char>,
+    /// The items last copied (`yy`) or deleted, for `p` and `P` to paste.
+    pub register: Vec<Item>,
 }
 
 impl App {
@@ -86,6 +88,7 @@ impl App {
             redo: Vec::new(),
             notes_before: None,
             pending: None,
+            register: Vec::new(),
         }
     }
 
@@ -179,6 +182,8 @@ impl App {
             Mode::ConfirmDelete => match key.code {
                 KeyCode::Char('d') => {
                     if let Some(slot) = self.slot(self.selected) {
+                        // Deleting keeps the item to paste, as in vim, so dd then p moves it.
+                        self.register = vec![self.store.items(slot.day)[slot.index].clone()];
                         self.store.remove(slot.day, slot.index)?;
                     }
                     self.clamp_selection();
@@ -259,12 +264,24 @@ impl App {
         let open = self.carried() + self.store.open_count(self.day);
         // Any other key cancels an unfinished two-key command, then does its
         // own thing, as in vim.
-        if let (Some('g'), KeyCode::Char('g')) = (self.pending.take(), code) {
-            self.selected = 0;
-            return Ok(());
+        match (self.pending.take(), code) {
+            (Some('g'), KeyCode::Char('g')) => {
+                self.selected = 0;
+                return Ok(());
+            }
+            (Some('y'), KeyCode::Char('y')) => {
+                if let Some(slot) = slot {
+                    self.register = vec![self.store.items(slot.day)[slot.index].clone()];
+                }
+                return Ok(());
+            }
+            _ => {}
         }
         match code {
-            KeyCode::Char('g') => self.pending = Some('g'),
+            KeyCode::Char('g' | 'y') => self.pending = Some(code.as_char().expect("a char key")),
+            // Paste below or above the cursor, like a and its opposite.
+            KeyCode::Char('p') => self.paste(if self.selected < open && len > 0 { self.selected + 1 } else { open })?,
+            KeyCode::Char('P') => self.paste(self.selected.min(open))?,
             KeyCode::Char('G') => self.selected = len.saturating_sub(1),
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.open_help(),
@@ -324,6 +341,18 @@ impl App {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Pastes the register at screen position `index` on the day on screen,
+    /// after any carried items, and selects the first pasted item.
+    fn paste(&mut self, index: usize) -> io::Result<()> {
+        if self.register.is_empty() {
+            return Ok(());
+        }
+        let carried = self.carried();
+        let index = self.store.insert_items(self.day, index.saturating_sub(carried), self.register.clone())?;
+        self.selected = carried + index;
         Ok(())
     }
 
@@ -1608,6 +1637,94 @@ mod tests {
         assert_eq!(app.day, today().succ_opt().unwrap());
         type_str(&mut app, "hu");
         assert!(!app.items()[0].done);
+    }
+
+    #[test]
+    fn yy_then_p_pastes_a_copy_below() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        app.store.set_notes(today(), 0, "notes".into()).unwrap();
+        type_str(&mut app, "!myyjp");
+        assert_eq!(items(&app), ["one", "two", "one"]);
+        assert_eq!(app.selected, 2);
+        let copy = &app.items()[2];
+        assert_eq!((copy.notes.as_str(), copy.pinned, copy.priority), ("notes", true, Some(crate::store::Priority::High)));
+        // The original is untouched.
+        assert_eq!(app.items()[0].notes, "notes");
+    }
+
+    #[test]
+    fn capital_p_pastes_above() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "jyyP");
+        assert_eq!(items(&app), ["one", "two", "two"]);
+        assert_eq!(app.selected, 1);
+        type_str(&mut app, "ggP");
+        assert_eq!(items(&app), ["two", "one", "two", "two"]);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn paste_works_on_another_day() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "yylp");
+        assert_eq!(items(&app), ["one"]);
+        assert_eq!(texts_on(&app, today()), ["one"]);
+        // And again, for as many copies as you like.
+        type_str(&mut app, "p");
+        assert_eq!(items(&app), ["one", "one"]);
+    }
+
+    #[test]
+    fn deleting_keeps_the_item_to_paste_so_dd_p_moves_it() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        app.store.set_notes(today(), 0, "notes".into()).unwrap();
+        type_str(&mut app, "ddlp");
+        assert_eq!(texts_on(&app, today()), ["two"]);
+        assert_eq!(items(&app), ["one"]);
+        assert_eq!(app.items()[0].notes, "notes");
+    }
+
+    #[test]
+    fn pasting_a_completed_item_adds_it_as_open() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "xjyyp");
+        // The copy goes to the open items, not after the completed one.
+        assert_eq!(items(&app), ["two", "one", "one"]);
+        assert!(!app.items()[1].done);
+        assert!(app.items()[2].done);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn paste_lands_after_carried_items_on_a_future_day() {
+        let (mut app, _dir) = app_with_future(&["pin a", "plain"], &[]);
+        type_str(&mut app, "jyylP");
+        assert_eq!(items(&app), ["pin a", "plain"]);
+        assert_eq!(app.carried(), 1);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn nothing_to_paste_does_nothing() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "pP");
+        assert_eq!(items(&app), ["one"]);
+    }
+
+    #[test]
+    fn a_single_y_is_cancelled_by_the_next_key() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "yjyp");
+        // y j moved down; y p pasted nothing because nothing was copied.
+        assert_eq!(items(&app), ["one", "two"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn u_undoes_a_paste() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "yypu");
+        assert_eq!(items(&app), ["one"]);
     }
 
     #[test]

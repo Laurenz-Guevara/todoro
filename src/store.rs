@@ -176,11 +176,18 @@ impl Store {
     }
 
     pub fn insert(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
+        self.insert_items(day, index, vec![Item { text, ..Item::default() }]).map(|_| ())
+    }
+
+    /// Inserts `items` at `index` as open items, keeping their notes, pin and
+    /// priority. Returns where the first one went.
+    pub fn insert_items(&mut self, day: NaiveDate, index: usize, items: Vec<Item>) -> io::Result<usize> {
         // New items are open, so they always go among the open ones.
         let index = index.min(self.open_count(day));
-        let items = self.days.entry(key(day)).or_default();
-        items.insert(index, Item { text, ..Item::default() });
-        self.save()
+        let day_items = self.days.entry(key(day)).or_default();
+        day_items.splice(index..index, items.into_iter().map(|item| Item { done: false, ..item }));
+        self.save()?;
+        Ok(index)
     }
 
     pub fn set_text(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
@@ -659,6 +666,25 @@ mod tests {
         let reloaded = Store::open(path).unwrap();
         let priorities: Vec<_> = reloaded.items(today()).iter().map(|item| item.priority).collect();
         assert_eq!(priorities, [Some(Priority::High), Some(Priority::Low), None]);
+    }
+
+    #[test]
+    fn insert_items_adds_open_copies_among_the_open_items() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "a".into()).unwrap();
+        store.insert(today(), 1, "b".into()).unwrap();
+        store.toggle_done(today(), 1).unwrap();
+        let copy = Item {
+            text: "copy".into(),
+            notes: "n".into(),
+            done: true,
+            pinned: true,
+            priority: Some(Priority::High),
+        };
+        assert_eq!(store.insert_items(today(), 9, vec![copy.clone(), copy.clone()]).unwrap(), 1);
+        assert_eq!(texts(&store, today()), ["a", "copy", "copy", "b"]);
+        assert_eq!(store.items(today())[1], Item { done: false, ..copy });
     }
 
     #[test]

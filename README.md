@@ -65,6 +65,8 @@ todoro
 | `m` | Pin or unpin the selected item, so it moves to the next day until done |
 | `!` | Triage the selected item: High, Medium, Low, then no priority again |
 | `d` | Delete the selected item (asks to confirm) |
+| `yy` | Copy the selected item |
+| `p` / `P` | Paste the copied (or last deleted) item below / above the cursor |
 | `Enter` | Open the selected item's notes |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `c` | Open the calendar |

@@ -27,6 +27,8 @@ pub const SECTIONS: &[Section] = &[
             ("m", "Pin / unpin: move to today until done"),
             ("!", "Triage: High, Medium, Low, then none"),
             ("d", "Delete the selected item"),
+            ("yy", "Copy the selected item"),
+            ("p / P", "Paste below / above (also after deleting)"),
             ("Enter", "Open the selected item's notes"),
             ("c", "Open the calendar"),
             ("s", "Search every day's items"),
