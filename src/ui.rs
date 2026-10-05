@@ -111,3 +111,72 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     area
 }
 
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::KeyCode;
+    use ratatui::Terminal;
+
+    use super::*;
+    use crate::test_util::{app_with, press, type_str};
+
+    fn render(app: &App) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+    }
+
+    #[test]
+    fn today_with_items() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom"]);
+        type_str(&mut app, "j");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn empty_day() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "l");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn numbers_are_padded_past_nine() {
+        let items: Vec<String> = (1..=10).map(|i| format!("item {i}")).collect();
+        let items: Vec<&str> = items.iter().map(String::as_str).collect();
+        let (mut app, _dir) = app_with(&items);
+        type_str(&mut app, "jjjjjjjjj");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn adding_an_item() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, "aWrite report");
+        let mut terminal = render(&app);
+        assert_snapshot!(terminal.backend());
+        // Border, "2. ", then the 12 typed characters.
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 12, 2));
+    }
+
+    #[test]
+    fn editing_with_the_cursor_mid_text() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "e");
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Left);
+        }
+        let mut terminal = render(&app);
+        assert_snapshot!(terminal.backend());
+        // Border, "1. ", then "Buy ".
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 4, 1));
+    }
+
+    #[test]
+    fn delete_popup() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report"]);
+        type_str(&mut app, "jd");
+        assert_snapshot!(render(&app).backend());
+    }
+}

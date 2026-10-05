@@ -1,5 +1,7 @@
 mod app;
 mod store;
+#[cfg(test)]
+mod test_util;
 mod ui;
 
 use std::io;

@@ -130,3 +130,210 @@ fn prev_boundary(text: &str, cursor: usize) -> usize {
 fn next_boundary(text: &str, cursor: usize) -> usize {
     text[cursor..].chars().next().map_or(cursor, |c| cursor + c.len_utf8())
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::test_util::{app_with, press, today, type_str};
+
+    fn items(app: &App) -> Vec<&str> {
+        app.items().iter().map(String::as_str).collect()
+    }
+
+    #[test]
+    fn starts_on_today_with_first_item_selected() {
+        let (app, _dir) = app_with(&["one", "two"]);
+        assert_eq!(app.day, today());
+        assert_eq!(app.selected, 0);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn h_and_l_switch_days_and_reset_selection() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        press(&mut app, KeyCode::Char('j'));
+        type_str(&mut app, "l");
+        assert_eq!(app.day, today().succ_opt().unwrap());
+        assert_eq!(app.selected, 0);
+        assert!(app.items().is_empty());
+        type_str(&mut app, "hh");
+        assert_eq!(app.day, today().pred_opt().unwrap());
+    }
+
+    #[test]
+    fn j_and_k_stay_within_the_list() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "k");
+        assert_eq!(app.selected, 0);
+        type_str(&mut app, "jjj");
+        assert_eq!(app.selected, 1);
+        type_str(&mut app, "k");
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn a_adds_below_the_cursor_and_selects_it() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "a");
+        type_str(&mut app, "new");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one", "new", "two"]);
+        assert_eq!(app.selected, 1);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn a_on_an_empty_day_adds_the_first_item() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "afirst");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(items(&app), ["first"]);
+    }
+
+    #[test]
+    fn insert_typing_hjkl_inserts_letters_instead_of_moving() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "ahjkld");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["hjkld"]);
+        assert_eq!(app.day, today());
+    }
+
+    #[test]
+    fn saving_trims_whitespace_and_discards_empty_items() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "a  padded  ");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "a   ");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["padded"]);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn d_then_c_cancels_the_delete() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "d");
+        assert!(matches!(app.mode, Mode::ConfirmDelete));
+        type_str(&mut app, "c");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["one"]);
+    }
+
+    #[test]
+    fn other_keys_do_not_dismiss_the_delete_popup() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "djkx");
+        assert!(matches!(app.mode, Mode::ConfirmDelete));
+    }
+
+    #[test]
+    fn d_then_d_deletes_the_selected_item() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "jdd");
+        assert_eq!(items(&app), ["one", "three"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn deleting_the_last_item_moves_the_selection_up() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "jdd");
+        assert_eq!(items(&app), ["one"]);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn d_on_an_empty_day_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "d");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn e_edits_the_selected_item_in_place() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "je!");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one", "two!"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn clearing_an_edited_item_asks_to_delete_it() {
+        let (mut app, _dir) = app_with(&["ab"]);
+        type_str(&mut app, "e");
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::ConfirmDelete));
+        // Cancelling keeps the original text.
+        type_str(&mut app, "c");
+        assert_eq!(items(&app), ["ab"]);
+    }
+
+    #[test]
+    fn cursor_moves_and_edits_inside_the_text() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "e");
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Left);
+        }
+        type_str(&mut app, "oat ");
+        press(&mut app, KeyCode::Home);
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Delete);
+        type_str(&mut app, "Get");
+        press(&mut app, KeyCode::End);
+        type_str(&mut app, "!");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["Get oat milk!"]);
+    }
+
+    #[test]
+    fn cursor_stops_at_both_ends_of_the_text() {
+        let (mut app, _dir) = app_with(&["ab"]);
+        type_str(&mut app, "e");
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Delete);
+        press(&mut app, KeyCode::Home);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Backspace);
+        type_str(&mut app, ">");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), [">ab"]);
+    }
+
+    #[test]
+    fn cursor_treats_multibyte_characters_as_one() {
+        let (mut app, _dir) = app_with(&["naïve"]);
+        type_str(&mut app, "e");
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Backspace);
+        type_str(&mut app, "é");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["naéve"]);
+    }
+
+    #[test]
+    fn q_quits_from_normal_mode_only() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "aq");
+        assert!(!app.quit);
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "q");
+        assert!(app.quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_any_mode() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "a");
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap();
+        assert!(app.quit);
+    }
+}

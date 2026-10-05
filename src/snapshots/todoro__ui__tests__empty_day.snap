@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: render(&app).backend()
+---
+"╭──────────────── Tuesday, October 6 2026 ─────────────────╮"
+"│          Nothing to do. Press a to add an item.          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" NORMAL   a add  e edit  d delete  q quit                   "

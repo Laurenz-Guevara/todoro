@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: render(&app).backend()
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│ 4. item 4                                                │"
+"│ 5. item 5                                                │"
+"│ 6. item 6                                                │"
+"│ 7. item 7                                                │"
+"│ 8. item 8                                                │"
+"│ 9. item 9                                                │"
+"│10. item 10                                               │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" NORMAL   a add  e edit  d delete  q quit                   "
