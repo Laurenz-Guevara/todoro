@@ -4,8 +4,8 @@ expression: render(&app).backend()
 ---
 "╭───────────── Monday, October 5 2026 (today) ─────────────╮"
 "│1. Buy milk                                               │"
-"│2. Write report                                           │"
-"│3. Call mom                                               │"
+"│2. Write report ≡                                         │"
+"│                                                          │"
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"

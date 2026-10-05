@@ -4,11 +4,49 @@ use std::io;
 use std::path::PathBuf;
 
 use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
+
+/// One todo entry. `notes` is longer free text shown only on the notes screen.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "RawItem", into = "RawItem")]
+pub struct Item {
+    pub text: String,
+    pub notes: String,
+}
+
+/// How an item is written to disk. Items without notes stay plain strings, so
+/// files from before notes existed load unchanged and remain readable by older
+/// versions until notes are added.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum RawItem {
+    Text(String),
+    Full { text: String, notes: String },
+}
+
+impl From<RawItem> for Item {
+    fn from(raw: RawItem) -> Self {
+        match raw {
+            RawItem::Text(text) => Item { text, notes: String::new() },
+            RawItem::Full { text, notes } => Item { text, notes },
+        }
+    }
+}
+
+impl From<Item> for RawItem {
+    fn from(item: Item) -> Self {
+        if item.notes.is_empty() {
+            RawItem::Text(item.text)
+        } else {
+            RawItem::Full { text: item.text, notes: item.notes }
+        }
+    }
+}
 
 /// Todo items keyed by day, persisted as JSON.
 pub struct Store {
     path: PathBuf,
-    days: BTreeMap<String, Vec<String>>,
+    days: BTreeMap<String, Vec<Item>>,
 }
 
 impl Store {
@@ -34,21 +72,32 @@ impl Store {
         Ok(Self { path, days })
     }
 
-    pub fn items(&self, day: NaiveDate) -> &[String] {
+    pub fn items(&self, day: NaiveDate) -> &[Item] {
         self.days.get(&key(day)).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub fn insert(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
         let items = self.days.entry(key(day)).or_default();
-        items.insert(index.min(items.len()), text);
+        items.insert(index.min(items.len()), Item { text, notes: String::new() });
         self.save()
     }
 
-    pub fn set(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
-        if let Some(item) = self.days.get_mut(&key(day)).and_then(|items| items.get_mut(index)) {
-            *item = text;
+    pub fn set_text(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
+        if let Some(item) = self.item_mut(day, index) {
+            item.text = text;
         }
         self.save()
+    }
+
+    pub fn set_notes(&mut self, day: NaiveDate, index: usize, notes: String) -> io::Result<()> {
+        if let Some(item) = self.item_mut(day, index) {
+            item.notes = notes;
+        }
+        self.save()
+    }
+
+    fn item_mut(&mut self, day: NaiveDate, index: usize) -> Option<&mut Item> {
+        self.days.get_mut(&key(day)).and_then(|items| items.get_mut(index))
     }
 
     pub fn remove(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
@@ -90,6 +139,10 @@ mod tests {
         (dir, path)
     }
 
+    fn texts(store: &Store, day: NaiveDate) -> Vec<&str> {
+        store.items(day).iter().map(|item| item.text.as_str()).collect()
+    }
+
     #[test]
     fn missing_file_is_an_empty_store() {
         let (_dir, path) = temp_path();
@@ -105,11 +158,14 @@ mod tests {
         store.insert(today(), 0, "one".into()).unwrap();
         store.insert(today(), 1, "two".into()).unwrap();
         store.insert(today(), 1, "middle".into()).unwrap();
-        store.set(today(), 0, "uno".into()).unwrap();
+        store.set_text(today(), 0, "uno".into()).unwrap();
+        store.set_notes(today(), 1, "line 1\nline 2".into()).unwrap();
         store.remove(today(), 2).unwrap();
 
         let reloaded = Store::open(path).unwrap();
-        assert_eq!(reloaded.items(today()), ["uno", "middle"]);
+        assert_eq!(texts(&reloaded, today()), ["uno", "middle"]);
+        assert_eq!(reloaded.items(today())[0].notes, "");
+        assert_eq!(reloaded.items(today())[1].notes, "line 1\nline 2");
     }
 
     #[test]
@@ -119,8 +175,8 @@ mod tests {
         let mut store = Store::open(path).unwrap();
         store.insert(today(), 0, "today".into()).unwrap();
         store.insert(tomorrow, 0, "tomorrow".into()).unwrap();
-        assert_eq!(store.items(today()), ["today"]);
-        assert_eq!(store.items(tomorrow), ["tomorrow"]);
+        assert_eq!(texts(&store, today()), ["today"]);
+        assert_eq!(texts(&store, tomorrow), ["tomorrow"]);
     }
 
     #[test]
@@ -130,6 +186,40 @@ mod tests {
         store.insert(today(), 0, "one".into()).unwrap();
         let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         assert_eq!(json, serde_json::json!({ "2026-10-05": ["one"] }));
+    }
+
+    #[test]
+    fn items_with_notes_are_saved_as_objects_and_others_as_strings() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "plain".into()).unwrap();
+        store.insert(today(), 1, "detailed".into()).unwrap();
+        store.set_notes(today(), 1, "some notes".into()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "2026-10-05": ["plain", { "text": "detailed", "notes": "some notes" }] })
+        );
+    }
+
+    #[test]
+    fn clearing_notes_turns_an_item_back_into_a_string() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "one".into()).unwrap();
+        store.set_notes(today(), 0, "notes".into()).unwrap();
+        store.set_notes(today(), 0, String::new()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(json, serde_json::json!({ "2026-10-05": ["one"] }));
+    }
+
+    #[test]
+    fn files_from_before_notes_still_load() {
+        let (_dir, path) = temp_path();
+        fs::write(&path, r#"{ "2026-10-05": ["Buy milk", "Write report"] }"#).unwrap();
+        let store = Store::open(path).unwrap();
+        assert_eq!(texts(&store, today()), ["Buy milk", "Write report"]);
+        assert!(store.items(today()).iter().all(|item| item.notes.is_empty()));
     }
 
     #[test]
@@ -147,9 +237,10 @@ mod tests {
         let mut store = Store::open(path).unwrap();
         store.insert(today(), 0, "one".into()).unwrap();
         store.insert(today(), 99, "two".into()).unwrap();
-        store.set(today(), 99, "nope".into()).unwrap();
+        store.set_text(today(), 99, "nope".into()).unwrap();
+        store.set_notes(today(), 99, "nope".into()).unwrap();
         store.remove(today(), 99).unwrap();
-        assert_eq!(store.items(today()), ["one", "two"]);
+        assert_eq!(texts(&store, today()), ["one", "two"]);
     }
 
     #[test]

@@ -1,15 +1,19 @@
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, Mode};
+use crate::notes::NotesEditor;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [main, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
 
-    draw_list(frame, app, main);
+    match &app.mode {
+        Mode::Notes(editor) => draw_notes(frame, app, editor, main),
+        _ => draw_list(frame, app, main),
+    }
     draw_status(frame, app, status);
 
     if let Mode::ConfirmDelete = app.mode {
@@ -31,10 +35,12 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 
     // The rows to show, with the item being typed in place of (or inserted
     // among) the saved ones, so the numbering below it is already right.
-    let mut rows: Vec<(&str, Style)> = app.items().iter().map(|text| (text.as_str(), Style::new())).collect();
+    let mut rows: Vec<(&str, bool, Style)> =
+        app.items().iter().map(|item| (item.text.as_str(), !item.notes.is_empty(), Style::new())).collect();
     let mut state = ListState::default();
     if let Mode::Insert { index, text, editing, .. } = &app.mode {
-        let row = (text.as_str(), Style::new().fg(Color::Yellow));
+        let has_notes = *editing && !app.items()[*index].notes.is_empty();
+        let row = (text.as_str(), has_notes, Style::new().fg(Color::Yellow));
         if *editing {
             rows[*index] = row;
         } else {
@@ -51,7 +57,13 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let rows: Vec<ListItem> = rows
         .into_iter()
         .enumerate()
-        .map(|(i, (text, style))| ListItem::new(Line::from(vec![number(i + 1), text.to_string().into()])).style(style))
+        .map(|(i, (text, has_notes, style))| {
+            let mut line = Line::from(vec![number(i + 1), text.to_string().into()]);
+            if has_notes {
+                line.push_span(NOTES_MARKER.dim());
+            }
+            ListItem::new(line).style(style)
+        })
         .collect();
 
     let inner = block.inner(area);
@@ -74,12 +86,28 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+/// Shown after an item on the main list when it has notes.
+const NOTES_MARKER: &str = " ≡";
+
+fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
+    let title = format!(" {}. {} ", app.selected + 1, app.items()[app.selected].text);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(Line::from(title.bold()).centered())
+        .title_bottom(Line::from(" esc/q back to list ").centered().dim())
+        .padding(Padding::horizontal(1));
+    frame.render_widget(&block, area);
+    frame.render_widget(&editor.textarea, block.inner(area));
+}
+
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let (mode, color, hints) = match app.mode {
-        Mode::Normal => ("NORMAL", Color::Blue, "a add  e edit  d delete  q quit"),
+    let (mode, color, hints) = match &app.mode {
+        Mode::Normal => ("NORMAL", Color::Blue, "a add  e edit  d delete  enter notes  q quit"),
         Mode::Insert { editing: false, .. } => ("INSERT", Color::Green, "←/→ move  enter/esc save  (empty discards)"),
         Mode::Insert { editing: true, .. } => ("INSERT", Color::Green, "←/→ move  enter/esc save  (empty asks to delete)"),
         Mode::ConfirmDelete => ("DELETE", Color::Red, "d confirm  c cancel"),
+        Mode::Notes(editor) if editor.insert => ("INSERT", Color::Green, "esc normal mode"),
+        Mode::Notes(_) => ("NORMAL", Color::Blue, "i/a/o insert  x delete  dd delete line  u undo"),
     };
     let line = Line::from(vec![
         format!(" {mode} ").bold().fg(Color::Black).bg(color),
@@ -90,7 +118,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_confirm(frame: &mut Frame, app: &App) {
-    let text = app.items().get(app.selected).map(String::as_str).unwrap_or_default();
+    let text = app.items().get(app.selected).map(|item| item.text.as_str()).unwrap_or_default();
     let area = centered(frame.area(), 50, 5);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -171,6 +199,37 @@ mod tests {
         assert_snapshot!(terminal.backend());
         // Border, "1. ", then "Buy ".
         assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 4, 1));
+    }
+
+    #[test]
+    fn items_with_notes_are_marked() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report"]);
+        app.store.set_notes(app.day, 1, "Ask for Q3 numbers".into()).unwrap();
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn notes_screen() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report"]);
+        app.store.set_notes(app.day, 1, "Draft intro by Wed\n- ask for Q3 numbers\n- charts".into()).unwrap();
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn empty_notes_screen() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        press(&mut app, KeyCode::Enter);
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn writing_notes_in_insert_mode() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "ioat milk");
+        assert_snapshot!(render(&app).backend());
     }
 
     #[test]

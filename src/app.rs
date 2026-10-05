@@ -3,7 +3,8 @@ use std::io;
 use chrono::{Days, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::store::Store;
+use crate::notes::{Action, NotesEditor};
+use crate::store::{Item, Store};
 
 pub enum Mode {
     Normal,
@@ -12,6 +13,8 @@ pub enum Mode {
     /// into `text`, always on a char boundary.
     Insert { index: usize, text: String, cursor: usize, editing: bool },
     ConfirmDelete,
+    /// The notes screen for the selected item.
+    Notes(Box<NotesEditor>),
 }
 
 pub struct App {
@@ -35,7 +38,7 @@ impl App {
         }
     }
 
-    pub fn items(&self) -> &[String] {
+    pub fn items(&self) -> &[Item] {
         self.store.items(self.day)
     }
 
@@ -52,7 +55,7 @@ impl App {
                     self.mode = Mode::Normal;
                     match (editing, text.is_empty()) {
                         (true, true) => self.mode = Mode::ConfirmDelete,
-                        (true, false) => self.store.set(self.day, index, text)?,
+                        (true, false) => self.store.set_text(self.day, index, text)?,
                         (false, true) => {}
                         (false, false) => {
                             self.store.insert(self.day, index, text)?;
@@ -86,6 +89,17 @@ impl App {
                 KeyCode::Char('c') | KeyCode::Esc => self.mode = Mode::Normal,
                 _ => {}
             },
+            Mode::Notes(editor) => {
+                let action = editor.handle_key(key);
+                // Save on every change, like the rest of the app.
+                let notes = editor.notes();
+                if notes != self.items()[self.selected].notes {
+                    self.store.set_notes(self.day, self.selected, notes)?;
+                }
+                if action == Action::Close {
+                    self.mode = Mode::Normal;
+                }
+            }
         }
         Ok(())
     }
@@ -104,11 +118,15 @@ impl App {
                 self.mode = Mode::Insert { index, text: String::new(), cursor: 0, editing: false };
             }
             KeyCode::Char('e') if len > 0 => {
-                let text = self.items()[self.selected].clone();
+                let text = self.items()[self.selected].text.clone();
                 let cursor = text.len();
                 self.mode = Mode::Insert { index: self.selected, text, cursor, editing: true };
             }
             KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete,
+            KeyCode::Enter if len > 0 => {
+                let editor = NotesEditor::new(&self.items()[self.selected].notes);
+                self.mode = Mode::Notes(Box::new(editor));
+            }
             _ => {}
         }
     }
@@ -139,7 +157,7 @@ mod tests {
     use crate::test_util::{app_with, press, today, type_str};
 
     fn items(app: &App) -> Vec<&str> {
-        app.items().iter().map(String::as_str).collect()
+        app.items().iter().map(|item| item.text.as_str()).collect()
     }
 
     #[test]
@@ -317,6 +335,87 @@ mod tests {
         type_str(&mut app, "é");
         press(&mut app, KeyCode::Enter);
         assert_eq!(items(&app), ["naéve"]);
+    }
+
+    #[test]
+    fn enter_opens_the_notes_for_the_selected_item() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Notes(_)));
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn enter_on_an_empty_day_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn notes_are_saved_as_you_type() {
+        let (mut app, dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "idetails");
+        // Still in insert mode, but already on disk.
+        let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
+        assert_eq!(reloaded.items(today())[1].notes, "details");
+        assert_eq!(reloaded.items(today())[0].notes, "");
+    }
+
+    #[test]
+    fn leaving_notes_returns_to_the_list_with_the_same_selection() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "inote");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Notes(_)));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.items()[1].notes, "note");
+    }
+
+    #[test]
+    fn reopening_notes_shows_what_was_written() {
+        let (mut app, _dir) = app_with(&["one"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "ifirst");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "q");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "A second");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "q");
+        assert_eq!(app.items()[0].notes, "first second");
+        assert!(!app.quit);
+    }
+
+    #[test]
+    fn editing_an_item_keeps_its_notes() {
+        let (mut app, _dir) = app_with(&["one"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "inote");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "e!");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[0].text, "one!");
+        assert_eq!(app.items()[0].notes, "note");
+    }
+
+    #[test]
+    fn ctrl_c_in_notes_quits_with_the_notes_saved() {
+        let (mut app, dir) = app_with(&["one"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "iunsaved?");
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap();
+        assert!(app.quit);
+        let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
+        assert_eq!(reloaded.items(today())[0].notes, "unsaved?");
     }
 
     #[test]

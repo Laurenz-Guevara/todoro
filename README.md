@@ -1,6 +1,6 @@
 # todoro
 
-A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`.
+A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Any item can have longer notes, which you open with `Enter`.
 
 ```
 ╭───────────── Monday, October 5 2026 (today) ─────────────╮
@@ -45,7 +45,10 @@ todoro
 | `a` | Add an item below the cursor |
 | `e` | Edit the selected item |
 | `d` | Delete the selected item (asks to confirm) |
+| `Enter` | Open the selected item's notes |
 | `q` | Quit |
+
+Items that have notes are marked with `≡`.
 
 ### Insert mode
 
@@ -60,6 +63,28 @@ Adding or editing an item puts you in insert mode.
 
 Saving a new item with no text discards it. Clearing all the text from an existing item and saving asks whether to delete it.
 
+### Notes
+
+`Enter` on an item opens its notes: free text that isn't shown on the main list. The notes screen has its own small vim-style editor and saves as you type.
+
+In normal mode:
+
+| Key | Action |
+|---|---|
+| `h` `j` `k` `l` | Move |
+| `w` / `b` / `e` | Next word / previous word / end of word |
+| `0` / `$` | Start / end of the line |
+| `gg` / `G` | First / last line |
+| `i` / `a` | Insert before / after the cursor |
+| `I` / `A` | Insert at the start / end of the line |
+| `o` / `O` | Open a new line below / above |
+| `x` | Delete the character under the cursor |
+| `dd` | Delete the line |
+| `u` / `Ctrl+R` | Undo / redo |
+| `Esc` / `q` | Back to the list |
+
+In insert mode, type as normal (`Enter` starts a new line) and press `Esc` to go back to normal mode.
+
 ### Delete popup
 
 Press `d` to delete the item, or `c` (or `Esc`) to cancel.
@@ -68,7 +93,7 @@ Press `d` to delete the item, or `c` (or `Esc`) to cancel.
 
 ## Data
 
-Todos are saved after every change, as JSON grouped by date:
+Todos are saved after every change, as JSON grouped by date. Items without notes are plain strings, and items with notes are `{ "text": ..., "notes": ... }`:
 
 | OS | Location |
 |---|---|

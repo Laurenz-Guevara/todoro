@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: render(&app).backend()
+---
+"╭──────────────────── 2. Write report ─────────────────────╮"
+"│ Draft intro by Wed                                       │"
+"│ - ask for Q3 numbers                                     │"
+"│ - charts                                                 │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰─────────────────── esc/q back to list ───────────────────╯"
+" NORMAL   i/a/o insert  x delete  dd delete line  u undo    "
