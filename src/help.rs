@@ -18,6 +18,7 @@ pub const SECTIONS: &[Section] = &[
             ("h / l", "Previous / next day"),
             ("j / k", "Move down / up"),
             ("J / K", "Move the item down / up the list"),
+            ("> / <", "Move the item to the next / previous day"),
             ("a", "Add an item below the cursor"),
             ("e", "Edit the selected item"),
             ("x", "Mark the selected item done / not done"),

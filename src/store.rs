@@ -175,6 +175,25 @@ impl Store {
         self.save()
     }
 
+    /// Moves an item to another day, where it goes at the boundary between the
+    /// open and completed items, like `toggle_done`. Returns its new index.
+    pub fn move_to(&mut self, day: NaiveDate, index: usize, to: NaiveDate) -> io::Result<Option<usize>> {
+        let from = key(day);
+        let Some(items) = self.days.get_mut(&from) else { return Ok(None) };
+        if index >= items.len() {
+            return Ok(None);
+        }
+        let item = items.remove(index);
+        if items.is_empty() {
+            self.days.remove(&from);
+        }
+        let items = self.days.entry(key(to)).or_default();
+        let boundary = items.iter().take_while(|item| !item.done).count();
+        items.insert(boundary, item);
+        self.save()?;
+        Ok(Some(boundary))
+    }
+
     /// Swaps two items on `day` if both are open or both completed, so the
     /// open items always stay above the completed ones. Returns whether it did.
     pub fn swap(&mut self, day: NaiveDate, a: usize, b: usize) -> io::Result<bool> {
@@ -512,6 +531,29 @@ mod tests {
         assert!(!store.swap(today(), 3, 4).unwrap());
         assert!(!store.swap(day(1), 0, 1).unwrap());
         assert_eq!(texts(&Store::open(path).unwrap(), today()), ["b", "a", "d", "c"]);
+    }
+
+    #[test]
+    fn move_to_puts_the_item_at_the_boundary_of_the_other_day() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "open".into()).unwrap();
+        store.insert(today(), 1, "done".into()).unwrap();
+        store.set_notes(today(), 0, "notes".into()).unwrap();
+        store.toggle_done(today(), 1).unwrap();
+        store.insert(day(1), 0, "t1".into()).unwrap();
+        store.insert(day(1), 1, "t2".into()).unwrap();
+        store.toggle_done(day(1), 1).unwrap();
+        // Tomorrow: ["t1", "t2" (done)].
+        assert_eq!(store.move_to(today(), 0, day(1)).unwrap(), Some(1));
+        assert_eq!(store.move_to(today(), 0, day(1)).unwrap(), Some(2));
+        assert_eq!(texts(&store, day(1)), ["t1", "open", "done", "t2"]);
+        assert_eq!(store.items(day(1))[1].notes, "notes");
+        assert!(store.items(day(1))[2].done);
+        // Today is now empty and gone from the file.
+        assert!(store.items(today()).is_empty());
+        assert!(!fs::read_to_string(&path).unwrap().contains("2026-10-05"));
+        assert_eq!(store.move_to(today(), 0, day(1)).unwrap(), None);
     }
 
     #[test]

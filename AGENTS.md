@@ -24,7 +24,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 ## Keybindings
 
-Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `?` help, `q` quit.
+Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `>`/`<` move the item to the day after/before the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `?` help, `q` quit.
 
 Insert mode: type to insert at the cursor, `←`/`→`/`Home`/`End` move, `Backspace`/`Delete` remove, `Enter`/`Esc` save. Saving an empty new item discards it. Saving an edited item as empty opens the delete popup.
 
