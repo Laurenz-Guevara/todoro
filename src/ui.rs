@@ -29,29 +29,30 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .title(Line::from(title).centered())
         .title_bottom(Line::from(" h ← prev day · k ↑ up · j ↓ down · next day → l ").centered().dim());
 
-    let items = app.items();
-    // Pad numbers so text lines up even past item 9.
-    let width = (items.len() + 1).to_string().len();
-    let number = |n: usize| Span::styled(format!("{n:>width$}. "), Style::new().fg(Color::DarkGray));
-
-    let mut rows: Vec<ListItem> = items
-        .iter()
-        .enumerate()
-        .map(|(i, text)| ListItem::new(Line::from(vec![number(i + 1), text.clone().into()])))
-        .collect();
-
+    // The rows to show, with the item being typed in place of (or inserted
+    // among) the saved ones, so the numbering below it is already right.
+    let mut rows: Vec<(&str, Style)> = app.items().iter().map(|text| (text.as_str(), Style::new())).collect();
     let mut state = ListState::default();
     if let Mode::Insert { index, text, editing, .. } = &app.mode {
-        let row = ListItem::new(Line::from(vec![number(index + 1), text.clone().into()])).fg(Color::Yellow);
+        let row = (text.as_str(), Style::new().fg(Color::Yellow));
         if *editing {
             rows[*index] = row;
         } else {
             rows.insert(*index, row);
         }
         state.select(Some(*index));
-    } else if !items.is_empty() {
+    } else if !rows.is_empty() {
         state.select(Some(app.selected));
     }
+
+    // Pad numbers so text lines up once there are 10 or more items.
+    let width = rows.len().to_string().len();
+    let number = |n: usize| Span::styled(format!("{n:>width$}. "), Style::new().fg(Color::DarkGray));
+    let rows: Vec<ListItem> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(i, (text, style))| ListItem::new(Line::from(vec![number(i + 1), text.to_string().into()])).style(style))
+        .collect();
 
     let inner = block.inner(area);
     if rows.is_empty() {
@@ -109,3 +110,4 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let [area] = Layout::vertical([Constraint::Length(height)]).flex(Flex::Center).areas(area);
     area
 }
+
