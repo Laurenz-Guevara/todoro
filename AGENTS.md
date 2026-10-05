@@ -6,7 +6,8 @@ A vim-style terminal todo app in Rust with [ratatui](https://ratatui.rs). It run
 
 ```sh
 cargo build                 # build
-cargo clippy                # lint; keep it warning-free
+cargo test                  # run all tests; keep them passing
+cargo clippy --all-targets  # lint, including tests; keep it warning-free
 cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 ```
 
@@ -16,6 +17,8 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/app.rs`: app state, modes (`Normal`, `Insert`, `ConfirmDelete`) and key handling
 - `src/ui.rs`: all rendering (list, status bar, delete popup)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
+- `src/test_util.rs`: helpers shared by the tests
+- `src/snapshots/`: saved screen snapshots for the UI tests
 
 ## Keybindings
 
@@ -31,11 +34,31 @@ Keep new bindings vim-like. When you add or change one, update the hints in `src
 - `Store` saves after every change by writing a temp file and renaming it. Don't defer or batch saves.
 - `Insert { cursor }` is a byte offset that must stay on a char boundary. Use `prev_boundary`/`next_boundary` in `app.rs`.
 
-## Data and testing
+## Tests
 
-Todos are stored in `~/.local/share/todoro/todos.json` by default. Set `TODORO_FILE` to use another file, and always do this when testing so the user's real data is never touched.
+Every new feature or bug fix comes with tests in the same commit. Tests live in a `#[cfg(test)] mod tests` at the bottom of the file they cover:
 
-To drive the TUI in tests, use a separate tmux server (`tmux -L todoro-test ...`) and target sessions with an exact match (`-t '=name:'`). The user runs their own tmux, and a plain `-t name` can prefix-match their windows and send keystrokes into them.
+- `app.rs`: key handling. Build an app with `test_util::app_with(&[...])` and send keys with `press` and `type_str`. Cover the behavior, edge cases (empty list, first/last item, multibyte text) and that keys meant for one mode do nothing in the others.
+- `store.rs`: persistence, always against a temporary file.
+- `ui.rs`: screen snapshots with [insta](https://insta.rs). Add one for any new screen or popup.
+
+Tests run on a fixed date (`test_util::today()`, 2026-10-05) and must never read the clock, the real data file or `TODORO_FILE`.
+
+### Snapshots
+
+A snapshot test draws the UI into memory and compares it with the saved copy in `src/snapshots/`. When a change to the UI is intended, the test fails and prints a diff. To accept it:
+
+1. Read the diff and check that every changed line is meant to change.
+2. Rerun with `INSTA_UPDATE=always cargo test` to overwrite the saved copies, or use `cargo insta review` if `cargo-insta` is installed.
+3. Read the new `.snap` files before committing. A snapshot only records what the code drew, so a wrong one locks a bug in.
+
+Never update snapshots just to make a failing test pass without reading the diff.
+
+## Data and manual testing
+
+Todos are stored in `~/.local/share/todoro/todos.json` by default. Set `TODORO_FILE` to use another file, and always do this when running the app to test it so the user's real data is never touched.
+
+To drive the real TUI, use a separate tmux server (`tmux -L todoro-test ...`) and target sessions with an exact match (`-t '=name:'`). The user runs their own tmux, and a plain `-t name` can prefix-match their windows and send keystrokes into them.
 
 ## Commits
 
