@@ -71,10 +71,12 @@ impl App {
         }
     }
 
-    /// Every item shown for the current day, in screen order. A future day also
-    /// shows the pinned items that will have moved to it by then, first.
+    /// Every item shown for the current day, in screen order. Today and future
+    /// days also show, first, the pinned items from earlier days that will have
+    /// moved to them by then. Usually startup has already moved them to today,
+    /// but one can land on a past day mid-session, e.g. moved there with `<`.
     pub fn slots(&self) -> Vec<Slot> {
-        let mut slots: Vec<Slot> = if self.day > self.today {
+        let mut slots: Vec<Slot> = if self.day >= self.today {
             self.store.pinned_before(self.day).into_iter().map(|(day, index)| Slot { day, index }).collect()
         } else {
             Vec::new()
@@ -1155,6 +1157,34 @@ mod tests {
             type_str(&mut app, "p");
         }
         assert_eq!(app.undo.len(), UNDO_LIMIT);
+    }
+
+    #[test]
+    fn a_pinned_item_moved_to_yesterday_still_shows_today_and_after() {
+        let (mut app, _dir) = app_with(&["pin a", "plain"]);
+        app.store.toggle_pinned(today(), 0).unwrap();
+        type_str(&mut app, "<");
+        assert_eq!(app.day, today().pred_opt().unwrap());
+        assert_eq!(items(&app), ["pin a"]);
+        type_str(&mut app, "l");
+        assert_eq!(items(&app), ["pin a", "plain"]);
+        assert_eq!(app.carried(), 1);
+        type_str(&mut app, "l");
+        assert_eq!(items(&app), ["pin a"]);
+    }
+
+    #[test]
+    fn pinning_an_item_on_a_past_day_shows_it_today() {
+        let (mut app, _dir) = app_with(&["plain"]);
+        let yesterday = today().pred_opt().unwrap();
+        app.store.insert(yesterday, 0, "old".into()).unwrap();
+        type_str(&mut app, "hpl");
+        assert_eq!(items(&app), ["old", "plain"]);
+        // Unpinning it from today sends it back to its own day only.
+        type_str(&mut app, "p");
+        assert_eq!(items(&app), ["plain"]);
+        type_str(&mut app, "h");
+        assert_eq!(items(&app), ["old"]);
     }
 
     #[test]
