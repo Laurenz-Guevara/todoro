@@ -18,6 +18,8 @@ pub struct NotesEditor {
     /// Text deleted or copied, for `p` and `P` to paste. The app keeps it
     /// between notes screens, so lines can move from one item's notes to another's.
     pub register: Option<Register>,
+    /// Where a `v` selection started, while selecting.
+    pub visual: Option<(usize, usize)>,
     /// Undo history, kept here rather than in the text area so that every
     /// command (and a whole visit to insert mode) is exactly one step.
     undo: Vec<Snapshot>,
@@ -59,6 +61,7 @@ impl NotesEditor {
             count: None,
             command: None,
             register: None,
+            visual: None,
             undo: Vec::new(),
             redo: Vec::new(),
             insert_before: None,
@@ -151,12 +154,12 @@ impl NotesEditor {
 
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('u') if !ctrl => {
+            KeyCode::Char('u') if !ctrl && self.visual.is_none() => {
                 self.pending = None;
                 self.undo();
                 return Action::Stay;
             }
-            KeyCode::Char('r') if ctrl => {
+            KeyCode::Char('r') if ctrl && self.visual.is_none() => {
                 self.pending = None;
                 self.redo();
                 return Action::Stay;
@@ -176,6 +179,27 @@ impl NotesEditor {
     }
 
     fn normal_key(&mut self, key: KeyEvent, ctrl: bool) -> Action {
+        let Some(anchor) = self.visual else { return self.command_key(key, ctrl) };
+        // While selecting, motions extend the selection, y copies it and d or x
+        // cuts it. Other commands do nothing until the selection ends.
+        let action = match key.code {
+            KeyCode::Esc | KeyCode::Char('v') => {
+                self.end_visual();
+                Action::Stay
+            }
+            KeyCode::Char('y') if !ctrl => self.yank_selection(anchor),
+            KeyCode::Char('d' | 'x') if !ctrl => self.cut_selection(anchor),
+            KeyCode::Char(c) if c.is_ascii_digit() || "hjklwbe$_^Gg".contains(c) => self.command_key(key, ctrl),
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => self.command_key(key, ctrl),
+            _ => Action::Stay,
+        };
+        if self.visual.is_some() {
+            self.show_selection(anchor);
+        }
+        action
+    }
+
+    fn command_key(&mut self, key: KeyEvent, ctrl: bool) -> Action {
         let KeyCode::Char(c) = key.code else {
             self.pending = None;
             let times = self.count.take().unwrap_or(1);
@@ -216,6 +240,12 @@ impl NotesEditor {
             }
             (_, ':') => {
                 self.command = Some(LineInput::default());
+                Action::Stay
+            }
+            (_, 'v') => {
+                let cursor = self.textarea.cursor();
+                self.visual = Some((cursor.0, cursor.1));
+                self.show_selection((cursor.0, cursor.1));
                 Action::Stay
             }
             (_, 'q') => Action::Close,
@@ -290,6 +320,67 @@ impl NotesEditor {
         let row = line.saturating_sub(1).min(self.textarea.lines().len() - 1);
         self.textarea.move_cursor(CursorMove::Jump(row as u16, 0));
         self.first_non_blank()
+    }
+
+    /// Highlights from `anchor` to the cursor, including the characters at
+    /// both ends as vim does (the cursor itself covers the one under it).
+    fn show_selection(&mut self, anchor: (usize, usize)) {
+        let cursor = self.textarea.cursor();
+        let cursor = (cursor.0, cursor.1);
+        let start = if cursor < anchor { (anchor.0, anchor.1 + 1) } else { anchor };
+        self.textarea.cancel_selection();
+        self.textarea.move_cursor(CursorMove::Jump(start.0 as u16, start.1 as u16));
+        self.textarea.start_selection();
+        self.textarea.move_cursor(CursorMove::Jump(cursor.0 as u16, cursor.1 as u16));
+    }
+
+    fn end_visual(&mut self) {
+        self.textarea.cancel_selection();
+        self.visual = None;
+    }
+
+    /// The selection's first and last characters, in order.
+    fn selection(&self, anchor: (usize, usize)) -> ((usize, usize), (usize, usize)) {
+        let cursor = self.textarea.cursor();
+        let cursor = (cursor.0, cursor.1);
+        (anchor.min(cursor), anchor.max(cursor))
+    }
+
+    /// The selected text, from the first to the last character inclusive.
+    fn selected_text(&self, anchor: (usize, usize)) -> String {
+        let ((r1, c1), (r2, c2)) = self.selection(anchor);
+        let lines = self.textarea.lines();
+        (r1..=r2)
+            .map(|row| {
+                let chars = lines[row].chars();
+                let from = if row == r1 { c1 } else { 0 };
+                let to = if row == r2 { c2 + 1 } else { usize::MAX };
+                chars.skip(from).take(to.saturating_sub(from)).collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Copies the selection to paste, and ends it with the cursor at its start.
+    fn yank_selection(&mut self, anchor: (usize, usize)) -> Action {
+        self.register = Some(Register { text: self.selected_text(anchor), linewise: false });
+        let (start, _) = self.selection(anchor);
+        self.end_visual();
+        self.textarea.move_cursor(CursorMove::Jump(start.0 as u16, start.1 as u16));
+        Action::Stay
+    }
+
+    /// Cuts the selection, keeping it to paste.
+    fn cut_selection(&mut self, anchor: (usize, usize)) -> Action {
+        self.register = Some(Register { text: self.selected_text(anchor), linewise: false });
+        let ((r1, c1), (r2, c2)) = self.selection(anchor);
+        let mut lines = self.textarea.lines().to_vec();
+        let before: String = lines[r1].chars().take(c1).collect();
+        let after: String = lines[r2].chars().skip(c2 + 1).collect();
+        lines.splice(r1..=r2, [before + &after]);
+        self.visual = None;
+        self.set_lines(lines, (r1, c1));
+        Action::Stay
     }
 
     /// Moves the cursor's line `by` lines down (or up), as far as it can go,
@@ -841,6 +932,101 @@ mod tests {
         assert_eq!(ed.textarea.lines(), [""]);
         send(&mut ed, "p");
         assert_eq!(ed.textarea.lines(), ["", "one", "two"]);
+    }
+
+    fn register(ed: &NotesEditor) -> (&str, bool) {
+        let register = ed.register.as_ref().expect("something copied");
+        (register.text.as_str(), register.linewise)
+    }
+
+    #[test]
+    fn v_selects_and_y_copies_including_both_ends() {
+        let mut ed = editor("hello world");
+        send(&mut ed, "wve");
+        assert!(ed.visual.is_some());
+        send(&mut ed, "y");
+        assert!(ed.visual.is_none());
+        assert_eq!(register(&ed), ("world", false));
+        assert_eq!(cursor(&ed), (0, 6));
+        assert_eq!(ed.notes(), "hello world");
+    }
+
+    #[test]
+    fn selecting_backwards_includes_where_it_started() {
+        let mut ed = editor("hello world");
+        send(&mut ed, "$v4hy");
+        assert_eq!(register(&ed), ("world", false));
+        assert_eq!(cursor(&ed), (0, 6));
+    }
+
+    #[test]
+    fn d_or_x_cuts_the_selection_across_lines() {
+        let mut ed = editor("one two\nthree four");
+        // j keeps the column, so the selection ends on the "e" of "three".
+        send(&mut ed, "wvjd");
+        assert_eq!(ed.notes(), "one  four");
+        assert_eq!(register(&ed), ("two\nthree", false));
+        assert_eq!(cursor(&ed), (0, 4));
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "one two\nthree four");
+        // Undo left the cursor where it was before the cut: on the "e".
+        send(&mut ed, "vx");
+        assert_eq!(register(&ed).0, "e");
+    }
+
+    #[test]
+    fn copied_text_pastes_after_or_at_the_cursor() {
+        let mut ed = editor("ab");
+        send(&mut ed, "vy");
+        // "a" copied; p puts it after the cursor's character.
+        send(&mut ed, "p");
+        assert_eq!(ed.notes(), "aab");
+        assert_eq!(cursor(&ed), (0, 1));
+        send(&mut ed, "$P");
+        assert_eq!(ed.notes(), "aaab");
+        assert_eq!(cursor(&ed), (0, 2));
+        send(&mut ed, "02p");
+        assert_eq!(ed.notes(), "aaaaab");
+    }
+
+    #[test]
+    fn copied_text_spanning_lines_pastes_inside_a_line() {
+        let mut ed = editor("ab\ncd\nXY");
+        send(&mut ed, "lvjy");
+        assert_eq!(register(&ed), ("b\ncd", false));
+        send(&mut ed, "Gp");
+        assert_eq!(ed.notes(), "ab\ncd\nXb\ncdY");
+        assert_eq!(cursor(&ed), (3, 1));
+    }
+
+    #[test]
+    fn esc_or_v_ends_the_selection_without_closing() {
+        let mut ed = editor("abc");
+        assert_eq!(send(&mut ed, "vl<esc>"), Action::Stay);
+        assert!(ed.visual.is_none());
+        send(&mut ed, "vv");
+        assert!(ed.visual.is_none());
+        assert_eq!(send(&mut ed, "<esc>"), Action::Close);
+    }
+
+    #[test]
+    fn other_commands_do_nothing_while_selecting() {
+        let mut ed = editor("abc\ndef");
+        send(&mut ed, "viuJpo:q");
+        assert!(ed.visual.is_some());
+        assert!(!ed.insert);
+        assert!(ed.command.is_none());
+        assert_eq!(ed.notes(), "abc\ndef");
+    }
+
+    #[test]
+    fn counts_and_gg_extend_the_selection() {
+        let mut ed = editor("one\ntwo\nthree\nfour");
+        send(&mut ed, "Gv2kd");
+        assert_eq!(ed.notes(), "one\nour");
+        // Undo puts the cursor back where the cut started, on line 2.
+        send(&mut ed, "u$vggy");
+        assert_eq!(register(&ed), ("one\ntwo", false));
     }
 
     #[test]

@@ -315,6 +315,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             ],
         ),
         Mode::Notes(editor) if editor.insert => ("INSERT", Color::Green, &[("esc normal mode", 0)]),
+        Mode::Notes(editor) if editor.visual.is_some() => {
+            ("VISUAL", Color::Magenta, &[("y copy", 2), ("d cut", 2), ("esc cancel", 3)])
+        }
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
@@ -1825,6 +1828,24 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         let Mode::Notes(editor) = &app.mode else { panic!("still in the notes") };
         assert_eq!(editor.textarea.cursor().0, 10);
+    }
+
+    #[test]
+    fn selecting_text_in_the_notes() {
+        let (mut app, _dir) = app_with(&["Write report"]);
+        app.store.set_notes(app.day, 0, "Draft the intro".into()).unwrap();
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "wve");
+        let terminal = render(&app);
+        let buffer = terminal.backend().buffer();
+        let text: String = (1..58).map(|x| buffer[(x, 1)].symbol().to_string()).collect();
+        let start = text.find("the").unwrap() as u16 + 1;
+        // "th" has the selection's background; the cursor covers the "e".
+        assert_ne!(buffer[(start, 1)].bg, Color::Reset);
+        assert_ne!(buffer[(start + 1, 1)].bg, Color::Reset);
+        assert!(buffer[(start + 2, 1)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(buffer[(start - 2, 1)].bg, Color::Reset);
+        assert!(terminal.backend().to_string().contains("VISUAL"));
     }
 
     #[test]
