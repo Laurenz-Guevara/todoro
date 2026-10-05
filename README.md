@@ -51,6 +51,7 @@ todoro
 | `e` | Edit the selected item |
 | `x` | Mark the selected item done, or not done again |
 | `p` | Pin or unpin the selected item, so it moves to the next day until done |
+| `t` | Triage the selected item: High, Medium, Low, then no priority again |
 | `d` | Delete the selected item (asks to confirm) |
 | `Enter` | Open the selected item's notes |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
@@ -60,7 +61,7 @@ todoro
 
 Undo covers everything you change from the list, including moving items between days and a whole visit to an item's notes, and takes you back to where the change was made.
 
-Pinned items are marked with `⚲` and items that have notes with `≡`.
+Pinned items are marked with `⚲` and items that have notes with `≡`. A triaged item's number is coloured by its priority: red for High, yellow for Medium and green for Low.
 
 ### Completed items
 
@@ -143,7 +144,7 @@ Press `d` to delete the item, or `c` (or `Esc`) to cancel.
 
 ## Data
 
-Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes": ..., "done": true }`:
+Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes": ..., "done": true, "pinned": true, "priority": "high" }`:
 
 | OS | Location |
 |---|---|

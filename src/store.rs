@@ -16,6 +16,28 @@ pub struct Item {
     pub notes: String,
     pub done: bool,
     pub pinned: bool,
+    pub priority: Option<Priority>,
+}
+
+/// How urgent an item is, set by triaging it with `t`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Priority {
+    High,
+    Medium,
+    Low,
+}
+
+impl Priority {
+    /// The next step when triaging: none, High, Medium, Low, then none again.
+    pub fn cycle(priority: Option<Priority>) -> Option<Priority> {
+        match priority {
+            None => Some(Priority::High),
+            Some(Priority::High) => Some(Priority::Medium),
+            Some(Priority::Medium) => Some(Priority::Low),
+            Some(Priority::Low) => None,
+        }
+    }
 }
 
 /// How an item is written to disk. Items with only text stay plain strings, so
@@ -33,6 +55,8 @@ enum RawItem {
         done: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         pinned: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        priority: Option<Priority>,
     },
 }
 
@@ -40,17 +64,18 @@ impl From<RawItem> for Item {
     fn from(raw: RawItem) -> Self {
         match raw {
             RawItem::Text(text) => Item { text, ..Item::default() },
-            RawItem::Full { text, notes, done, pinned } => Item { text, notes, done, pinned },
+            RawItem::Full { text, notes, done, pinned, priority } => Item { text, notes, done, pinned, priority },
         }
     }
 }
 
 impl From<Item> for RawItem {
     fn from(item: Item) -> Self {
-        if item.notes.is_empty() && !item.done && !item.pinned {
+        if item.notes.is_empty() && !item.done && !item.pinned && item.priority.is_none() {
             RawItem::Text(item.text)
         } else {
-            RawItem::Full { text: item.text, notes: item.notes, done: item.done, pinned: item.pinned }
+            let Item { text, notes, done, pinned, priority } = item;
+            RawItem::Full { text, notes, done, pinned, priority }
         }
     }
 }
@@ -219,6 +244,14 @@ impl Store {
         items.swap(a, b);
         self.save()?;
         Ok(true)
+    }
+
+    /// Moves an item to its next priority: none, High, Medium, Low, none.
+    pub fn cycle_priority(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
+        if let Some(item) = self.item_mut(day, index) {
+            item.priority = Priority::cycle(item.priority);
+        }
+        self.save()
     }
 
     fn item_mut(&mut self, day: NaiveDate, index: usize) -> Option<&mut Item> {
@@ -582,6 +615,45 @@ mod tests {
         store.restore(snapshot.clone()).unwrap();
         assert!(store.snapshot() == snapshot);
         assert_eq!(texts(&Store::open(path).unwrap(), today()), ["one"]);
+    }
+
+    #[test]
+    fn cycle_priority_goes_high_medium_low_then_none() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "a".into()).unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            store.cycle_priority(today(), 0).unwrap();
+            seen.push(store.items(today())[0].priority);
+        }
+        assert_eq!(seen, [Some(Priority::High), Some(Priority::Medium), Some(Priority::Low), None]);
+        store.cycle_priority(today(), 9).unwrap();
+    }
+
+    #[test]
+    fn priority_is_saved_by_name_and_reloads() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "urgent".into()).unwrap();
+        store.insert(today(), 1, "someday".into()).unwrap();
+        store.insert(today(), 2, "plain".into()).unwrap();
+        store.cycle_priority(today(), 0).unwrap();
+        for _ in 0..3 {
+            store.cycle_priority(today(), 1).unwrap();
+        }
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "2026-10-05": [
+                { "text": "urgent", "priority": "high" },
+                { "text": "someday", "priority": "low" },
+                "plain",
+            ] })
+        );
+        let reloaded = Store::open(path).unwrap();
+        let priorities: Vec<_> = reloaded.items(today()).iter().map(|item| item.priority).collect();
+        assert_eq!(priorities, [Some(Priority::High), Some(Priority::Low), None]);
     }
 
     #[test]

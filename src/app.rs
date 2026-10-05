@@ -252,6 +252,12 @@ impl App {
                     self.clamp_selection();
                 }
             }
+            // Triage: cycle the item's priority.
+            KeyCode::Char('t') => {
+                if let Some(slot) = slot {
+                    self.store.cycle_priority(slot.day, slot.index)?;
+                }
+            }
             KeyCode::Char('p') => {
                 if let Some(slot) = slot {
                     self.store.toggle_pinned(slot.day, slot.index)?;
@@ -1281,6 +1287,46 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(calendar(&app).zoom, calendar::Zoom::Week);
         assert_eq!(calendar(&app).cursor, today() + chrono::Duration::days(7));
+    }
+
+    #[test]
+    fn t_cycles_the_selected_items_priority() {
+        use crate::store::Priority;
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "j");
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            type_str(&mut app, "t");
+            seen.push(app.items()[1].priority);
+        }
+        assert_eq!(seen, [Some(Priority::High), Some(Priority::Medium), Some(Priority::Low), None]);
+        // Only the selected item, and it stays where it is.
+        assert_eq!(app.items()[0].priority, None);
+        assert_eq!(items(&app), ["one", "two"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn t_on_an_empty_day_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "t");
+        assert!(app.items().is_empty());
+    }
+
+    #[test]
+    fn t_while_typing_is_text() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "at");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one", "t"]);
+        assert!(app.items().iter().all(|item| item.priority.is_none()));
+    }
+
+    #[test]
+    fn u_undoes_triage() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "ttu");
+        assert_eq!(app.items()[0].priority, Some(crate::store::Priority::High));
     }
 
     #[test]

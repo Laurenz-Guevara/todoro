@@ -11,7 +11,7 @@ use chrono::{Datelike, Days, NaiveDate};
 
 use crate::app::{App, Mode};
 use crate::calendar::{self, Calendar, Zoom};
-use crate::store::Item;
+use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
 
@@ -66,6 +66,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .into_iter()
         .map(|item| Row {
             text: &item.text,
+            priority: item.priority,
             pinned: item.pinned,
             has_notes: !item.notes.is_empty(),
             done: item.done,
@@ -78,7 +79,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         if *editing {
             rows[*index] = Row { text, typing: true, ..rows[*index] };
         } else {
-            rows.insert(*index, Row { text, pinned: false, has_notes: false, done: false, typing: true });
+            rows.insert(*index, Row { text, priority: None, pinned: false, has_notes: false, done: false, typing: true });
         }
         selected = Some(*index);
     }
@@ -104,10 +105,13 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             items.push(ListItem::new(format!("{title}{}", "─".repeat(fill)).dark_gray()));
             heights.push(1);
         }
-        let (prefix, text_style) = if row.done {
-            (format!("{:>width$}  ", "✓"), Style::new().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT))
+        // A triaged item's number takes its priority's colour.
+        let (prefix, prefix_style, text_style) = if row.done {
+            let crossed = Style::new().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT);
+            (format!("{:>width$}  ", "✓"), Style::new().fg(Color::DarkGray), crossed)
         } else {
-            (format!("{:>width$}. ", i + 1), Style::new())
+            let number_style = row.priority.map_or(Style::new().fg(Color::DarkGray), priority_style);
+            (format!("{:>width$}. ", i + 1), number_style, Style::new())
         };
 
         // Wrap long text under itself, leaving room for the markers at the end.
@@ -123,11 +127,12 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             .iter()
             .enumerate()
             .map(|(n, range)| {
-                let lead = if n == 0 { prefix.clone() } else { " ".repeat(prefix_width) };
-                Line::from(vec![
-                    Span::styled(lead, Style::new().fg(Color::DarkGray)),
-                    Span::styled(row.text[range.clone()].trim_end().to_string(), text_style),
-                ])
+                let lead = if n == 0 {
+                    Span::styled(prefix.clone(), prefix_style)
+                } else {
+                    Span::raw(" ".repeat(prefix_width))
+                };
+                Line::from(vec![lead, Span::styled(row.text[range.clone()].trim_end().to_string(), text_style)])
             })
             .collect();
         let last = lines.last_mut().expect("wrap_ranges returns at least one line");
@@ -167,11 +172,21 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 /// One item row on the main list.
 struct Row<'a> {
     text: &'a str,
+    priority: Option<Priority>,
     pinned: bool,
     has_notes: bool,
     done: bool,
     /// The item being added or edited.
     typing: bool,
+}
+
+/// The colour of a triaged item's number.
+fn priority_style(priority: Priority) -> Style {
+    Style::new().bold().fg(match priority {
+        Priority::High => Color::Red,
+        Priority::Medium => Color::Yellow,
+        Priority::Low => Color::Green,
+    })
 }
 
 /// Shown after an item on the main list when it has notes.
@@ -1225,6 +1240,24 @@ mod tests {
         // The cursor follows the text onto its second line.
         let position = terminal.get_cursor_position().unwrap();
         assert_eq!(position.y, 10);
+    }
+
+    #[test]
+    fn triaged_items_keep_their_layout() {
+        let (mut app, _dir) = app_with(&[
+            "Fix the leaking tap",
+            "Book flights for the holiday before the prices go up again",
+            "Water the plants",
+            "Sort the recycling",
+        ]);
+        app.store.toggle_pinned(app.day, 1).unwrap();
+        type_str(&mut app, "tjttjjttt");
+        let mut terminal = render(&app);
+        assert_snapshot!(terminal.backend());
+        // Only the numbers' colours change, so the text and cursor stay put.
+        type_str(&mut app, "kkke");
+        terminal = render(&app);
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 19, 1));
     }
 
     #[test]
