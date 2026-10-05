@@ -6,6 +6,7 @@ mod notes;
 mod options;
 mod search;
 mod store;
+mod tags;
 #[cfg(test)]
 mod test_util;
 mod ui;

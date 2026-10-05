@@ -34,6 +34,7 @@ pub const SECTIONS: &[Section] = &[
             ("c", "Open the calendar"),
             ("s", "Search every day's items"),
             ("S", "Search items and their notes"),
+            ("#", "List tags, to show the items with one"),
             ("u / Ctrl+R", "Undo / redo a change to the list"),
             ("o", "Options, including accessibility"),
             ("?", "Show this help"),
@@ -93,6 +94,14 @@ pub const SECTIONS: &[Section] = &[
             ("j / k", "Select an option"),
             ("Space / Enter", "Turn it on or off"),
             ("Esc / q / o", "Close"),
+        ],
+    },
+    Section {
+        title: "Tags",
+        bindings: &[
+            ("j / k", "Select a tag"),
+            ("Enter", "Show every item with it"),
+            ("Esc / #", "Close"),
         ],
     },
     Section {

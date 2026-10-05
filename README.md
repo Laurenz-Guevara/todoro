@@ -72,6 +72,7 @@ todoro
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `c` | Open the calendar |
 | `s` / `S` | Fuzzy search every day's items / items and their notes |
+| `#` | List your tags, to show every item with one |
 | `o` | Options, including accessibility |
 | `?` | Show all keybindings |
 | `q` | Quit |
@@ -143,6 +144,10 @@ In normal mode:
 | `Esc` / `q` | Back to the list |
 
 In insert mode, type as normal (`Enter` starts a new line) and press `Esc` to go back to normal mode.
+
+### Tags
+
+Write `#words` in an item to tag it, like "Call #work about the #budget". Tags are coloured on the list and ignore case, so `#Work` and `#work` are the same tag. `#` lists every tag with how many items have it; pick one with `j` / `k` and press `Enter` to see all its items across every day, where you can type to narrow them down and press `Enter` to go to one.
 
 ### Search
 

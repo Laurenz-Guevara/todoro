@@ -18,6 +18,7 @@ use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
 use crate::options::{Options, TOGGLES};
 use crate::search::Search;
+use crate::tags::{self, TagPicker};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [main, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
@@ -40,6 +41,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, calendar),
         Mode::Search(search) => draw_search(frame, app, search),
         Mode::Options(options) => draw_options(frame, app, options),
+        Mode::Tags(picker) => draw_tags(frame, app, picker),
         _ => {}
     }
 
@@ -169,7 +171,12 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                         None => Span::raw("  "),
                     });
                 }
-                spans.push(Span::styled(row.text[range.clone()].trim_end().to_string(), text_style));
+                let line = range.start..range.start + row.text[range.clone()].trim_end().len();
+                if row.done {
+                    spans.push(Span::styled(row.text[line].to_string(), text_style));
+                } else {
+                    spans.extend(tagged(row.text, line, text_style));
+                }
                 Line::from(spans)
             })
             .collect();
@@ -299,6 +306,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
+        Mode::Tags(_) => ("TAGS", Color::Cyan, &[("j/k move", 1), ("↵ show items", 2), ("esc close", 3)]),
         Mode::Options(_) => ("OPTIONS", Color::Blue, &[("j/k move", 1), ("space toggle", 2), ("esc close", 3)]),
         Mode::Search(_) => ("SEARCH", Color::Yellow, &[("↑/↓ select", 1), ("↵ go to item", 2), ("esc close", 3)]),
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
@@ -459,6 +467,69 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
 
 /// Background of the selected row or day.
 const SELECTED_BG: Color = Color::Rgb(50, 50, 60);
+
+/// The colour of `#tags` in items' text.
+const TAG_COLOUR: Color = Color::Cyan;
+
+/// The text of `text[line]` as spans, with any `#tags` in it coloured.
+fn tagged(text: &str, line: Range<usize>, base: Style) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut at = line.start;
+    for (tag, _) in tags::find_tags(text) {
+        let (start, end) = (tag.start.max(at), tag.end.min(line.end));
+        if start >= end {
+            continue;
+        }
+        if start > at {
+            spans.push(Span::styled(text[at..start].to_string(), base));
+        }
+        spans.push(Span::styled(text[start..end].to_string(), base.fg(TAG_COLOUR)));
+        at = end;
+    }
+    if at < line.end {
+        spans.push(Span::styled(text[at..line.end].to_string(), base));
+    }
+    spans
+}
+
+fn draw_tags(frame: &mut Frame, app: &App, picker: &TagPicker) {
+    let all = tags::all_tags(&app.store);
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(44);
+    let hint = "No tags yet. Write #words in an item to tag it.";
+    let rows = if all.is_empty() { wrap(hint, (width as usize).saturating_sub(4).max(1), usize::MAX).len() } else { all.len() };
+    let height = (rows as u16 + 2).min(screen.height.saturating_sub(2));
+    let area = centered(screen, width, height);
+    let room = (width as usize).saturating_sub(2);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(TAG_COLOUR))
+        .title(" Tags ".bold())
+        .title_bottom(Line::from(fit_first(&[" ↵ show items · esc close ", " esc close "], room)).centered().dim())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    if all.is_empty() {
+        frame.render_widget(Paragraph::new(hint).dim().wrap(Wrap { trim: true }), inner);
+        return;
+    }
+
+    // Each tag with how many items have it, the counts lined up on the right.
+    let width = inner.width as usize;
+    let items: Vec<ListItem> = all
+        .iter()
+        .map(|(name, count)| {
+            let count = count.to_string();
+            let name = truncate(&format!("#{name}"), width.saturating_sub(count.len() + 1));
+            let gap = " ".repeat(width.saturating_sub(name.width() + count.len()));
+            ListItem::new(Line::from(vec![name.fg(TAG_COLOUR), gap.into(), count.dark_gray()]))
+        })
+        .collect();
+    let mut state = ListState::default().with_offset(picker.offset.get()).with_selected(Some(picker.selected));
+    frame.render_stateful_widget(List::new(items).highlight_style(Style::new().bg(SELECTED_BG)), inner, &mut state);
+    picker.offset.set(state.offset());
+}
 
 /// Background of the rows selected with `V`.
 const VISUAL_BG: Color = Color::Rgb(70, 50, 90);
@@ -719,7 +790,10 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let screen = frame.area();
     let area = centered(screen, screen.width.saturating_sub(4).min(80), screen.height.saturating_sub(2));
     let room = area.width.saturating_sub(2) as usize;
-    let title = if search.notes {
+    let tag_title = search.tag.as_ref().map(|tag| truncate(&format!(" #{tag} "), room));
+    let title = if let Some(title) = &tag_title {
+        title.as_str()
+    } else if search.notes {
         fit_first(&[" Search items and notes ", " Items and notes ", " Search "], room)
     } else {
         fit_first(&[" Search items ", " Search "], room)
@@ -743,7 +817,9 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let prompt = "Search: ";
     let query = &search.input.text;
     let shown = if query.is_empty() {
-        let hints: &[&str] = if search.notes {
+        let hints: &[&str] = if search.tag.is_some() {
+            &["type to narrow these down", "narrow down", ""]
+        } else if search.notes {
             &["type to fuzzy find items and notes on any day", "items and notes, any day", "items and notes"]
         } else {
             &["type to fuzzy find items on any day", "items on any day", "any day"]
@@ -757,7 +833,7 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let typed = (prompt.width() + query[..search.input.cursor].width()) as u16;
     frame.set_cursor_position(Position::new(prompt_area.x + typed.min(prompt_area.width), prompt_area.y));
 
-    if query.trim().is_empty() {
+    if query.trim().is_empty() && search.tag.is_none() {
         return;
     }
     let hits = search.find(&app.store, app.today);
@@ -1442,7 +1518,8 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         type_str(&mut app, "?");
         render_sized(&app, 30, 12);
-        for _ in 0..200 {
+        // More presses than there are lines, so it must stop at the end.
+        for _ in 0..1000 {
             press(&mut app, KeyCode::Down);
             render_sized(&app, 30, 12);
         }
@@ -1670,6 +1747,44 @@ mod tests {
         let screen = render_sized(&app, 60, 12).backend().to_string();
         assert!(screen.contains("Delete 12 items?"), "{screen}");
         assert!(screen.contains("…and 7 more"), "{screen}");
+    }
+
+    #[test]
+    fn tags_are_coloured_on_the_list() {
+        let (mut app, _dir) = app_with(&["Call #work about the #budget", "issue#4 is not a tag", "Done #work"]);
+        type_str(&mut app, "jjx");
+        let terminal = render(&app);
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| (1..58).map(|x| (buffer[(x, y)].symbol().to_string(), buffer[(x, y)].fg)).collect::<Vec<_>>();
+        let coloured = |y: u16| row(y).into_iter().filter(|(_, fg)| *fg == TAG_COLOUR).map(|(s, _)| s).collect::<String>();
+        assert_eq!(coloured(1), "#work#budget");
+        assert_eq!(coloured(2), "");
+        // Completed items stay grey.
+        assert_eq!(coloured(4), "");
+    }
+
+    #[test]
+    fn tag_list() {
+        let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home", "Send #work report"]);
+        type_str(&mut app, "#j");
+        assert_snapshot!(render_sized(&app, 60, 12).backend());
+    }
+
+    #[test]
+    fn tag_list_when_there_are_none() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "#");
+        assert_snapshot!(render_sized(&app, 40, 10).backend());
+    }
+
+    #[test]
+    fn a_tags_items() {
+        let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home"]);
+        let later = app.day + chrono::Duration::days(5);
+        app.store.insert(later, 0, "Send #Work report".into()).unwrap();
+        type_str(&mut app, "#");
+        press(&mut app, KeyCode::Enter);
+        assert_snapshot!(render_sized(&app, 60, 12).backend());
     }
 
     #[test]

@@ -11,6 +11,7 @@ use crate::input::LineInput;
 use crate::notes::{Action, NotesEditor};
 use crate::options::{self, Options, Settings, TOGGLES};
 use crate::search::{self, Search};
+use crate::tags::{self, TagPicker};
 use crate::store::{Item, Priority, Snapshot, Store};
 
 /// How many changes `u` can undo.
@@ -36,6 +37,8 @@ pub enum Mode {
     Notes(Box<NotesEditor>),
     /// The options popup.
     Options(Options),
+    /// The `#` list of every tag.
+    Tags(TagPicker),
     /// Fuzzy search over every day's items.
     Search(Box<Search>),
     /// The calendar, for planning ahead.
@@ -249,6 +252,11 @@ impl App {
                     }
                 }
             },
+            Mode::Tags(picker) => match picker.handle_key(key, &tags::all_tags(&self.store)) {
+                tags::Action::Stay => {}
+                tags::Action::Close => self.mode = Mode::Normal,
+                tags::Action::Open(name) => self.mode = Mode::Search(Box::new(Search::for_tag(name))),
+            },
             Mode::Search(search) => {
                 let hits = search.find(&self.store, self.today);
                 match search.handle_key(key, &hits) {
@@ -298,6 +306,7 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('o') => self.mode = Mode::Options(Options::default()),
+            KeyCode::Char('#') => self.mode = Mode::Tags(TagPicker::default()),
             KeyCode::Char('s') => self.mode = Mode::Search(Box::new(Search::new(false))),
             KeyCode::Char('S') => self.mode = Mode::Search(Box::new(Search::new(true))),
             KeyCode::Char('c') => self.mode = Mode::Calendar(Box::new(Calendar::new(self.day, self.today))),
@@ -1965,6 +1974,53 @@ mod tests {
     fn capital_v_on_an_empty_day_does_nothing() {
         let (mut app, _dir) = app_with(&[]);
         type_str(&mut app, "V");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn hash_lists_tags_and_enter_shows_items_with_one() {
+        let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home"]);
+        let later = today() + chrono::Duration::days(5);
+        app.store.insert(later, 0, "Send #Work report".into()).unwrap();
+        type_str(&mut app, "#");
+        assert!(matches!(app.mode, Mode::Tags(_)));
+        // Most used first: work (2), then budget and home (1 each).
+        press(&mut app, KeyCode::Enter);
+        let Mode::Search(search) = &app.mode else { panic!("should be showing the tag's items") };
+        assert_eq!(search.tag.as_deref(), Some("work"));
+        assert_eq!(search.find(&app.store, today()).len(), 2);
+        // Enter goes to the selected item, the closest to today.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.day, today());
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn a_tags_items_can_be_narrowed_by_typing() {
+        let (mut app, _dir) = app_with(&["Call #work", "Email #work"]);
+        type_str(&mut app, "#");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "email");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn esc_or_hash_closes_the_tag_list() {
+        let (mut app, _dir) = app_with(&["#a"]);
+        type_str(&mut app, "#");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        type_str(&mut app, "##");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn hash_while_typing_is_text() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "aBuy milk #shop");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["Buy milk #shop"]);
         assert!(matches!(app.mode, Mode::Normal));
     }
 

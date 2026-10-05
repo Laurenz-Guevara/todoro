@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 40, 10).backend()"
+---
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│1. Buy milk                           │"
+"│                                      │"
+"│ ╭ Tags ────────────────────────────╮ │"
+"│ │ No tags yet. Write #words in an  │ │"
+"│ │ item to tag it.                  │ │"
+"│ ╰──── ↵ show items · esc close ────╯ │"
+"│                                      │"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" TAGS   ↵ show items  esc close         "

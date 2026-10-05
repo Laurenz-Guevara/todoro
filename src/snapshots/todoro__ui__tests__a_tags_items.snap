@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 12).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1╭ #work ───────────────────────────────────────────────╮ │"
+"│2│ Search: type to narrow these down                    │ │"
+"│ │ ──────────────────────────────────────────────────── │ │"
+"│ │ Today      Call #work about the #budget              │ │"
+"│ │ Sat 10 Oct Send #Work report                         │ │"
+"│ │                                                      │ │"
+"│ │                                                      │ │"
+"│ │                                                      │ │"
+"│ │                                                      │ │"
+"╰─╰─────── ↑/↓ select · ↵ go to item · esc close ────────╯─╯"
+" SEARCH   ↑/↓ select  ↵ go to item  esc close               "

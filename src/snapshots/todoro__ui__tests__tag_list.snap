@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 12).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Call #work about the #budget                           │"
+"│2. Water the plants #home                                 │"
+"│3. Send #work report                                      │"
+"│       ╭ Tags ────────────────────────────────────╮       │"
+"│       │ #work                                  2 │       │"
+"│       │ #budget                                1 │       │"
+"│       │ #home                                  1 │       │"
+"│       ╰──────── ↵ show items · esc close ────────╯       │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" TAGS   j/k move  ↵ show items  esc close                   "

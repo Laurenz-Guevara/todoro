@@ -20,6 +20,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/calendar.rs`: the calendar's state and keys (`Calendar`, `Zoom`), returning an `Action` for the app to carry out
 - `src/search.rs`: fuzzy search over every day's items (and notes with `S`), using `nucleo-matcher`
 - `src/options.rs`: `Settings` (saved to `settings.json`), the `TOGGLES` shown in the `o` popup, and the popup's keys
+- `src/tags.rs`: finding `#tags` in items' text (`find_tags`), counting them (`all_tags`) and the `#` popup's keys
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
 - `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
@@ -28,7 +29,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 ## Keybindings
 
-Normal mode: `h`/`l` previous/next day, `t` today, `j`/`k` move down/up, `gg`/`G` first/last item, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `H`/`L` move the item to the day before/after the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `m` toggle pinned, `!` triage (priority cycles none → High → Medium → Low → none), `d` delete (opens a popup; `d` confirms, `c` cancels; the deleted item goes to the paste register), `yy` copy, `p`/`P` paste below/above (as open items, keeping notes, pin and priority), `V` select several, `Enter` open notes, `u`/`Ctrl+R` undo/redo, `c` calendar, `s`/`S` search items / items and notes, `o` options, `?` help, `q` quit.
+Normal mode: `h`/`l` previous/next day, `t` today, `j`/`k` move down/up, `gg`/`G` first/last item, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `H`/`L` move the item to the day before/after the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `m` toggle pinned, `!` triage (priority cycles none → High → Medium → Low → none), `d` delete (opens a popup; `d` confirms, `c` cancels; the deleted item goes to the paste register), `yy` copy, `p`/`P` paste below/above (as open items, keeping notes, pin and priority), `V` select several, `Enter` open notes, `u`/`Ctrl+R` undo/redo, `c` calendar, `s`/`S` search items / items and notes, `#` tags (then `Enter` shows a tag's items in the search, filtered by `Search::tag`), `o` options, `?` help, `q` quit.
 
 Selecting (`Mode::Visual`): `j`/`k`/`G` extend, `x` complete all (or reopen if all complete), `m` pin all (or unpin if all pinned), `!` next priority after the first item's, `d` delete (one confirmation), `y` copy, `H`/`L` move to the previous/next day and follow, `Esc`/`V` stop. Each action returns to `Normal`. Selections can include carried items, so act through `App::group_by_day`, which groups screen rows by the day they're stored on.
 
@@ -72,6 +73,7 @@ Every new feature or bug fix comes with tests in the same commit. Tests live in 
 - `store.rs`: persistence, always against a temporary file.
 - `calendar.rs`: the calendar's keys and date maths, driven with its own `send` helper.
 - `search.rs`: matching and ordering (`find`) and the search's keys.
+- `tags.rs`: what counts as a tag, counting, and the tag list's keys.
 - Match positions from `nucleo-matcher` count graphemes, not chars or bytes; highlight with `unicode-segmentation`'s graphemes (see `highlighted` in `ui.rs`).
 - `ui.rs`: screen snapshots with [insta](https://insta.rs). Add one for any new screen or popup.
 
