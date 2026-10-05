@@ -60,6 +60,7 @@ todoro
 | `J` / `K` | Move the selected item down / up the list |
 | `H` / `L` | Move the selected item to the previous / next day, and go with it |
 | `a` | Add an item below the cursor |
+| `A` | Add several items: `Enter` adds each one and starts the next, `Esc` stops |
 | `e` | Edit the selected item |
 | `x` | Mark the selected item done, or not done again |
 | `m` | Pin or unpin the selected item, so it moves to the next day until done |
@@ -121,6 +122,8 @@ Adding or editing an item puts you in insert mode.
 | `Enter` / `Esc` | Save |
 
 Saving a new item with no text discards it. Clearing all the text from an existing item and saving asks whether to delete it.
+
+With `A`, `Enter` adds the item and starts a new one below it, so you can type a whole list in one go. `Esc` saves what you've typed and stops; `Enter` on an empty line stops too.
 
 ### Notes
 

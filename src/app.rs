@@ -28,7 +28,9 @@ pub enum Mode {
     Normal,
     /// Typing an item at `index`. When `editing`, it replaces the existing item
     /// there; otherwise it is inserted as a new one.
-    Insert { index: usize, input: LineInput, editing: bool },
+    /// With `repeat` (from `A`), Enter adds the item and starts another below
+    /// it, until Esc or Enter on an empty line.
+    Insert { index: usize, input: LineInput, editing: bool, repeat: bool },
     /// Asking whether to delete the items at these screen rows.
     ConfirmDelete { rows: Vec<usize> },
     /// Selecting several items, from the row `anchor` to the selected row.
@@ -166,9 +168,10 @@ impl App {
     fn mode_key(&mut self, key: KeyEvent) -> io::Result<()> {
         match &mut self.mode {
             Mode::Normal => self.normal_key(key.code)?,
-            Mode::Insert { index, input, editing } => {
+            Mode::Insert { index, input, editing, repeat } => {
                 if input.handle_key(key.code) {
                     let (index, text, editing) = (*index, input.text.trim().to_string(), *editing);
+                    let next = *repeat && key.code == KeyCode::Enter && !text.is_empty();
                     self.mode = Mode::Normal;
                     match (editing, text.is_empty()) {
                         (true, true) => self.mode = Mode::ConfirmDelete { rows: vec![index] },
@@ -184,6 +187,10 @@ impl App {
                             let index = index.saturating_sub(carried).min(self.store.open_count(self.day));
                             self.store.insert(self.day, index, text)?;
                             self.selected = carried + index;
+                            if next {
+                                let index = self.selected + 1;
+                                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true };
+                            }
                         }
                     }
                 }
@@ -324,11 +331,16 @@ impl App {
             // empty day), append to the end of the open items instead.
             KeyCode::Char('a') => {
                 let index = if self.selected < open { self.selected + 1 } else { open };
-                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false };
+                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: false };
+            }
+            // Like a, but Enter keeps adding items until Esc or an empty line.
+            KeyCode::Char('A') => {
+                let index = if self.selected < open { self.selected + 1 } else { open };
+                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true };
             }
             KeyCode::Char('e') if len > 0 => {
                 let input = LineInput::new(&self.items()[self.selected].text);
-                self.mode = Mode::Insert { index: self.selected, input, editing: true };
+                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false };
             }
             KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete { rows: vec![self.selected] },
             KeyCode::Char('V') if len > 0 => self.mode = Mode::Visual { anchor: self.selected },
@@ -2021,6 +2033,75 @@ mod tests {
         type_str(&mut app, "aBuy milk #shop");
         press(&mut app, KeyCode::Enter);
         assert_eq!(items(&app), ["Buy milk #shop"]);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn capital_a_keeps_adding_items_until_esc() {
+        let (mut app, _dir) = app_with(&["one", "four"]);
+        type_str(&mut app, "Atwo");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "three");
+        press(&mut app, KeyCode::Enter);
+        // A fresh line is waiting below the last item added.
+        assert!(matches!(app.mode, Mode::Insert { index: 3, editing: false, repeat: true, .. }));
+        assert_eq!(items(&app), ["one", "two", "three", "four"]);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["one", "two", "three", "four"]);
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn esc_saves_what_was_typed_on_the_last_line() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "Aone");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "two");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["one", "two"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn enter_on_an_empty_line_also_stops_adding() {
+        let (mut app, _dir) = app_with(&["first"]);
+        type_str(&mut app, "Aone");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["first", "one"]);
+    }
+
+    #[test]
+    fn capital_a_from_a_completed_item_adds_after_the_open_ones() {
+        let (mut app, _dir) = app_with(&["one", "done"]);
+        type_str(&mut app, "jxjAtwo");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "three");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(items(&app), ["one", "two", "three", "done"]);
+    }
+
+    #[test]
+    fn each_item_added_with_capital_a_is_its_own_undo_step() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "Aone");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "two");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["one"]);
+        type_str(&mut app, "u");
+        assert!(app.items().is_empty());
+    }
+
+    #[test]
+    fn a_still_adds_just_one_item() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "aone");
+        press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
     }
 

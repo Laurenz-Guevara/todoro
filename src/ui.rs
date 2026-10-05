@@ -103,7 +103,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let mut selected = (!rows.is_empty()).then_some(app.selected);
-    if let Mode::Insert { index, input, editing } = &app.mode {
+    if let Mode::Insert { index, input, editing, .. } = &app.mode {
         let text = &input.text;
         if *editing {
             rows[*index] = Row { text, typing: true, ..rows[*index] };
@@ -282,6 +282,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Color::Blue,
             &[("a add", 4), ("e edit", 2), ("x done", 3), ("d delete", 1), ("↵ notes", 0), ("? help", 5)],
         ),
+        Mode::Insert { repeat: true, .. } => {
+            ("INSERT", Color::Green, &[("←/→ move", 1), ("enter add & next", 3), ("esc done", 2)])
+        }
         Mode::Insert { editing: false, .. } => {
             ("INSERT", Color::Green, &[("←/→ move", 1), ("enter/esc save", 2), ("(empty discards)", 0)])
         }
@@ -1785,6 +1788,18 @@ mod tests {
         type_str(&mut app, "#");
         press(&mut app, KeyCode::Enter);
         assert_snapshot!(render_sized(&app, 60, 12).backend());
+    }
+
+    #[test]
+    fn adding_several_items() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "AWrite report");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Call");
+        let mut terminal = render(&app);
+        assert_snapshot!(terminal.backend());
+        // The cursor is on the new line, after "Call".
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 4, 3));
     }
 
     #[test]
