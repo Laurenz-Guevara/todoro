@@ -300,10 +300,13 @@ fn highlight_cursor_line_number(buffer: &mut Buffer, editor: &NotesEditor, area:
 const CURSOR_LINE_NUMBER: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    // A : command in the notes takes over the bottom line, as in vim.
-    if let Mode::Notes(editor) = &app.mode
-        && let Some(input) = &editor.command
-    {
+    // A : command on the list or in the notes takes over the bottom line, as in vim.
+    let command = match &app.mode {
+        Mode::Notes(editor) => editor.command.as_ref(),
+        Mode::Normal => app.command.as_ref(),
+        _ => None,
+    };
+    if let Some(input) = command {
         frame.render_widget(Line::from(format!(":{}", input.text)), area);
         let col = 1 + input.text[..input.cursor].width() as u16;
         frame.set_cursor_position(Position::new(area.x + col.min(area.width.saturating_sub(1)), area.y));
@@ -1895,6 +1898,16 @@ mod tests {
         // Scrolled down, the right number is still found.
         type_str(&mut app, "G");
         assert_eq!(highlighted(&app), ["12"]);
+    }
+
+    #[test]
+    fn typing_a_command_on_the_list() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, ":2");
+        let mut terminal = render(&app);
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("\":2 "), "{screen}");
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(2, 9));
     }
 
     #[test]

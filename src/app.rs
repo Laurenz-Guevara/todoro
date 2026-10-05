@@ -78,6 +78,8 @@ pub struct App {
     pending: Option<char>,
     /// A count typed before a command, like the 4 in `4j`.
     count: Option<usize>,
+    /// The `:` command being typed on the list, if any.
+    pub command: Option<LineInput>,
     /// The items last copied (`yy`) or deleted, for `p` and `P` to paste.
     pub register: Vec<Item>,
     /// Text last copied or deleted in any item's notes, kept for the next
@@ -102,6 +104,7 @@ impl App {
             notes_before: None,
             pending: None,
             count: None,
+            command: None,
             register: Vec::new(),
             notes_register: None,
         }
@@ -147,7 +150,7 @@ impl App {
         }
         // Undo works from the list and the calendar, but not while typing.
         let can_undo = match &self.mode {
-            Mode::Normal => true,
+            Mode::Normal => self.command.is_none(),
             Mode::Calendar(calendar) => calendar.adding.is_none(),
             _ => false,
         };
@@ -174,6 +177,7 @@ impl App {
 
     fn mode_key(&mut self, key: KeyEvent) -> io::Result<()> {
         match &mut self.mode {
+            Mode::Normal if self.command.is_some() => self.command_key(key.code),
             Mode::Normal => self.normal_key(key.code)?,
             Mode::Insert { index, input, editing, repeat } => {
                 if input.handle_key(key.code) {
@@ -337,6 +341,7 @@ impl App {
             KeyCode::Char('P') => self.paste(self.selected.min(open))?,
             KeyCode::Char('G') => self.selected = count.map_or(len.saturating_sub(1), row),
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char(':') => self.command = Some(LineInput::default()),
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('o') => self.mode = Mode::Options(Options::default()),
             KeyCode::Char('#') => self.mode = Mode::Tags(TagPicker::default()),
@@ -403,6 +408,33 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Keys while typing a `:` command on the list. `:42` goes to item 42 and
+    /// `:q` (or `:wq`, `:x`) quits, as in vim; everything is already saved.
+    fn command_key(&mut self, code: KeyCode) {
+        let Some(input) = &mut self.command else { return };
+        match code {
+            KeyCode::Esc => self.command = None,
+            // Backspace past the : leaves the command line, as in vim.
+            KeyCode::Backspace if input.text.is_empty() => self.command = None,
+            KeyCode::Enter => {
+                let command = input.text.trim().to_string();
+                self.command = None;
+                match command.as_str() {
+                    "q" | "q!" | "wq" | "wq!" | "x" | "x!" => self.quit = true,
+                    line => {
+                        if let Ok(n) = line.parse::<usize>() {
+                            let len = self.slots().len();
+                            self.selected = n.saturating_sub(1).min(len.saturating_sub(1));
+                        }
+                    }
+                }
+            }
+            code => {
+                input.handle_key(code);
+            }
+        }
     }
 
     /// The screen rows selected in visual mode, top to bottom.
@@ -2213,6 +2245,62 @@ mod tests {
         type_str(&mut app, "Pq");
         assert_eq!(app.items()[0].notes, "keep");
         assert_eq!(app.items()[1].notes, "move me");
+    }
+
+    #[test]
+    fn colon_and_a_number_goes_to_that_item() {
+        let names = numbered(30);
+        let (mut app, _dir) = app_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        type_str(&mut app, ":2");
+        assert_eq!(app.command.as_ref().unwrap().text, "2");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.command.is_none());
+        assert_eq!(app.items()[app.selected].text, "item 2");
+        type_str(&mut app, ":25");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[app.selected].text, "item 25");
+        type_str(&mut app, ":999");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected, 29);
+    }
+
+    #[test]
+    fn colon_q_quits() {
+        for command in ["q", "wq", "x"] {
+            let (mut app, _dir) = app_with(&["one"]);
+            type_str(&mut app, &format!(":{command}"));
+            press(&mut app, KeyCode::Enter);
+            assert!(app.quit, "{command}");
+        }
+    }
+
+    #[test]
+    fn keys_typed_after_a_colon_are_part_of_the_command() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, ":xdjmu");
+        assert_eq!(app.command.as_ref().unwrap().text, "xdjmu");
+        assert_eq!(app.selected, 0);
+        assert!(app.items().iter().all(|item| !item.done && !item.pinned));
+        // An unknown command does nothing.
+        press(&mut app, KeyCode::Enter);
+        assert!(app.command.is_none());
+        assert_eq!(items(&app), ["one", "two"]);
+        assert!(!app.quit);
+    }
+
+    #[test]
+    fn esc_or_backspacing_past_the_colon_cancels_the_command() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, ":2");
+        press(&mut app, KeyCode::Esc);
+        assert!(app.command.is_none());
+        assert_eq!(app.selected, 0);
+        type_str(&mut app, ":2");
+        press(&mut app, KeyCode::Backspace);
+        press(&mut app, KeyCode::Backspace);
+        assert!(app.command.is_none());
+        type_str(&mut app, "j");
+        assert_eq!(app.selected, 1);
     }
 
     #[test]

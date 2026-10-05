@@ -58,7 +58,7 @@ todoro
 | `j` / `k` | Move down / up |
 | `gg` / `G` | Jump to the first / last item |
 | `4j` / `4k` | Move 4 items down / up (any number works) |
-| `42G` | Go to item 42 |
+| `42G` / `:42` | Go to item 42 |
 | `J` / `K` | Move the selected item down / up the list |
 | `H` / `L` | Move the selected item to the previous / next day, and go with it |
 | `a` | Add an item below the cursor |
@@ -78,7 +78,7 @@ todoro
 | `#` | List your tags, to show every item with one |
 | `o` | Options, including accessibility |
 | `?` | Show all keybindings |
-| `q` | Quit |
+| `q` / `:q` | Quit |
 
 Undo covers everything you change from the list, including moving items between days and a whole visit to an item's notes, and takes you back to where the change was made.
 

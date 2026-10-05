@@ -20,7 +20,7 @@ pub const SECTIONS: &[Section] = &[
             ("j / k", "Move down / up"),
             ("gg / G", "First / last item"),
             ("4j / 4k", "Move four items down / up (any number)"),
-            ("42G", "Go to item 42"),
+            ("42G / :42", "Go to item 42"),
             ("J / K", "Move the item down / up the list"),
             ("H / L", "Move the item to the previous / next day"),
             ("a", "Add an item below the cursor"),
@@ -41,7 +41,7 @@ pub const SECTIONS: &[Section] = &[
             ("u / Ctrl+R", "Undo / redo a change to the list"),
             ("o", "Options, including accessibility"),
             ("?", "Show this help"),
-            ("q", "Quit"),
+            ("q / :q", "Quit"),
         ],
     },
     Section {
