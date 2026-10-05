@@ -222,6 +222,9 @@ impl NotesEditor {
             (_, 'e') => self.repeat(times, CursorMove::WordEnd),
             (_, '0') => self.motion(CursorMove::Head),
             (_, '_' | '^') => self.first_non_blank(),
+            // Move the line down or up, like J and K on the list.
+            (_, 'J') => self.move_line(times as isize),
+            (_, 'K') => self.move_line(-(times as isize)),
             (_, '$') => self.motion(CursorMove::End),
             (_, 'G') => self.go_to_line(count.unwrap_or(usize::MAX)),
             (_, 'i') => self.enter_insert(None),
@@ -278,6 +281,20 @@ impl NotesEditor {
         let row = line.saturating_sub(1).min(self.textarea.lines().len() - 1);
         self.textarea.move_cursor(CursorMove::Jump(row as u16, 0));
         self.first_non_blank()
+    }
+
+    /// Moves the cursor's line `by` lines down (or up), as far as it can go,
+    /// keeping the cursor on it.
+    fn move_line(&mut self, by: isize) -> Action {
+        let mut lines = self.textarea.lines().to_vec();
+        let (row, col) = (self.textarea.cursor().0, self.textarea.cursor().1);
+        let to = row.saturating_add_signed(by).min(lines.len() - 1);
+        if to != row {
+            let line = lines.remove(row);
+            lines.insert(to, line);
+            self.set_lines(lines, (to, col));
+        }
+        Action::Stay
     }
 
     /// Moves to the first character on the line that isn't a space or tab.
@@ -706,6 +723,31 @@ mod tests {
         send(&mut ed, ":2<cr>");
         assert_eq!(cursor(&ed), (1, 2));
         send(&mut ed, "gg");
+        assert_eq!(cursor(&ed), (0, 0));
+    }
+
+    #[test]
+    fn capital_j_and_k_move_the_line_and_the_cursor_follows() {
+        let mut ed = editor("one\ntwo\nthree\nfour");
+        send(&mut ed, "lJ");
+        assert_eq!(ed.notes(), "two\none\nthree\nfour");
+        assert_eq!(cursor(&ed), (1, 1));
+        send(&mut ed, "2J");
+        assert_eq!(ed.notes(), "two\nthree\nfour\none");
+        assert_eq!(cursor(&ed), (3, 1));
+        // It stops at the ends.
+        send(&mut ed, "J");
+        assert_eq!(ed.notes(), "two\nthree\nfour\none");
+        send(&mut ed, "9K");
+        assert_eq!(ed.notes(), "one\ntwo\nthree\nfour");
+        assert_eq!(cursor(&ed), (0, 1));
+    }
+
+    #[test]
+    fn moving_a_line_is_one_undo_step() {
+        let mut ed = editor("one\ntwo\nthree");
+        send(&mut ed, "2Ju");
+        assert_eq!(ed.notes(), "one\ntwo\nthree");
         assert_eq!(cursor(&ed), (0, 0));
     }
 

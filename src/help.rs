@@ -72,6 +72,7 @@ pub const SECTIONS: &[Section] = &[
             ("I / A", "Insert at the start / end of the line"),
             ("o / O", "Open a new line below / above"),
             ("x", "Delete the character under the cursor"),
+            ("J / K", "Move the line down / up"),
             ("dd", "Delete the line"),
             ("u / Ctrl+R", "Undo / redo"),
             ("?", "Show this help"),

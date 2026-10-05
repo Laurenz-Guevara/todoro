@@ -148,6 +148,7 @@ In normal mode:
 | `o` / `O` | Open a new line below / above |
 | `x` | Delete the character under the cursor |
 | `dd` | Delete the line |
+| `J` / `K` | Move the line down / up |
 | `u` / `Ctrl+R` | Undo / redo |
 | `?` | Show all keybindings |
 | `Esc` / `q` | Back to the list |
