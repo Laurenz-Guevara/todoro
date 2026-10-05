@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Show an icon for each priority as well as the coloured number, for
@@ -15,6 +15,10 @@ pub struct Settings {
     pub semantic_icons: bool,
     /// Draw everything without colour.
     pub no_colour: bool,
+    /// The newest version whose release notes have been shown, so "what's
+    /// new" appears once after each update. Not an option in the popup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_seen_version: Option<String>,
 }
 
 /// One toggle in the options popup.
@@ -115,7 +119,7 @@ mod tests {
 
     #[test]
     fn everything_is_off_by_default() {
-        assert_eq!(Settings::default(), Settings { semantic_icons: false, no_colour: false });
+        assert_eq!(Settings::default(), Settings { semantic_icons: false, no_colour: false, last_seen_version: None });
         for toggle in TOGGLES {
             assert!(!(toggle.get)(&Settings::default()));
         }
@@ -125,17 +129,17 @@ mod tests {
     fn toggles_set_their_own_setting() {
         let mut settings = Settings::default();
         (TOGGLES[0].set)(&mut settings, true);
-        assert_eq!(settings, Settings { semantic_icons: true, no_colour: false });
+        assert_eq!(settings, Settings { semantic_icons: true, no_colour: false, last_seen_version: None });
         (TOGGLES[1].set)(&mut settings, true);
         (TOGGLES[0].set)(&mut settings, false);
-        assert_eq!(settings, Settings { semantic_icons: false, no_colour: true });
+        assert_eq!(settings, Settings { semantic_icons: false, no_colour: true, last_seen_version: None });
     }
 
     #[test]
     fn saved_settings_load_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
-        let settings = Settings { semantic_icons: true, no_colour: false };
+        let settings = Settings { semantic_icons: true, no_colour: false, last_seen_version: None };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(Some(&path), true), settings);
         assert!(!path.with_extension("json.tmp").exists());
@@ -151,7 +155,7 @@ mod tests {
         assert_eq!(Settings::load(Some(&path), false), Settings::default());
         // Unknown or missing fields are fine, for older and newer versions.
         fs::write(&path, r#"{ "semantic_icons": true, "something_new": 1 }"#).unwrap();
-        assert_eq!(Settings::load(Some(&path), false), Settings { semantic_icons: true, no_colour: false });
+        assert_eq!(Settings::load(Some(&path), false), Settings { semantic_icons: true, no_colour: false, last_seen_version: None });
     }
 
     #[test]

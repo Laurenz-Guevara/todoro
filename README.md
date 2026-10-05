@@ -77,6 +77,7 @@ todoro
 | `s` / `S` | Fuzzy search every day's items / items and their notes |
 | `#` | List your tags, to show every item with one |
 | `o` | Options, including accessibility |
+| `N` | What's new: the notes for every release |
 | `?` | Show all keybindings |
 | `q` / `:q` | Quit |
 
@@ -197,6 +198,10 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 - **Semantic priority icons:** show `∧` High, `–` Medium and `∨` Low beside triaged items, as well as the coloured number, for anyone who can't tell the colours apart.
 - **No colours:** draw everything in your terminal's own colours. Highlights such as the selected item use reversed text instead. This starts on if you set the standard [`NO_COLOR`](https://no-color.org) environment variable, until you change it here.
+
+### What's new
+
+The first time you start todoro after updating, it shows what's new in the versions since the one you last used. `N` shows the notes for every release at any time; `j` / `k` scroll and `Esc` closes them. The notes are built into todoro, so they always match the version you have.
 
 ### Help
 

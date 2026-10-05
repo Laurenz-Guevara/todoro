@@ -13,6 +13,7 @@ use chrono::{Datelike, Days, NaiveDate};
 
 use crate::app::{App, Mode};
 use crate::calendar::{self, Calendar, Zoom};
+use crate::changelog::{self as changes, ChangelogView};
 use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
@@ -41,6 +42,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, calendar),
         Mode::Search(search) => draw_search(frame, app, search),
         Mode::Options(options) => draw_options(frame, app, options),
+        Mode::Changelog(view) => draw_changelog(frame, view),
         Mode::Tags(picker) => draw_tags(frame, app, picker),
         _ => {}
     }
@@ -385,6 +387,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
         Mode::Tags(_) => ("TAGS", Color::Cyan, &[("j/k move", 1), ("↵ show items", 2), ("esc close", 3)]),
+        Mode::Changelog(_) => ("NEWS", Color::Cyan, &[("j/k scroll", 1), ("esc close", 2)]),
         Mode::Options(_) => ("OPTIONS", Color::Blue, &[("j/k move", 1), ("space toggle", 2), ("esc close", 3)]),
         Mode::Search(_) => ("SEARCH", Color::Yellow, &[("↑/↓ select", 1), ("↵ go to item", 2), ("esc close", 3)]),
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
@@ -551,17 +554,24 @@ const TAG_COLOUR: Color = Color::Cyan;
 
 /// The text of `text[line]` as spans, with any `#tags` in it coloured.
 fn tagged(text: &str, line: Range<usize>, base: Style) -> Vec<Span<'static>> {
+    let tags: Vec<Range<usize>> = tags::find_tags(text).into_iter().map(|(range, _)| range).collect();
+    marked(text, line, &tags, base, base.fg(TAG_COLOUR))
+}
+
+/// The text of `text[line]` as spans, with the parts inside any of `marks`
+/// (byte ranges of `text`, in order) in the `mark` style.
+fn marked(text: &str, line: Range<usize>, marks: &[Range<usize>], base: Style, mark: Style) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     let mut at = line.start;
-    for (tag, _) in tags::find_tags(text) {
-        let (start, end) = (tag.start.max(at), tag.end.min(line.end));
+    for range in marks {
+        let (start, end) = (range.start.max(at), range.end.min(line.end));
         if start >= end {
             continue;
         }
         if start > at {
             spans.push(Span::styled(text[at..start].to_string(), base));
         }
-        spans.push(Span::styled(text[start..end].to_string(), base.fg(TAG_COLOUR)));
+        spans.push(Span::styled(text[start..end].to_string(), mark));
         at = end;
     }
     if at < line.end {
@@ -1059,6 +1069,90 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
     let scroll = selected_lines.end.saturating_sub(visible).min(selected_lines.start);
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll as u16, 0)), area);
+}
+
+fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
+    let screen = frame.area();
+    let area = centered(screen, screen.width.saturating_sub(4).min(76), screen.height.saturating_sub(2));
+    let room = area.width.saturating_sub(2) as usize;
+    let whats_new = format!(" What's new in todoro {} ", changes::VERSION);
+    let title = if view.since.is_some() {
+        fit_first(&[whats_new.as_str(), " What's new ", " New "], room)
+    } else {
+        fit_first(&[" Changelog ", " News "], room)
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Cyan))
+        .title(title.bold())
+        .title_bottom(Line::from(fit_first(&[" j/k scroll · esc close ", " esc close "], room)).centered().dim())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let width = inner.width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for release in view.releases() {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(release.title.clone().bold().cyan()));
+        markdown_lines(release.notes, width, &mut lines);
+    }
+
+    let height = inner.height as usize;
+    view.height.set(height);
+    view.total.set(lines.len());
+    let scroll = view.scroll.min(lines.len().saturating_sub(height));
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
+}
+
+/// The little Markdown the changelog uses, wrapped to `width`: `###`
+/// headings, `- ` bullets with a hanging indent, paragraphs, and `code`.
+fn markdown_lines(markdown: &str, width: usize, lines: &mut Vec<Line<'static>>) {
+    let code = Style::new().fg(Color::Yellow);
+    for source in markdown.lines() {
+        let source = source.trim_end();
+        if source.is_empty() {
+            if lines.last().is_some_and(|line| line.width() > 0) {
+                lines.push(Line::default());
+            }
+            continue;
+        }
+        if let Some(heading) = source.strip_prefix("### ") {
+            lines.push(Line::from(heading.to_string().bold()));
+            continue;
+        }
+        let (first, rest, text) = match source.strip_prefix("- ") {
+            Some(text) => ("• ", "  ", text),
+            None => ("", "", source),
+        };
+        let (plain, marks) = inline_code(text);
+        for (n, range) in wrap_ranges(&plain, width.saturating_sub(first.width()).max(1)).into_iter().enumerate() {
+            let line = range.start..range.start + plain[range.clone()].trim_end().len();
+            let mut spans = vec![Span::raw(if n == 0 { first } else { rest })];
+            spans.extend(marked(&plain, line, &marks, Style::new(), code));
+            lines.push(Line::from(spans));
+        }
+    }
+}
+
+/// `text` without its backticks, and where the `code` parts are in the result.
+fn inline_code(text: &str) -> (String, Vec<Range<usize>>) {
+    let mut plain = String::new();
+    let mut marks = Vec::new();
+    let mut start = None;
+    for c in text.chars() {
+        if c != '`' {
+            plain.push(c);
+        } else if let Some(at) = start.take() {
+            marks.push(at..plain.len());
+        } else {
+            start = Some(plain.len());
+        }
+    }
+    (plain, marks)
 }
 
 fn draw_help(frame: &mut Frame, help: &Help) {
@@ -1986,6 +2080,55 @@ mod tests {
         app.tick(ends);
         assert!(flashing(&app).is_empty());
         assert_eq!(app.redraw_at(), None);
+    }
+
+    #[test]
+    fn inline_code_drops_the_backticks_and_marks_the_code() {
+        let (plain, marks) = inline_code("Press `j` or `4j` to move");
+        assert_eq!(plain, "Press j or 4j to move");
+        assert_eq!(marks.iter().map(|m| &plain[m.clone()]).collect::<Vec<_>>(), ["j", "4j"]);
+    }
+
+    #[test]
+    fn markdown_has_headings_bullets_with_hanging_indents_and_code() {
+        let mut lines = Vec::new();
+        markdown_lines("### Features\n\n- Press `x` to mark an item done, then it moves below\n\nPlain text.", 30, &mut lines);
+        let text: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
+        assert_eq!(
+            text,
+            ["Features", "", "• Press x to mark an item", "  done, then it moves below", "", "Plain text."]
+        );
+        let code = lines[2].spans.iter().find(|span| span.content == "x").expect("code span");
+        assert_eq!(code.style.fg, Some(Color::Yellow));
+    }
+
+    #[test]
+    fn whats_new_popup() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.mode = Mode::Changelog(ChangelogView::all());
+        let screen = render_sized(&app, 80, 30).backend().to_string();
+        let latest = &changes::releases(changes::CHANGELOG)[0];
+        assert!(screen.contains("Changelog"), "{screen}");
+        assert!(screen.contains(&latest.title), "{screen}");
+        assert!(!screen.contains("```"), "{screen}");
+        // What's new names this version.
+        app.mode = Mode::Changelog(ChangelogView::since((0, 0, 1)));
+        let screen = render_sized(&app, 80, 30).backend().to_string();
+        assert!(screen.contains(&format!("What's new in todoro {}", changes::VERSION)), "{screen}");
+    }
+
+    #[test]
+    fn whats_new_popup_scrolls_to_the_end_and_fits_narrow_screens() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.mode = Mode::Changelog(ChangelogView::all());
+        render_sized(&app, 30, 12);
+        for _ in 0..2000 {
+            press(&mut app, KeyCode::Char('j'));
+            render_sized(&app, 30, 12);
+        }
+        let screen = render_sized(&app, 30, 12).backend().to_string();
+        // The oldest release's last note ends the last line.
+        assert!(screen.contains("macOS and Windows."), "{screen}");
     }
 
     #[test]

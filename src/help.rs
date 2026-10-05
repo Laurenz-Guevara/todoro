@@ -40,6 +40,7 @@ pub const SECTIONS: &[Section] = &[
             ("#", "List tags, to show the items with one"),
             ("u / Ctrl+R", "Undo / redo a change to the list"),
             ("o", "Options, including accessibility"),
+            ("N", "What's new: every release's notes"),
             ("?", "Show this help"),
             ("q / :q", "Quit"),
         ],

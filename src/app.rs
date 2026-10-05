@@ -6,6 +6,7 @@ use chrono::{Days, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::calendar::{self, Calendar};
+use crate::changelog::{self, ChangelogView};
 use crate::help::Help;
 use crate::input::LineInput;
 use crate::notes::{Action, NotesEditor, Register};
@@ -39,6 +40,8 @@ pub enum Mode {
     Notes(Box<NotesEditor>),
     /// The options popup.
     Options(Options),
+    /// Release notes: what's new after an update, or all of them.
+    Changelog(ChangelogView),
     /// The `#` list of every tag.
     Tags(TagPicker),
     /// Fuzzy search over every day's items.
@@ -260,6 +263,11 @@ impl App {
                 }
                 calendar::Action::Help => self.open_help(),
             },
+            Mode::Changelog(view) => {
+                if view.handle_key(key) {
+                    self.mode = Mode::Normal;
+                }
+            }
             Mode::Options(popup) => match popup.handle_key(key) {
                 options::Action::Stay => {}
                 options::Action::Close => self.mode = Mode::Normal,
@@ -344,6 +352,7 @@ impl App {
             KeyCode::Char(':') => self.command = Some(LineInput::default()),
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('o') => self.mode = Mode::Options(Options::default()),
+            KeyCode::Char('N') => self.mode = Mode::Changelog(ChangelogView::all()),
             KeyCode::Char('#') => self.mode = Mode::Tags(TagPicker::default()),
             KeyCode::Char('s') => self.mode = Mode::Search(Box::new(Search::new(false))),
             KeyCode::Char('S') => self.mode = Mode::Search(Box::new(Search::new(true))),
@@ -559,6 +568,22 @@ impl App {
         if let Some(index) = self.store.move_to(slot.day, slot.index, to)? {
             self.change_day(delta);
             self.selected = self.carried() + index;
+        }
+        Ok(())
+    }
+
+    /// On startup, shows what's new if todoro was updated since it last ran,
+    /// and records this version as seen so it only shows once.
+    pub fn show_whats_new(&mut self) -> io::Result<()> {
+        let has_todos = self.store.all().next().is_some();
+        if let Some(view) = changelog::on_start(self.settings.last_seen_version.as_deref(), has_todos) {
+            self.mode = Mode::Changelog(view);
+        }
+        if self.settings.last_seen_version.as_deref() != Some(changelog::VERSION) {
+            self.settings.last_seen_version = Some(changelog::VERSION.to_string());
+            if let Some(path) = &self.settings_path {
+                self.settings.save(path)?;
+            }
         }
         Ok(())
     }
@@ -2320,6 +2345,50 @@ mod tests {
         assert!(app.command.is_none());
         type_str(&mut app, "j");
         assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn whats_new_shows_after_an_update_once() {
+        let (mut app, dir) = app_with(&["one"]);
+        let path = dir.path().join("settings.json");
+        app.settings_path = Some(path.clone());
+        app.settings.last_seen_version = Some("0.1.0".into());
+        app.show_whats_new().unwrap();
+        let Mode::Changelog(view) = &app.mode else { panic!("should show what's new") };
+        assert_eq!(view.since, Some((0, 1, 0)));
+        // This version is now recorded, so next time there's nothing.
+        assert_eq!(Settings::load(Some(&path), false).last_seen_version.as_deref(), Some(changelog::VERSION));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        app.show_whats_new().unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn a_new_user_sees_no_whats_new_but_is_recorded() {
+        let (mut app, _dir) = app_with(&[]);
+        app.show_whats_new().unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.settings.last_seen_version.as_deref(), Some(changelog::VERSION));
+    }
+
+    #[test]
+    fn someone_updating_from_before_this_existed_sees_the_latest_notes() {
+        let (mut app, _dir) = app_with(&["one"]);
+        app.show_whats_new().unwrap();
+        let Mode::Changelog(view) = &app.mode else { panic!("should show what's new") };
+        assert_eq!(view.releases().len(), 1);
+    }
+
+    #[test]
+    fn capital_n_shows_every_release() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "N");
+        let Mode::Changelog(view) = &app.mode else { panic!("should show the changelog") };
+        assert!(view.since.is_none());
+        type_str(&mut app, "jkN");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["one"]);
     }
 
     #[test]

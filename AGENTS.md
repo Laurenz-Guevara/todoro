@@ -21,6 +21,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/search.rs`: fuzzy search over every day's items (and notes with `S`), using `nucleo-matcher`
 - `src/options.rs`: `Settings` (saved to `settings.json`), the `TOGGLES` shown in the `o` popup, and the popup's keys
 - `src/tags.rs`: finding `#tags` in items' text (`find_tags`), counting them (`all_tags`) and the `#` popup's keys
+- `src/changelog.rs`: the release notes, built in from `CHANGELOG.md` with `include_str!`, and the popup showing them (`N`, and "what's new" on the first start after an update, tracked by `Settings::last_seen_version`)
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
 - `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
@@ -106,6 +107,8 @@ To release a new version, with the user's go-ahead:
 1. Draft the new `CHANGELOG.md` section with [git-cliff](https://git-cliff.org): `git cliff --unreleased --tag vX.Y.Z --prepend CHANGELOG.md` (it reads `cliff.toml`). Move the new section below the file's intro if it lands above it, and edit it into plain, user-facing wording: a commit for a change that a later commit replaced shouldn't be listed. The section's heading must be `## [X.Y.Z] - YYYY-MM-DD`; dist uses it as the release notes.
 2. Set `version` in `Cargo.toml` (run `cargo build` so `Cargo.lock` updates too), and commit both as `chore: release vX.Y.Z`.
 3. Check the notes with `dist manifest --tag vX.Y.Z --output-format=json` (`announcement_changelog`), then `git tag vX.Y.Z` and `git push origin main vX.Y.Z`. The tag must match the version.
+
+The changelog's sections are shown inside todoro (`N` and "what's new"), rendered from a small part of Markdown: `###` headings, `- ` bullets, paragraphs and `code`. Keep release notes to those. A test fails if the newest section isn't the version in `Cargo.toml`, so bump the version and add its notes together.
 
 `dist-workspace.toml` holds dist's settings. Don't edit `release.yml` by hand: change the settings and run `dist generate` to regenerate it. `ci.yml` (tests on all three systems) is hand-written.
 

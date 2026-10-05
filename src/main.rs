@@ -1,5 +1,6 @@
 mod app;
 mod calendar;
+mod changelog;
 mod help;
 mod input;
 mod notes;
@@ -28,6 +29,7 @@ fn main() -> io::Result<()> {
     let mut app = App::new(store, today);
     app.settings_path = Settings::default_path();
     app.settings = Settings::load(app.settings_path.as_ref(), std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()));
+    app.show_whats_new()?;
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();
