@@ -25,6 +25,7 @@ pub const SECTIONS: &[Section] = &[
             ("p", "Pin / unpin: move to today until done"),
             ("d", "Delete the selected item"),
             ("Enter", "Open the selected item's notes"),
+            ("c", "Open the calendar"),
             ("u / Ctrl+R", "Undo / redo a change to the list"),
             ("?", "Show this help"),
             ("q", "Quit"),
@@ -63,6 +64,20 @@ pub const SECTIONS: &[Section] = &[
     Section {
         title: "Notes, insert mode",
         bindings: &[("Enter", "Start a new line"), ("Esc", "Back to normal mode")],
+    },
+    Section {
+        title: "Calendar",
+        bindings: &[
+            ("h j k l", "Move by day and week, following the layout"),
+            ("H / L", "Previous / next month"),
+            ("t", "Jump to today"),
+            ("w / m / y", "Week / month / year view"),
+            ("a", "Add an item to the selected day"),
+            ("Enter", "Open the selected day's list"),
+            ("u / Ctrl+R", "Undo / redo"),
+            ("?", "Show this help"),
+            ("Esc / q / c", "Back to the list"),
+        ],
     },
     Section {
         title: "Anywhere",
@@ -195,7 +210,7 @@ mod tests {
     #[test]
     fn single_key_matches_key_names_only() {
         assert_eq!(found("x"), ["List: x", "Notes: x"]);
-        assert_eq!(found("?"), ["List: ?", "Notes: ?"]);
+        assert_eq!(found("?"), ["List: ?", "Notes: ?", "Calendar: ?"]);
         assert_eq!(found("$"), ["Notes: 0 / $"]);
     }
 
@@ -209,13 +224,13 @@ mod tests {
 
     #[test]
     fn longer_search_matches_descriptions_ignoring_case() {
-        assert_eq!(found("UNDO"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R"]);
+        assert_eq!(found("UNDO"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R", "Calendar: u / Ctrl+R"]);
         assert_eq!(found("next day"), ["List: h / l", "List: H / L"]);
     }
 
     #[test]
     fn longer_search_matches_key_names_ignoring_case() {
-        assert_eq!(found("ctrl"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R", "Anywhere: Ctrl+C"]);
+        assert_eq!(found("ctrl"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R", "Calendar: u / Ctrl+R", "Anywhere: Ctrl+C"]);
         assert!(found("esc").contains(&"Delete popup: c / Esc".to_string()));
         assert!(found("dd").contains(&"Notes: dd".to_string()));
     }

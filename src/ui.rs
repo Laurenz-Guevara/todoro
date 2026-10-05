@@ -7,7 +7,11 @@ use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padd
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use chrono::{Datelike, Days, NaiveDate};
+
 use crate::app::{App, Mode};
+use crate::calendar::{self, Calendar, Zoom};
+use crate::store::Item;
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
 
@@ -21,6 +25,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     };
     match screen {
         Mode::Notes(editor) => draw_notes(frame, app, editor, main),
+        Mode::Calendar(calendar) => draw_calendar(frame, app, calendar, main),
         _ => draw_list(frame, app, main),
     }
     draw_status(frame, app, status);
@@ -28,6 +33,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match &app.mode {
         Mode::ConfirmDelete => draw_confirm(frame, app),
         Mode::Help { help, .. } => draw_help(frame, help),
+        Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, calendar),
         _ => {}
     }
 }
@@ -208,6 +214,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
+        Mode::Calendar(calendar) if calendar.adding.is_some() => {
+            ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
+        }
+        Mode::Calendar(_) => (
+            "CALENDAR",
+            Color::Cyan,
+            &[("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("? help", 5)],
+        ),
         Mode::Help { .. } => {
             ("HELP", Color::Magenta, &[("type to search", 0), ("↑/↓ scroll", 1), ("esc close", 2)])
         }
@@ -349,6 +363,261 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
         last.push('…');
     }
     lines
+}
+
+/// Background of the selected row or day.
+const SELECTED_BG: Color = Color::Rgb(50, 50, 60);
+
+fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
+    let cursor = calendar.cursor;
+    let room = (area.width as usize).saturating_sub(4);
+    let (titles, hints): (Vec<String>, &[&str]) = match calendar.zoom {
+        Zoom::Week => {
+            let start = calendar::week_start(cursor);
+            let end = start + Days::new(6);
+            let long = if start.month() == end.month() {
+                format!("{} – {}", start.format("%-d"), end.format("%-d %B %Y"))
+            } else {
+                format!("{} – {}", start.format("%-d %b"), end.format("%-d %b %Y"))
+            };
+            (
+                vec![long, start.format("Week of %-d %b %Y").to_string(), start.format("w/c %-d %b").to_string()],
+                &[" j/k day · h/l week · H/L month ", " j/k day · h/l week ", " j/k day "],
+            )
+        }
+        Zoom::Month => (
+            vec![cursor.format("%B %Y").to_string(), cursor.format("%b %Y").to_string()],
+            &[" h/l day · j/k week · H/L month ", " H/L month "],
+        ),
+        Zoom::Year => (vec![cursor.format("%Y").to_string()], &[" h/l day · j/k week · H/L month ", " H/L month "]),
+    };
+    let title = titles.iter().find(|title| title.width() <= room).cloned().unwrap_or_else(|| truncate(&titles[0], room));
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Cyan))
+        .title(Line::from(format!(" {title} ").bold()).centered())
+        .title_bottom(Line::from(fit_first(hints, area.width.saturating_sub(2) as usize)).centered().dim());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    match calendar.zoom {
+        Zoom::Week => draw_week(frame, app, calendar, inner),
+        Zoom::Month => draw_month(frame, app, calendar, inner),
+        Zoom::Year => draw_year(frame, app, calendar, inner),
+    }
+}
+
+/// The days of the selected week, top to bottom, each with its items.
+fn draw_week(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
+    let start = calendar::week_start(calendar.cursor);
+    let days: Vec<NaiveDate> = (0..7).map(|i| start + Days::new(i)).collect();
+    let width = area.width as usize;
+    let height = area.height as usize;
+    // Show every item if they fit; otherwise give each day an equal share.
+    let needed: usize = days.iter().map(|day| 1 + app.store.items(*day).len()).sum();
+    let share = if needed <= height { usize::MAX } else { (height / 7).max(1) };
+
+    let mut lines = Vec::new();
+    for day in days {
+        let mut header = vec![Span::raw(day.format("%a %-d %b").to_string())];
+        if day == calendar.today {
+            header.push(" (today)".fg(Color::Green));
+        }
+        let items = app.store.items(day);
+        let room = share - 1;
+        // With no room under the date, count the items beside it instead.
+        if room == 0 && !items.is_empty() {
+            header.push(format!("  +{}", items.len()).dim());
+        }
+        let mut header = Line::from(header).bold();
+        if day == calendar.cursor {
+            header = header.bg(SELECTED_BG);
+        } else if day == calendar.today {
+            header = header.fg(Color::Green);
+        }
+        lines.push(header);
+        if room == 0 {
+            continue;
+        }
+
+        let shown = if items.len() <= room { items.len() } else { room.saturating_sub(1) };
+        let mut number = 0;
+        for item in &items[..shown] {
+            let prefix = if item.done {
+                "   ✓ ".to_string()
+            } else {
+                number += 1;
+                format!("  {number:>2}. ")
+            };
+            let text = truncate(&item.text, width.saturating_sub(prefix.width()));
+            lines.push(Line::from(vec![prefix.dark_gray(), Span::styled(text, item_style(item))]));
+        }
+        if shown < items.len() {
+            lines.push(Line::from(format!("     +{} more", items.len() - shown)).dim());
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// A grid of the selected month's weeks, Monday first. Each day shows as many
+/// of its items as fit, or a dot if there's only room for the date.
+fn draw_month(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
+    let weeks = calendar::month_weeks(calendar.cursor);
+    let column_x = |i: u16| area.x + i * area.width / 7;
+    let cell_width = |i: u16| column_x(i + 1) - column_x(i);
+    let narrowest = cell_width(0).min(cell_width(6)) as usize;
+
+    let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let name_len = narrowest.saturating_sub(1).clamp(1, 3);
+    for (i, name) in names.iter().enumerate() {
+        let rect = Rect::new(column_x(i as u16), area.y, cell_width(i as u16), 1);
+        frame.render_widget(Line::from(&name[..name_len]).dim(), rect);
+    }
+
+    let rows = area.height.saturating_sub(1);
+    let cell_height = (rows / weeks.len() as u16).max(1);
+    for (w, monday) in weeks.iter().enumerate() {
+        let y = area.y + 1 + w as u16 * cell_height;
+        if y >= area.bottom() {
+            break;
+        }
+        for i in 0..7u16 {
+            let day = *monday + Days::new(i.into());
+            let rect = Rect::new(column_x(i), y, cell_width(i), cell_height.min(area.bottom() - y));
+            draw_month_day(frame, app, calendar, day, rect);
+        }
+    }
+}
+
+fn draw_month_day(frame: &mut Frame, app: &App, calendar: &Calendar, day: NaiveDate, rect: Rect) {
+    let items = app.store.items(day);
+    let in_month = day.month() == calendar.cursor.month();
+    let mut number = Span::raw(format!("{:>2}", day.day()));
+    if day == calendar.today {
+        number = number.fg(Color::Green).bold();
+    } else if !in_month {
+        number = number.dark_gray();
+    }
+    let text_width = (rect.width as usize).saturating_sub(1);
+    let mut lines = vec![Line::from(number)];
+    if rect.height == 1 {
+        if items.iter().any(|item| !item.done) && text_width >= 3 {
+            lines[0].push_span("•".yellow());
+        }
+    } else {
+        let room = rect.height as usize - 1;
+        let shown = if items.len() <= room { items.len() } else { room.saturating_sub(1) };
+        for item in &items[..shown] {
+            lines.push(Line::from(Span::styled(truncate(&item.text, text_width), item_style(item))));
+        }
+        if shown < items.len() {
+            lines.push(Line::from(truncate(&format!("+{} more", items.len() - shown), text_width)).dim());
+        }
+    }
+    let mut paragraph = Paragraph::new(lines);
+    if !in_month {
+        paragraph = paragraph.dim();
+    }
+    if day == calendar.cursor {
+        paragraph = paragraph.bg(SELECTED_BG);
+    }
+    frame.render_widget(paragraph, rect);
+}
+
+/// All twelve months of the selected year as small grids, as many side by side
+/// as fit. Days with open items are highlighted. If they don't all fit, the
+/// rows scroll to keep the selected month in view.
+fn draw_year(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
+    const MONTH_WIDTH: u16 = 20;
+    const MONTH_HEIGHT: u16 = 8;
+    let columns = ((area.width + 2) / (MONTH_WIDTH + 2)).clamp(1, 4);
+    let used = columns * MONTH_WIDTH + (columns - 1) * 2;
+    let left = area.x + area.width.saturating_sub(used) / 2;
+    let visible_rows = ((area.height + 1) / (MONTH_HEIGHT + 1)).max(1);
+    let cursor_row = (calendar.cursor.month0() as u16) / columns;
+    let first_row = (cursor_row + 1).saturating_sub(visible_rows);
+
+    for month in 1..=12u32 {
+        let index = month as u16 - 1;
+        let (row, column) = (index / columns, index % columns);
+        if row < first_row || row >= first_row + visible_rows {
+            continue;
+        }
+        let y = area.y + (row - first_row) * (MONTH_HEIGHT + 1);
+        let x = left + column * (MONTH_WIDTH + 2);
+        let width = MONTH_WIDTH.min(area.right().saturating_sub(x));
+        let height = MONTH_HEIGHT.min(area.bottom().saturating_sub(y));
+        let first = NaiveDate::from_ymd_opt(calendar.cursor.year(), month, 1).expect("valid month");
+        draw_year_month(frame, app, calendar, first, Rect::new(x, y, width, height));
+    }
+}
+
+fn draw_year_month(frame: &mut Frame, app: &App, calendar: &Calendar, first: NaiveDate, rect: Rect) {
+    let mut name = Line::from(first.format("%B").to_string()).centered();
+    name = if first.month() == calendar.cursor.month() { name.cyan().bold() } else { name.bold() };
+    let mut lines = vec![name, Line::from("Mo Tu We Th Fr Sa Su").dim()];
+    for monday in calendar::month_weeks(first) {
+        let mut spans = Vec::new();
+        for i in 0..7u64 {
+            let day = monday + Days::new(i);
+            if i > 0 {
+                spans.push(Span::raw(" "));
+            }
+            if day.month() != first.month() {
+                spans.push(Span::raw("  "));
+                continue;
+            }
+            let items = app.store.items(day);
+            let mut style = Style::new();
+            if items.iter().any(|item| !item.done) {
+                style = style.fg(Color::Yellow).bold();
+            } else if !items.is_empty() {
+                style = style.fg(Color::DarkGray);
+            }
+            if day == calendar.today {
+                style = style.fg(Color::Green).bold();
+            }
+            if day == calendar.cursor {
+                style = style.bg(SELECTED_BG).add_modifier(Modifier::REVERSED);
+            }
+            spans.push(Span::styled(format!("{:>2}", day.day()), style));
+        }
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(Paragraph::new(lines), rect);
+}
+
+/// Open items as normal, completed ones crossed out.
+fn item_style(item: &Item) -> Style {
+    if item.done {
+        Style::new().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT)
+    } else {
+        Style::new()
+    }
+}
+
+/// The popup for typing an item to add to the calendar's selected day.
+fn draw_adding(frame: &mut Frame, calendar: &Calendar) {
+    let Some(input) = &calendar.adding else { return };
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(50);
+    let text_width = (width as usize).saturating_sub(2).max(1);
+    let ranges = wrap_ranges(&input.text, text_width);
+    let (line, col) = cursor_position(&input.text, &ranges, input.cursor, text_width);
+    let lines: Vec<Line> = ranges.iter().map(|range| Line::from(input.text[range.clone()].trim_end().to_string())).collect();
+    let area = centered(screen, width, lines.len() as u16 + 2);
+
+    let titles = [
+        calendar.cursor.format(" Add to %A %-d %B ").to_string(),
+        calendar.cursor.format(" Add to %a %-d %b ").to_string(),
+        calendar.cursor.format(" %a %-d %b ").to_string(),
+    ];
+    let room = (width as usize).saturating_sub(2);
+    let title = titles.iter().find(|title| title.width() <= room).cloned().unwrap_or_default();
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(Color::Green)).title(title.bold());
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.set_cursor_position(Position::new(inner.x + col as u16, inner.y + line as u16));
 }
 
 fn draw_help(frame: &mut Frame, help: &Help) {
@@ -894,6 +1163,68 @@ mod tests {
         // The last binding is visible at the bottom once scrolled all the way.
         let screen = render_sized(&app, 30, 12).backend().to_string();
         assert!(screen.contains("Ctrl+C"), "{screen}");
+    }
+
+    /// An app with items spread over October 2026, the calendar open in `zoom`
+    /// on today with `keys` pressed.
+    fn calendar_app(keys: &str) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(&["Buy milk", "Write the quarterly report", "Call mom"]);
+        app.store.toggle_done(app.day, 2).unwrap();
+        let on = |d: u32| NaiveDate::from_ymd_opt(2026, 10, d).unwrap();
+        for (d, text) in [(7, "Dentist 3pm"), (7, "Pick up parcel"), (9, "Team lunch"), (16, "Pay rent"), (31, "Halloween party")] {
+            let index = app.store.open_count(on(d));
+            app.store.insert(on(d), index, text.into()).unwrap();
+        }
+        app.store.insert(NaiveDate::from_ymd_opt(2026, 12, 25).unwrap(), 0, "Christmas".into()).unwrap();
+        type_str(&mut app, "c");
+        type_str(&mut app, keys);
+        (app, dir)
+    }
+
+    #[test]
+    fn calendar_month() {
+        let (app, _dir) = calendar_app("l");
+        assert_snapshot!(render_sized(&app, 80, 30).backend());
+    }
+
+    #[test]
+    fn calendar_month_small() {
+        let (app, _dir) = calendar_app("l");
+        assert_snapshot!(render_sized(&app, 30, 12).backend());
+    }
+
+    #[test]
+    fn calendar_week() {
+        let (app, _dir) = calendar_app("wj");
+        assert_snapshot!(render_sized(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn calendar_week_small() {
+        let (app, _dir) = calendar_app("w");
+        assert_snapshot!(render_sized(&app, 30, 12).backend());
+    }
+
+    #[test]
+    fn calendar_year() {
+        let (app, _dir) = calendar_app("y");
+        assert_snapshot!(render_sized(&app, 100, 30).backend());
+    }
+
+    #[test]
+    fn calendar_year_small_scrolls_to_the_selected_month() {
+        let (app, _dir) = calendar_app("yLL");
+        assert_snapshot!(render_sized(&app, 30, 24).backend());
+    }
+
+    #[test]
+    fn calendar_adding() {
+        let (app, _dir) = calendar_app("jjaRenew the parking permit before it runs out at the end of the month");
+        let mut terminal = render_sized(&app, 60, 20);
+        assert_snapshot!(terminal.backend());
+        // The cursor follows the text onto its second line.
+        let position = terminal.get_cursor_position().unwrap();
+        assert_eq!(position.y, 10);
     }
 
     #[test]

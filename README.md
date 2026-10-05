@@ -1,6 +1,6 @@
 # todoro
 
-A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and pin the ones you want to follow you to the next day with `p`. Any item can have longer notes, which you open with `Enter`.
+A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and pin the ones you want to follow you to the next day with `p`. Any item can have longer notes, which you open with `Enter`, and a calendar (`c`) lets you plan weeks or months ahead.
 
 ```
 ╭───────────── Monday, October 5 2026 (today) ─────────────╮
@@ -54,6 +54,7 @@ todoro
 | `d` | Delete the selected item (asks to confirm) |
 | `Enter` | Open the selected item's notes |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
+| `c` | Open the calendar |
 | `?` | Show all keybindings |
 | `q` | Quit |
 
@@ -108,6 +109,27 @@ In normal mode:
 | `Esc` / `q` | Back to the list |
 
 In insert mode, type as normal (`Enter` starts a new line) and press `Esc` to go back to normal mode.
+
+### Calendar
+
+`c` opens a calendar on the day you're viewing, for planning ahead without stepping through days one at a time. It has three views:
+
+- **Week** (`w`): each day of the week with its items.
+- **Month** (`m`, the default): a grid with each day's items, or a `•` on days with open items when there's no room for them.
+- **Year** (`y`): all twelve months, with days that have open items highlighted.
+
+| Key | Action |
+|---|---|
+| `h` `j` `k` `l` | Move by day and week. In the month and year views `h`/`l` move a day and `j`/`k` a week; the week view lists days top to bottom, so there `j`/`k` move a day and `h`/`l` a week |
+| `H` / `L` | Previous / next month |
+| `t` | Jump to today |
+| `w` / `m` / `y` | Week / month / year view |
+| `a` | Add an item to the selected day, without leaving the calendar |
+| `Enter` | Open the selected day's list |
+| `u` / `Ctrl+R` | Undo / redo |
+| `Esc` / `q` / `c` | Back to the list, on the day you were on |
+
+The calendar shows the items that belong to each day. Pinned items aren't repeated on every later day there, so they don't fill the whole calendar.
 
 ### Help
 

@@ -17,6 +17,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/app.rs`: app state, modes (`Normal`, `Insert`, `ConfirmDelete`, `Notes`, `Help`) and key handling
 - `src/input.rs`: `LineInput`, single-line typing with a movable cursor
 - `src/notes.rs`: the notes editor, a vim key layer over `ratatui-textarea`
+- `src/calendar.rs`: the calendar's state and keys (`Calendar`, `Zoom`), returning an `Action` for the app to carry out
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
 - `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
@@ -25,7 +26,9 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 ## Keybindings
 
-Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `H`/`L` move the item to the day before/after the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `u`/`Ctrl+R` undo/redo, `?` help, `q` quit.
+Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `H`/`L` move the item to the day before/after the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `u`/`Ctrl+R` undo/redo, `c` calendar, `?` help, `q` quit.
+
+Calendar: `h`/`j`/`k`/`l` follow the layout (month and year: `h`/`l` day, `j`/`k` week; week view: `j`/`k` day, `h`/`l` week), `H`/`L` month, `t` today, `w`/`m`/`y` week/month/year view, `a` add an item to the selected day (typed in a popup with `LineInput`; `Enter`/`Esc` save), `Enter` open that day's list, `u`/`Ctrl+R` undo/redo, `?` help, `Esc`/`q`/`c` back to the list.
 
 Insert mode: type to insert at the cursor, `←`/`→`/`Home`/`End` move, `Backspace`/`Delete` remove, `Enter`/`Esc` save. Saving an empty new item discards it. Saving an edited item as empty opens the delete popup.
 
@@ -42,7 +45,8 @@ Keep new bindings vim-like. When you add or change one, update `SECTIONS` in `sr
 - Today and future days also show the pinned, open items from earlier days (`Store::pinned_before`), first, without moving them. So an unfinished pinned item shows on its own day and every day after it. So screen positions aren't always store positions: `App::slots()` maps each row on screen to the `(day, index)` where its item is stored. Use it (or `App::items()`) for anything that reads or changes the selected item, never `store.items(app.day)[app.selected]`.
 - On disk an item is a plain string, or an object with `text` and optional `notes`, `done` and `pinned` (see `RawItem` in `store.rs`). Items with only text must stay plain strings so simple files stay readable by older versions.
 - `Store` saves after every change by writing a temp file and renaming it. Don't defer or batch saves.
-- List undo is automatic: `App::handle_key` snapshots the store before each key in `Normal`, `Insert` and `ConfirmDelete` mode and records it if the key changed anything. A notes visit is recorded as one change when it closes (`notes_before`). New list actions need no undo code, but must change the store only through `App::handle_key`.
+- The calendar shows only the items stored on each day, not pinned items carried forward, which would fill every later day.
+- List undo is automatic: `App::handle_key` snapshots the store before each key in `Normal`, `Insert`, `ConfirmDelete` and `Calendar` mode and records it if the key changed anything. A notes visit is recorded as one change when it closes (`notes_before`). New list actions need no undo code, but must change the store only through `App::handle_key`.
 - Single-line typing (the list's insert mode) goes through `LineInput` in `input.rs`. Its `cursor` is a byte offset that must stay on a char boundary.
 - The UI must work down to about 30 columns. Any text with a fixed length needs narrower fallbacks: `fit_first` (shorter alternatives), `fit_hints` (status bar hints by priority, `? help` last to go) or `truncate` (ends with "…"). The `screens_at_30_columns` and `screens_at_40_columns` snapshots cover every screen, so check them after any UI change.
 - Long text wraps rather than being cut off: list rows and the delete popup both use `wrap_ranges` in `ui.rs`, which keeps the text exactly as typed (so the cursor can be placed with `cursor_position`) and measures display width with `unicode-width`, not `chars().count()`. List rows can be several lines tall, so screen positions come from summing row heights.
@@ -56,6 +60,7 @@ Every new feature or bug fix comes with tests in the same commit. Tests live in 
 - `help.rs`: search matching and the popup's own keys.
 - `notes.rs`: the notes editor's keys, driven with the `send` helper (`<esc>` and `<cr>` stand for Escape and Enter).
 - `store.rs`: persistence, always against a temporary file.
+- `calendar.rs`: the calendar's keys and date maths, driven with its own `send` helper.
 - `ui.rs`: screen snapshots with [insta](https://insta.rs). Add one for any new screen or popup.
 
 Tests run on a fixed date (`test_util::today()`, 2026-10-05) and must never read the clock, the real data file or `TODORO_FILE`.

@@ -1,4 +1,5 @@
 mod app;
+mod calendar;
 mod help;
 mod input;
 mod notes;

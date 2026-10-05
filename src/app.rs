@@ -4,6 +4,7 @@ use std::io;
 use chrono::{Days, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::calendar::{self, Calendar};
 use crate::help::Help;
 use crate::input::LineInput;
 use crate::notes::{Action, NotesEditor};
@@ -27,6 +28,8 @@ pub enum Mode {
     ConfirmDelete,
     /// The notes screen for the selected item.
     Notes(Box<NotesEditor>),
+    /// The calendar, for planning ahead.
+    Calendar(Box<Calendar>),
     /// The keybinding help popup, over the screen in `back`.
     Help { help: Help, back: Box<Mode> },
 }
@@ -109,16 +112,23 @@ impl App {
             self.quit = true;
             return Ok(());
         }
-        if let Mode::Normal = self.mode {
+        // Undo works from the list and the calendar, but not while typing.
+        let can_undo = match &self.mode {
+            Mode::Normal => true,
+            Mode::Calendar(calendar) => calendar.adding.is_none(),
+            _ => false,
+        };
+        if can_undo {
             match key.code {
                 KeyCode::Char('u') if !ctrl => return self.undo(),
                 KeyCode::Char('r') if ctrl => return self.redo(),
                 _ => {}
             }
         }
-        // Any change made from the list is undoable. The notes screen records
-        // its own change when it closes, and help changes nothing.
-        let before = matches!(self.mode, Mode::Normal | Mode::Insert { .. } | Mode::ConfirmDelete).then(|| self.state());
+        // Any change made from the list or calendar is undoable. The notes
+        // screen records its own change when it closes, and help changes nothing.
+        let before = matches!(self.mode, Mode::Normal | Mode::Insert { .. } | Mode::ConfirmDelete | Mode::Calendar(_))
+            .then(|| self.state());
         self.mode_key(key)?;
         if let Some(before) = before {
             self.record(before);
@@ -182,6 +192,19 @@ impl App {
                     Action::Help => self.open_help(),
                 }
             }
+            Mode::Calendar(calendar) => match calendar.handle_key(key) {
+                calendar::Action::Stay => {}
+                calendar::Action::Close => self.mode = Mode::Normal,
+                calendar::Action::Open(day) => {
+                    self.mode = Mode::Normal;
+                    self.show_day(day);
+                }
+                calendar::Action::Add(day, text) => {
+                    let index = self.store.open_count(day);
+                    self.store.insert(day, index, text)?;
+                }
+                calendar::Action::Help => self.open_help(),
+            },
             Mode::Help { help, back } => {
                 if help.handle_key(key) {
                     self.mode = std::mem::replace(back.as_mut(), Mode::Normal);
@@ -198,6 +221,7 @@ impl App {
         match code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char('c') => self.mode = Mode::Calendar(Box::new(Calendar::new(self.day, self.today))),
             KeyCode::Char('h') | KeyCode::Left => self.change_day(-1),
             KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
             KeyCode::Char('j') | KeyCode::Down if self.selected + 1 < len => self.selected += 1,
@@ -323,10 +347,15 @@ impl App {
         let days = Days::new(delta.unsigned_abs());
         let next = if delta < 0 { self.day.checked_sub_days(days) } else { self.day.checked_add_days(days) };
         if let Some(day) = next {
-            self.day = day;
-            self.selected = 0;
-            self.list_offset.set(0);
+            self.show_day(day);
         }
+    }
+
+    /// Shows `day` on the list, from the top.
+    fn show_day(&mut self, day: NaiveDate) {
+        self.day = day;
+        self.selected = 0;
+        self.list_offset.set(0);
     }
 }
 
@@ -1168,6 +1197,90 @@ mod tests {
         assert_eq!(items(&app), ["plain"]);
         type_str(&mut app, "h");
         assert_eq!(items(&app), ["old"]);
+    }
+
+    fn calendar(app: &App) -> &Calendar {
+        let Mode::Calendar(calendar) = &app.mode else { panic!("the calendar should be open") };
+        calendar
+    }
+
+    #[test]
+    fn c_opens_the_calendar_on_the_day_shown() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "lc");
+        assert_eq!(calendar(&app).cursor, today().succ_opt().unwrap());
+        assert_eq!(calendar(&app).today, today());
+    }
+
+    #[test]
+    fn esc_closes_the_calendar_back_on_the_same_day() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "jcjjl");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.day, today());
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn enter_in_the_calendar_opens_that_day() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "jcjl");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.day, today() + chrono::Duration::days(8));
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn a_in_the_calendar_adds_to_the_selected_day() {
+        let (mut app, dir) = app_with(&["one"]);
+        let later = today() + chrono::Duration::days(14);
+        app.store.insert(later, 0, "already there".into()).unwrap();
+        app.store.insert(later, 1, "finished".into()).unwrap();
+        app.store.toggle_done(later, 1).unwrap();
+        type_str(&mut app, "cjjaDentist 3pm");
+        press(&mut app, KeyCode::Enter);
+        // Still in the calendar, and the list's day is unchanged.
+        assert!(calendar(&app).adding.is_none());
+        assert_eq!(app.day, today());
+        assert_eq!(texts_on(&app, later), ["already there", "Dentist 3pm", "finished"]);
+        let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
+        assert_eq!(reloaded.items(later)[1].text, "Dentist 3pm");
+    }
+
+    #[test]
+    fn u_in_the_calendar_undoes_an_add_and_ctrl_r_redoes_it() {
+        let (mut app, _dir) = app_with(&[]);
+        let tomorrow = today().succ_opt().unwrap();
+        type_str(&mut app, "claplan");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "u");
+        assert!(app.store.items(tomorrow).is_empty());
+        assert!(matches!(app.mode, Mode::Calendar(_)));
+        ctrl(&mut app, 'r');
+        assert_eq!(texts_on(&app, tomorrow), ["plan"]);
+        // And from the list afterwards too.
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "u");
+        assert!(app.store.items(tomorrow).is_empty());
+    }
+
+    #[test]
+    fn u_while_adding_in_the_calendar_is_text() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "cau");
+        assert_eq!(calendar(&app).adding.as_ref().unwrap().text, "u");
+    }
+
+    #[test]
+    fn help_from_the_calendar_returns_to_it() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "cwl?");
+        assert!(matches!(app.mode, Mode::Help { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(calendar(&app).zoom, calendar::Zoom::Week);
+        assert_eq!(calendar(&app).cursor, today() + chrono::Duration::days(7));
     }
 
     #[test]

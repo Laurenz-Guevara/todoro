@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 30, 12).backend()"
+---
+"╭─── 5 – 11 October 2026 ────╮"
+"│Mon 5 Oct (today)  +3       │"
+"│Tue 6 Oct                   │"
+"│Wed 7 Oct  +2               │"
+"│Thu 8 Oct                   │"
+"│Fri 9 Oct  +1               │"
+"│Sat 10 Oct                  │"
+"│Sun 11 Oct                  │"
+"│                            │"
+"│                            │"
+"╰──── j/k day · h/l week ────╯"
+" CALENDAR   a add  ? help     "
