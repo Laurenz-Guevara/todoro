@@ -3,7 +3,7 @@ source: src/ui.rs
 expression: render(&app).backend()
 ---
 "╭──────────────── Tuesday, October 6 2026 ─────────────────╮"
-"│1. Write report »                                         │"
+"│1. Write report ⚲                                         │"
 "│2. Call mom                                               │"
 "│── Completed (1) ─────────────────────────────────────────│"
 "│✓  Book dentist                                           │"

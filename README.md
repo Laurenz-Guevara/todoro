@@ -54,7 +54,7 @@ todoro
 | `?` | Show all keybindings |
 | `q` | Quit |
 
-Pinned items are marked with `»` and items that have notes with `≡`.
+Pinned items are marked with `⚲` and items that have notes with `≡`.
 
 ### Completed items
 

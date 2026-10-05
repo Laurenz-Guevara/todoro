@@ -3,10 +3,10 @@ source: src/ui.rs
 expression: render(&app).backend()
 ---
 "╭───────────── Monday, October 5 2026 (today) ─────────────╮"
-"│1. Buy milk »                                             │"
-"│2. Write report » ≡                                       │"
+"│1. Buy milk ⚲                                             │"
+"│2. Write report ⚲ ≡                                       │"
 "│── Completed (1) ─────────────────────────────────────────│"
-"│✓  Call mom »                                             │"
+"│✓  Call mom ⚲                                             │"
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"

@@ -132,7 +132,7 @@ struct Row<'a> {
 const NOTES_MARKER: &str = " ≡";
 
 /// Shown after a pinned item, which moves forward to today until completed.
-const PINNED_MARKER: &str = " »";
+const PINNED_MARKER: &str = " ⚲";
 
 fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     let title = format!(" {}. {} ", app.selected + 1, app.items()[app.selected].text);
