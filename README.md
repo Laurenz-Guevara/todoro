@@ -45,6 +45,7 @@ todoro
 |---|---|
 | `h` / `l` | Previous / next day |
 | `j` / `k` | Move down / up |
+| `J` / `K` | Move the selected item down / up the list |
 | `a` | Add an item below the cursor |
 | `e` | Edit the selected item |
 | `x` | Mark the selected item done, or not done again |

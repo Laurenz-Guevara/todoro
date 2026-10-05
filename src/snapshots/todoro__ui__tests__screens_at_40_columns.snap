@@ -54,7 +54,7 @@ help
 "│ │     Previous / next day          │ │"
 "│ │   j / k                          │ │"
 "│ │     Move down / up               │ │"
-"│ │   a                              │ │"
+"│ │   J / K                          │ │"
 "╰─╰───── ↑/↓ scroll · esc close ─────╯─╯"
 " HELP   ↑/↓ scroll  esc close           "
 

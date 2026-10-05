@@ -174,6 +174,9 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
             KeyCode::Char('j') | KeyCode::Down if self.selected + 1 < len => self.selected += 1,
             KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+            // Move the item down or up, within the open or completed items.
+            KeyCode::Char('J') => self.move_selected(1)?,
+            KeyCode::Char('K') => self.move_selected(-1)?,
             // Like vim's `a`, append after the cursor. From a completed item (or an
             // empty day), append to the end of the open items instead.
             KeyCode::Char('a') => {
@@ -206,6 +209,19 @@ impl App {
                 self.mode = Mode::Notes(Box::new(editor));
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Swaps the selected item with its neighbour `delta` rows away, if both are
+    /// stored on the same day, and keeps it selected.
+    fn move_selected(&mut self, delta: isize) -> io::Result<()> {
+        let Some(other) = self.selected.checked_add_signed(delta) else { return Ok(()) };
+        if let (Some(a), Some(b)) = (self.slot(self.selected), self.slot(other))
+            && a.day == b.day
+            && self.store.swap(a.day, a.index, b.index)?
+        {
+            self.selected = other;
         }
         Ok(())
     }
@@ -771,6 +787,57 @@ mod tests {
         let later = today() + chrono::Duration::days(2);
         assert_eq!(app.store.items(later).len(), 2);
         assert_eq!(app.store.items(today()).len(), 2);
+    }
+
+    #[test]
+    fn capital_j_and_k_move_the_item_and_the_cursor_follows() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "J");
+        assert_eq!(items(&app), ["two", "one", "three"]);
+        assert_eq!(app.selected, 1);
+        type_str(&mut app, "JJ");
+        assert_eq!(items(&app), ["two", "three", "one"]);
+        assert_eq!(app.selected, 2);
+        type_str(&mut app, "KK");
+        assert_eq!(items(&app), ["one", "two", "three"]);
+        assert_eq!(app.selected, 0);
+        type_str(&mut app, "K");
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn capital_j_and_k_never_cross_into_the_completed_items() {
+        let (mut app, _dir) = app_with(&["one", "two", "three", "four"]);
+        type_str(&mut app, "jjxx");
+        // ["one", "two", "four" (done), "three" (done)], cursor on "four".
+        type_str(&mut app, "K");
+        assert_eq!(items(&app), ["one", "two", "four", "three"]);
+        type_str(&mut app, "J");
+        assert_eq!(items(&app), ["one", "two", "three", "four"]);
+        assert_eq!(app.selected, 3);
+        type_str(&mut app, "kk");
+        type_str(&mut app, "J");
+        assert_eq!(items(&app), ["one", "two", "three", "four"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn carried_items_reorder_among_themselves_but_not_with_the_days_own() {
+        let (mut app, _dir) = app_with_future(&["pin a", "pin b"], &["later"]);
+        type_str(&mut app, "llJ");
+        assert_eq!(items(&app), ["pin b", "pin a", "later"]);
+        assert_eq!(app.store.items(today())[0].text, "pin b");
+        type_str(&mut app, "J");
+        assert_eq!(items(&app), ["pin b", "pin a", "later"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn capital_j_while_typing_is_text() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "aJK");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one", "JK"]);
     }
 
     #[test]

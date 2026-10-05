@@ -175,6 +175,19 @@ impl Store {
         self.save()
     }
 
+    /// Swaps two items on `day` if both are open or both completed, so the
+    /// open items always stay above the completed ones. Returns whether it did.
+    pub fn swap(&mut self, day: NaiveDate, a: usize, b: usize) -> io::Result<bool> {
+        let Some(items) = self.days.get_mut(&key(day)) else { return Ok(false) };
+        let same_group = matches!((items.get(a), items.get(b)), (Some(x), Some(y)) if x.done == y.done);
+        if !same_group || a == b {
+            return Ok(false);
+        }
+        items.swap(a, b);
+        self.save()?;
+        Ok(true)
+    }
+
     fn item_mut(&mut self, day: NaiveDate, index: usize) -> Option<&mut Item> {
         self.days.get_mut(&key(day)).and_then(|items| items.get_mut(index))
     }
@@ -479,6 +492,26 @@ mod tests {
         assert_eq!(store.pinned_before(day(2)), [(day(-1), 0), (today(), 1)]);
         assert_eq!(store.pinned_before(day(3)), [(day(-1), 0), (today(), 1), (day(2), 0)]);
         assert!(store.pinned_before(day(-1)).is_empty());
+    }
+
+    #[test]
+    fn swap_reorders_within_the_open_or_completed_items() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        for (i, text) in ["a", "b", "c", "d"].into_iter().enumerate() {
+            store.insert(today(), i, text.into()).unwrap();
+        }
+        store.toggle_done(today(), 3).unwrap();
+        store.toggle_done(today(), 2).unwrap();
+        // ["a", "b", "c" (done), "d" (done)]
+        assert!(store.swap(today(), 0, 1).unwrap());
+        assert!(store.swap(today(), 2, 3).unwrap());
+        assert_eq!(texts(&store, today()), ["b", "a", "d", "c"]);
+        // Never across the boundary, past the end, or on a day with no items.
+        assert!(!store.swap(today(), 1, 2).unwrap());
+        assert!(!store.swap(today(), 3, 4).unwrap());
+        assert!(!store.swap(day(1), 0, 1).unwrap());
+        assert_eq!(texts(&Store::open(path).unwrap(), today()), ["b", "a", "d", "c"]);
     }
 
     #[test]
