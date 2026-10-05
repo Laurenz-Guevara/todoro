@@ -1,15 +1,16 @@
 # todoro
 
-A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Any item can have longer notes, which you open with `Enter`.
+A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and anything you don't finish moves to the next day. Any item can have longer notes, which you open with `Enter`.
 
 ```
 ╭───────────── Monday, October 5 2026 (today) ─────────────╮
 │1. Buy milk                                               │
-│2. Write report                                           │
-│3. Call mom                                               │
-│                                                          │
+│2. Book dentist                                           │
+│── Completed (2) ─────────────────────────────────────────│
+│✓  Call mom                                               │
+│✓  Write report ≡                                         │
 ╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯
- NORMAL   a add  e edit  d delete  q quit
+ NORMAL   a add  e edit  x done  d delete  ↵ notes  q quit
 ```
 
 ## Install
@@ -44,11 +45,18 @@ todoro
 | `j` / `k` | Move down / up |
 | `a` | Add an item below the cursor |
 | `e` | Edit the selected item |
+| `x` | Mark the selected item done, or not done again |
 | `d` | Delete the selected item (asks to confirm) |
 | `Enter` | Open the selected item's notes |
 | `q` | Quit |
 
 Items that have notes are marked with `≡`.
+
+### Completed items
+
+`x` moves an item under the Completed header, crossed out. The cursor stays where it was, so you can tick off several items in a row. `x` on a completed item moves it back to the bottom of the numbered list.
+
+When you start todoro, any items you didn't complete on earlier days move to the top of today's list, keeping their notes. Completed items stay on the day you completed them, so you can go back with `h` to see what you did.
 
 ### Insert mode
 
@@ -93,7 +101,7 @@ Press `d` to delete the item, or `c` (or `Esc`) to cancel.
 
 ## Data
 
-Todos are saved after every change, as JSON grouped by date. Items without notes are plain strings, and items with notes are `{ "text": ..., "notes": ... }`:
+Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes": ..., "done": true }`:
 
 | OS | Location |
 |---|---|

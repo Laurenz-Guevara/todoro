@@ -35,55 +35,79 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 
     // The rows to show, with the item being typed in place of (or inserted
     // among) the saved ones, so the numbering below it is already right.
-    let mut rows: Vec<(&str, bool, Style)> =
-        app.items().iter().map(|item| (item.text.as_str(), !item.notes.is_empty(), Style::new())).collect();
-    let mut state = ListState::default();
+    let mut rows: Vec<Row> = app
+        .items()
+        .iter()
+        .map(|item| Row { text: &item.text, has_notes: !item.notes.is_empty(), done: item.done, typing: false })
+        .collect();
+    let mut selected = (!rows.is_empty()).then_some(app.selected);
     if let Mode::Insert { index, text, editing, .. } = &app.mode {
-        let has_notes = *editing && !app.items()[*index].notes.is_empty();
-        let row = (text.as_str(), has_notes, Style::new().fg(Color::Yellow));
         if *editing {
-            rows[*index] = row;
+            rows[*index] = Row { text, typing: true, ..rows[*index] };
         } else {
-            rows.insert(*index, row);
+            rows.insert(*index, Row { text, has_notes: false, done: false, typing: true });
         }
-        state.select(Some(*index));
-    } else if !rows.is_empty() {
-        state.select(Some(app.selected));
+        selected = Some(*index);
     }
 
-    // Pad numbers so text lines up once there are 10 or more items.
-    let width = rows.len().to_string().len();
-    let number = |n: usize| Span::styled(format!("{n:>width$}. "), Style::new().fg(Color::DarkGray));
-    let rows: Vec<ListItem> = rows
-        .into_iter()
-        .enumerate()
-        .map(|(i, (text, has_notes, style))| {
-            let mut line = Line::from(vec![number(i + 1), text.to_string().into()]);
-            if has_notes {
-                line.push_span(NOTES_MARKER.dim());
-            }
-            ListItem::new(line).style(style)
-        })
-        .collect();
-
+    // Open items are numbered. Completed ones follow under a header row, so
+    // their list row is one more than their item index.
+    let open = rows.iter().take_while(|row| !row.done).count();
+    let list_row = |index: usize| if index < open { index } else { index + 1 };
     let inner = block.inner(area);
-    if rows.is_empty() {
+
+    // Pad numbers so text lines up once there are 10 or more open items.
+    let width = open.max(1).to_string().len();
+    let mut items: Vec<ListItem> = Vec::with_capacity(rows.len() + 1);
+    for (i, row) in rows.iter().enumerate() {
+        if i == open {
+            let title = format!("── Completed ({}) ", rows.len() - open);
+            let fill = (inner.width as usize).saturating_sub(title.chars().count());
+            items.push(ListItem::new(format!("{title}{}", "─".repeat(fill)).dark_gray()));
+        }
+        let (prefix, text_style) = if row.done {
+            (format!("{:>width$}  ", "✓"), Style::new().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT))
+        } else {
+            (format!("{:>width$}. ", i + 1), Style::new())
+        };
+        let mut line = Line::from(vec![
+            Span::styled(prefix, Style::new().fg(Color::DarkGray)),
+            Span::styled(row.text.to_string(), text_style),
+        ]);
+        if row.has_notes {
+            line.push_span(NOTES_MARKER.dim());
+        }
+        let style = if row.typing { Style::new().fg(Color::Yellow) } else { Style::new() };
+        items.push(ListItem::new(line).style(style));
+    }
+    let mut state = ListState::default().with_selected(selected.map(list_row));
+
+    if items.is_empty() {
         let empty = Paragraph::new("Nothing to do. Press a to add an item.").dim().centered();
         frame.render_widget(block, area);
         frame.render_widget(empty, inner);
         return;
     }
 
-    let list = List::new(rows)
+    let list = List::new(items)
         .block(block)
         .highlight_style(Style::new().bg(Color::Rgb(50, 50, 60)).add_modifier(Modifier::BOLD));
     frame.render_stateful_widget(list, area, &mut state);
 
     if let Mode::Insert { index, text, cursor, .. } = &app.mode {
-        let row = (*index - state.offset()) as u16;
+        let row = (list_row(*index) - state.offset()) as u16;
         let col = (width + 2 + text[..*cursor].chars().count()) as u16;
         frame.set_cursor_position(Position::new(inner.x + col, inner.y + row));
     }
+}
+
+/// One item row on the main list.
+struct Row<'a> {
+    text: &'a str,
+    has_notes: bool,
+    done: bool,
+    /// The item being added or edited.
+    typing: bool,
 }
 
 /// Shown after an item on the main list when it has notes.
@@ -102,7 +126,7 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let (mode, color, hints) = match &app.mode {
-        Mode::Normal => ("NORMAL", Color::Blue, "a add  e edit  d delete  enter notes  q quit"),
+        Mode::Normal => ("NORMAL", Color::Blue, "a add  e edit  x done  d delete  ↵ notes  q quit"),
         Mode::Insert { editing: false, .. } => ("INSERT", Color::Green, "←/→ move  enter/esc save  (empty discards)"),
         Mode::Insert { editing: true, .. } => ("INSERT", Color::Green, "←/→ move  enter/esc save  (empty asks to delete)"),
         Mode::ConfirmDelete => ("DELETE", Color::Red, "d confirm  c cancel"),
@@ -230,6 +254,32 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "ioat milk");
         assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn completed_items_below_a_header() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom", "Book dentist"]);
+        app.store.set_notes(app.day, 1, "notes".into()).unwrap();
+        type_str(&mut app, "jxx");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn all_items_completed() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, "xx");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn editing_a_completed_item() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, "xje");
+        let mut terminal = render(&app);
+        assert_snapshot!(terminal.backend());
+        // Border, then row 1 (open item) + row 2 (header) puts the item on row 3.
+        // The cursor follows "✓ " and "Buy milk".
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 8, 3));
     }
 
     #[test]

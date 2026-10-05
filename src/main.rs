@@ -14,7 +14,10 @@ use crate::app::App;
 use crate::store::Store;
 
 fn main() -> io::Result<()> {
-    let mut app = App::new(Store::load()?, Local::now().date_naive());
+    let today = Local::now().date_naive();
+    let mut store = Store::load()?;
+    store.roll_over(today)?;
+    let mut app = App::new(store, today);
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut app);
     ratatui::restore();

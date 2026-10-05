@@ -48,7 +48,7 @@ impl App {
             return Ok(());
         }
         match &mut self.mode {
-            Mode::Normal => self.normal_key(key.code),
+            Mode::Normal => self.normal_key(key.code)?,
             Mode::Insert { index, text, cursor, editing } => match key.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     let (index, text, editing) = (*index, text.trim().to_string(), *editing);
@@ -104,17 +104,19 @@ impl App {
         Ok(())
     }
 
-    fn normal_key(&mut self, code: KeyCode) {
+    fn normal_key(&mut self, code: KeyCode) -> io::Result<()> {
         let len = self.items().len();
+        let open = self.store.open_count(self.day);
         match code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('h') | KeyCode::Left => self.change_day(-1),
             KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
             KeyCode::Char('j') | KeyCode::Down if self.selected + 1 < len => self.selected += 1,
             KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(1),
-            // Like vim's `a`, append after the cursor (or start the list if empty).
+            // Like vim's `a`, append after the cursor. From a completed item (or an
+            // empty day), append to the end of the open items instead.
             KeyCode::Char('a') => {
-                let index = if len == 0 { 0 } else { self.selected + 1 };
+                let index = if self.selected < open { self.selected + 1 } else { open };
                 self.mode = Mode::Insert { index, text: String::new(), cursor: 0, editing: false };
             }
             KeyCode::Char('e') if len > 0 => {
@@ -123,12 +125,15 @@ impl App {
                 self.mode = Mode::Insert { index: self.selected, text, cursor, editing: true };
             }
             KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete,
+            // The cursor stays put, so you can tick off several items in a row.
+            KeyCode::Char('x') if len > 0 => self.store.toggle_done(self.day, self.selected)?,
             KeyCode::Enter if len > 0 => {
                 let editor = NotesEditor::new(&self.items()[self.selected].notes);
                 self.mode = Mode::Notes(Box::new(editor));
             }
             _ => {}
         }
+        Ok(())
     }
 
     fn change_day(&mut self, delta: i64) {
@@ -416,6 +421,78 @@ mod tests {
         assert!(app.quit);
         let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
         assert_eq!(reloaded.items(today())[0].notes, "unsaved?");
+    }
+
+    #[test]
+    fn x_completes_the_item_and_keeps_the_cursor_in_place() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "x");
+        assert_eq!(items(&app), ["two", "three", "one"]);
+        assert!(app.items()[2].done);
+        assert_eq!(app.selected, 0);
+        // The cursor is now on "two", so x again ticks off the next item.
+        type_str(&mut app, "x");
+        assert_eq!(items(&app), ["three", "two", "one"]);
+        assert_eq!(app.store.open_count(app.day), 1);
+    }
+
+    #[test]
+    fn x_on_a_completed_item_reopens_it() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "xj");
+        assert_eq!(app.selected, 1);
+        type_str(&mut app, "x");
+        assert_eq!(items(&app), ["two", "one"]);
+        assert!(app.items().iter().all(|item| !item.done));
+    }
+
+    #[test]
+    fn x_on_an_empty_day_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "x");
+        assert!(app.items().is_empty());
+    }
+
+    #[test]
+    fn x_in_insert_mode_types_an_x() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "ax");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one", "x"]);
+        assert!(app.items().iter().all(|item| !item.done));
+    }
+
+    #[test]
+    fn a_on_a_completed_item_adds_to_the_end_of_the_open_items() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "jxj");
+        // ["one", "three", "two" (done)], cursor on "two".
+        assert_eq!(app.selected, 2);
+        type_str(&mut app, "anew");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one", "three", "new", "two"]);
+        assert_eq!(app.selected, 2);
+        assert!(!app.items()[2].done);
+    }
+
+    #[test]
+    fn a_when_everything_is_completed_adds_the_first_open_item() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "xanew");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["new", "one"]);
+    }
+
+    #[test]
+    fn completed_items_can_still_be_edited_and_deleted() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "xj");
+        type_str(&mut app, "e!");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["two", "one!"]);
+        assert!(app.items()[1].done);
+        type_str(&mut app, "dd");
+        assert_eq!(items(&app), ["two"]);
     }
 
     #[test]

@@ -12,38 +12,46 @@ use serde::{Deserialize, Serialize};
 pub struct Item {
     pub text: String,
     pub notes: String,
+    pub done: bool,
 }
 
-/// How an item is written to disk. Items without notes stay plain strings, so
-/// files from before notes existed load unchanged and remain readable by older
-/// versions until notes are added.
+/// How an item is written to disk. Items with only text stay plain strings, so
+/// files from before notes and completion existed load unchanged and remain
+/// readable by older versions until an item gets notes or is completed.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum RawItem {
     Text(String),
-    Full { text: String, notes: String },
+    Full {
+        text: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        notes: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        done: bool,
+    },
 }
 
 impl From<RawItem> for Item {
     fn from(raw: RawItem) -> Self {
         match raw {
-            RawItem::Text(text) => Item { text, notes: String::new() },
-            RawItem::Full { text, notes } => Item { text, notes },
+            RawItem::Text(text) => Item { text, ..Item::default() },
+            RawItem::Full { text, notes, done } => Item { text, notes, done },
         }
     }
 }
 
 impl From<Item> for RawItem {
     fn from(item: Item) -> Self {
-        if item.notes.is_empty() {
+        if item.notes.is_empty() && !item.done {
             RawItem::Text(item.text)
         } else {
-            RawItem::Full { text: item.text, notes: item.notes }
+            RawItem::Full { text: item.text, notes: item.notes, done: item.done }
         }
     }
 }
 
-/// Todo items keyed by day, persisted as JSON.
+/// Todo items keyed by day, persisted as JSON. Each day's items are kept with
+/// the open ones first and the completed ones after them.
 pub struct Store {
     path: PathBuf,
     days: BTreeMap<String, Vec<Item>>,
@@ -64,12 +72,41 @@ impl Store {
 
     /// Loads from `path`. A missing file is an empty store; it is created on first save.
     pub fn open(path: PathBuf) -> io::Result<Self> {
-        let days = match fs::read_to_string(&path) {
+        let mut days: BTreeMap<String, Vec<Item>> = match fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).map_err(io::Error::other)?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e),
         };
+        // A hand-edited file may mix open and completed items. Stable sort keeps
+        // each group in its original order.
+        for items in days.values_mut() {
+            items.sort_by_key(|item| item.done);
+        }
         Ok(Self { path, days })
+    }
+
+    /// Moves every open item from days before `today` to the start of today's
+    /// list, oldest day first. Completed items stay on the day they were done.
+    pub fn roll_over(&mut self, today: NaiveDate) -> io::Result<()> {
+        let today_key = key(today);
+        let mut carried = Vec::new();
+        self.days.retain(|day, items| {
+            if *day < today_key {
+                carried.extend(items.extract_if(.., |item| !item.done));
+            }
+            !items.is_empty()
+        });
+        if carried.is_empty() {
+            return Ok(());
+        }
+        let items = self.days.entry(today_key).or_default();
+        items.splice(0..0, carried);
+        self.save()
+    }
+
+    /// How many items on `day` are not completed. They come first in `items`.
+    pub fn open_count(&self, day: NaiveDate) -> usize {
+        self.items(day).iter().take_while(|item| !item.done).count()
     }
 
     pub fn items(&self, day: NaiveDate) -> &[Item] {
@@ -77,8 +114,10 @@ impl Store {
     }
 
     pub fn insert(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
+        // New items are open, so they always go among the open ones.
+        let index = index.min(self.open_count(day));
         let items = self.days.entry(key(day)).or_default();
-        items.insert(index.min(items.len()), Item { text, notes: String::new() });
+        items.insert(index, Item { text, ..Item::default() });
         self.save()
     }
 
@@ -93,6 +132,21 @@ impl Store {
         if let Some(item) = self.item_mut(day, index) {
             item.notes = notes;
         }
+        self.save()
+    }
+
+    /// Completes an open item or reopens a completed one. Either way it moves to
+    /// the boundary between the two groups: the top of the completed items, or
+    /// the bottom of the open ones.
+    pub fn toggle_done(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
+        let Some(items) = self.days.get_mut(&key(day)) else { return Ok(()) };
+        if index >= items.len() {
+            return Ok(());
+        }
+        let mut item = items.remove(index);
+        item.done = !item.done;
+        let boundary = items.iter().take_while(|item| !item.done).count();
+        items.insert(boundary, item);
         self.save()
     }
 
@@ -220,6 +274,133 @@ mod tests {
         let store = Store::open(path).unwrap();
         assert_eq!(texts(&store, today()), ["Buy milk", "Write report"]);
         assert!(store.items(today()).iter().all(|item| item.notes.is_empty()));
+    }
+
+    fn day(offset: i64) -> NaiveDate {
+        today() + chrono::Duration::days(offset)
+    }
+
+    fn done_flags(store: &Store, day: NaiveDate) -> Vec<bool> {
+        store.items(day).iter().map(|item| item.done).collect()
+    }
+
+    #[test]
+    fn completing_moves_an_item_to_the_top_of_the_completed_ones() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        for (i, text) in ["a", "b", "c"].into_iter().enumerate() {
+            store.insert(today(), i, text.into()).unwrap();
+        }
+        store.toggle_done(today(), 2).unwrap();
+        store.toggle_done(today(), 0).unwrap();
+        assert_eq!(texts(&store, today()), ["b", "a", "c"]);
+        assert_eq!(done_flags(&store, today()), [false, true, true]);
+        assert_eq!(store.open_count(today()), 1);
+    }
+
+    #[test]
+    fn reopening_moves_an_item_to_the_bottom_of_the_open_ones() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        for (i, text) in ["a", "b", "c"].into_iter().enumerate() {
+            store.insert(today(), i, text.into()).unwrap();
+        }
+        store.toggle_done(today(), 0).unwrap();
+        store.toggle_done(today(), 0).unwrap();
+        // Toggling index 0 twice completes a, then b.
+        assert_eq!(texts(&store, today()), ["c", "b", "a"]);
+        store.toggle_done(today(), 2).unwrap();
+        assert_eq!(texts(&store, today()), ["c", "a", "b"]);
+        assert_eq!(done_flags(&store, today()), [false, false, true]);
+    }
+
+    #[test]
+    fn new_items_are_never_inserted_among_completed_ones() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "a".into()).unwrap();
+        store.insert(today(), 1, "b".into()).unwrap();
+        store.toggle_done(today(), 1).unwrap();
+        store.insert(today(), 5, "new".into()).unwrap();
+        assert_eq!(texts(&store, today()), ["a", "new", "b"]);
+    }
+
+    #[test]
+    fn completed_items_are_saved_and_reload() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "plain".into()).unwrap();
+        store.insert(today(), 1, "done".into()).unwrap();
+        store.insert(today(), 2, "both".into()).unwrap();
+        store.set_notes(today(), 2, "n".into()).unwrap();
+        store.toggle_done(today(), 1).unwrap();
+        store.toggle_done(today(), 1).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "2026-10-05": [
+                "plain",
+                { "text": "both", "notes": "n", "done": true },
+                { "text": "done", "done": true },
+            ] })
+        );
+        let reloaded = Store::open(path).unwrap();
+        assert_eq!(done_flags(&reloaded, today()), [false, true, true]);
+    }
+
+    #[test]
+    fn loading_puts_completed_items_after_open_ones() {
+        let (_dir, path) = temp_path();
+        fs::write(&path, r#"{ "2026-10-05": [{ "text": "d1", "done": true }, "o1", { "text": "d2", "done": true }, "o2"] }"#)
+            .unwrap();
+        let store = Store::open(path).unwrap();
+        assert_eq!(texts(&store, today()), ["o1", "o2", "d1", "d2"]);
+    }
+
+    #[test]
+    fn roll_over_moves_open_items_from_past_days_to_today() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(day(-2), 0, "oldest".into()).unwrap();
+        store.insert(day(-1), 0, "yesterday".into()).unwrap();
+        store.insert(day(-1), 1, "finished".into()).unwrap();
+        store.set_notes(day(-1), 0, "keep me".into()).unwrap();
+        store.toggle_done(day(-1), 1).unwrap();
+        store.insert(today(), 0, "planned".into()).unwrap();
+        store.insert(day(1), 0, "tomorrow".into()).unwrap();
+
+        store.roll_over(today()).unwrap();
+
+        assert_eq!(texts(&store, today()), ["oldest", "yesterday", "planned"]);
+        assert_eq!(store.items(today())[1].notes, "keep me");
+        assert!(store.items(day(-2)).is_empty());
+        assert_eq!(texts(&store, day(-1)), ["finished"]);
+        assert_eq!(texts(&store, day(1)), ["tomorrow"]);
+
+        // Saved, and the emptied day is gone from the file.
+        let reloaded = Store::open(path.clone()).unwrap();
+        assert_eq!(texts(&reloaded, today()), ["oldest", "yesterday", "planned"]);
+        assert!(!fs::read_to_string(path).unwrap().contains("2026-10-03"));
+    }
+
+    #[test]
+    fn roll_over_keeps_carried_items_above_completed_ones() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(day(-1), 0, "carried".into()).unwrap();
+        store.insert(today(), 0, "done today".into()).unwrap();
+        store.toggle_done(today(), 0).unwrap();
+        store.roll_over(today()).unwrap();
+        assert_eq!(texts(&store, today()), ["carried", "done today"]);
+        assert_eq!(store.open_count(today()), 1);
+    }
+
+    #[test]
+    fn roll_over_with_nothing_to_move_does_not_write_the_file() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.roll_over(today()).unwrap();
+        assert!(!path.exists());
     }
 
     #[test]
