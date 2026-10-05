@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: render(&app).backend()
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Call mom                                               │"
+"│── Completed (1) ─────────────────────────────────────────│"
+"│✓  B╭ Delete item? ──────────────────────────────────╮    │"
+"│    │✓  Buy milk                                     │    │"
+"│    │                                                │    │"
+"│    │               d delete   c cancel              │    │"
+"│    ╰────────────────────────────────────────────────╯    │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" DELETE   d confirm  c cancel                               "

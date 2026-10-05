@@ -3,6 +3,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph};
 use ratatui::Frame;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{App, Mode};
 use crate::help::{Help, SECTIONS};
@@ -165,19 +166,75 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_confirm(frame: &mut Frame, app: &App) {
     let items = app.items();
-    let text = items.get(app.selected).map(|item| item.text.as_str()).unwrap_or_default();
-    let area = centered(frame.area(), 50, 5);
+    let Some(item) = items.get(app.selected) else { return };
+    // Same prefix as on the list: completed items aren't numbered.
+    let prefix = if item.done { "✓  ".to_string() } else { format!("{}. ", app.selected + 1) };
+
+    // Wrap long text under itself, growing the popup up to the screen height.
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(50);
+    let text_width = (width as usize).saturating_sub(2 + prefix.width()).max(1);
+    // Room for the borders, a blank line and the d/c hint, and a line of margin.
+    let max_lines = (screen.height as usize).saturating_sub(6).max(1);
+    let lines = wrap(&item.text, text_width, max_lines);
+
+    let indent = " ".repeat(prefix.width());
+    let mut body: Vec<Line> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| Line::from(format!("{}{line}", if i == 0 { &prefix } else { &indent })))
+        .collect();
+    body.push(Line::default());
+    body.push(
+        Line::from(vec!["d".bold().fg(Color::Red), " delete   ".into(), "c".bold(), " cancel".into()]).centered(),
+    );
+
+    let area = centered(screen, width, body.len() as u16 + 2);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(Color::Red))
         .title(" Delete item? ".bold());
-    let body = vec![
-        Line::from(format!("{}. {text}", app.selected + 1)),
-        Line::default(),
-        Line::from(vec!["d".bold().fg(Color::Red), " delete   ".into(), "c".bold(), " cancel".into()]).centered(),
-    ];
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(body).block(block), area);
+}
+
+/// Word-wraps `text` to `width` columns, splitting words that are too long on
+/// their own. Past `max_lines`, the last line ends with "…".
+fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let space = usize::from(!line.is_empty());
+        if line.width() + space + word.width() <= width {
+            if space == 1 {
+                line.push(' ');
+            }
+            line.push_str(word);
+            continue;
+        }
+        if !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        for c in word.chars() {
+            if line.width() + c.width().unwrap_or(0) > width && !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            line.push(c);
+        }
+    }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+
+    if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        let last = lines.last_mut().expect("max_lines is at least 1");
+        while !last.is_empty() && last.width() + 1 > width {
+            last.pop();
+        }
+        last.push('…');
+    }
+    lines
 }
 
 fn draw_help(frame: &mut Frame, help: &Help) {
@@ -429,6 +486,66 @@ mod tests {
         app.store.insert(tomorrow, 1, "Book dentist".into()).unwrap();
         app.store.toggle_done(tomorrow, 1).unwrap();
         type_str(&mut app, "l");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn wrap_keeps_short_text_on_one_line() {
+        assert_eq!(wrap("Buy milk", 20, 5), ["Buy milk"]);
+        assert_eq!(wrap("", 20, 5), [""]);
+    }
+
+    #[test]
+    fn wrap_breaks_between_words() {
+        assert_eq!(wrap("the quick brown fox jumps", 10, 5), ["the quick", "brown fox", "jumps"]);
+        // A word that exactly fills the line stays on it.
+        assert_eq!(wrap("abcde fghij", 5, 5), ["abcde", "fghij"]);
+    }
+
+    #[test]
+    fn wrap_collapses_extra_spaces() {
+        assert_eq!(wrap("  a   b  ", 10, 5), ["a b"]);
+    }
+
+    #[test]
+    fn wrap_splits_words_longer_than_a_line() {
+        assert_eq!(wrap("see https://example.com/a/long/path", 10, 5), ["see", "https://ex", "ample.com/", "a/long/pat", "h"]);
+    }
+
+    #[test]
+    fn wrap_counts_wide_characters_as_two_columns() {
+        assert_eq!(wrap("日本語のテキスト", 6, 5), ["日本語", "のテキ", "スト"]);
+        assert!(wrap("日本語のテキスト", 5, 5).iter().all(|line| line.width() <= 5));
+    }
+
+    #[test]
+    fn wrap_ends_with_an_ellipsis_when_out_of_lines() {
+        assert_eq!(wrap("one two three four five six", 9, 2), ["one two", "three…"]);
+        assert_eq!(wrap("abcdefghij", 5, 1), ["abcd…"]);
+        assert!(wrap(&"word ".repeat(100), 12, 3).iter().all(|line| line.width() <= 12));
+    }
+
+    #[test]
+    fn delete_popup_wraps_long_text() {
+        let (mut app, _dir) = app_with(&[
+            "Buy milk",
+            "Ring the council about the parking permit renewal and ask whether the visitor passes carry over",
+        ]);
+        type_str(&mut app, "jd");
+        assert_snapshot!(render_sized(&app, 60, 14).backend());
+    }
+
+    #[test]
+    fn delete_popup_cuts_off_very_long_text() {
+        let (mut app, _dir) = app_with(&[&"so many words ".repeat(30)]);
+        type_str(&mut app, "d");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn delete_popup_for_a_completed_item_is_not_numbered() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, "xjd");
         assert_snapshot!(render(&app).backend());
     }
 

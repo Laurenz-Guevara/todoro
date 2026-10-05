@@ -1,0 +1,18 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 14).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Buy milk                                               │"
+"│2. Ring the council about the parking permit renewal and a│"
+"│                                                          │"
+"│    ╭ Delete item? ──────────────────────────────────╮    │"
+"│    │2. Ring the council about the parking permit    │    │"
+"│    │   renewal and ask whether the visitor passes   │    │"
+"│    │   carry over                                   │    │"
+"│    │                                                │    │"
+"│    │               d delete   c cancel              │    │"
+"│    ╰────────────────────────────────────────────────╯    │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" DELETE   d confirm  c cancel                               "

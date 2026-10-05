@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: render(&app).backend()
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. s╭ Delete item? ──────────────────────────────────╮ords│"
+"│    │1. so many words so many words so many words so │    │"
+"│    │   many words so many words so many words so    │    │"
+"│    │   many words so many words so many words so    │    │"
+"│    │   many words so many words so many words so…   │    │"
+"│    │                                                │    │"
+"│    │               d delete   c cancel              │    │"
+"╰────╰────────────────────────────────────────────────╯────╯"
+" DELETE   d confirm  c cancel                               "
