@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -73,30 +75,55 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 
     // Pad numbers so text lines up once there are 10 or more open items.
     let width = open.max(1).to_string().len();
+    let prefix_width = width + 2;
     let mut items: Vec<ListItem> = Vec::with_capacity(rows.len() + 1);
+    // How many screen lines each list row takes, to place the typing cursor.
+    let mut heights: Vec<usize> = Vec::with_capacity(rows.len() + 1);
+    // Where the typing cursor goes within its row: (line, column).
+    let mut typing_cursor = (0, 0);
     for (i, row) in rows.iter().enumerate() {
         if i == open {
             let title = format!("── Completed ({}) ", rows.len() - open);
             let fill = (inner.width as usize).saturating_sub(title.chars().count());
             items.push(ListItem::new(format!("{title}{}", "─".repeat(fill)).dark_gray()));
+            heights.push(1);
         }
         let (prefix, text_style) = if row.done {
             (format!("{:>width$}  ", "✓"), Style::new().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT))
         } else {
             (format!("{:>width$}. ", i + 1), Style::new())
         };
-        let mut line = Line::from(vec![
-            Span::styled(prefix, Style::new().fg(Color::DarkGray)),
-            Span::styled(row.text.to_string(), text_style),
-        ]);
+
+        // Wrap long text under itself, leaving room for the markers at the end.
+        let markers = [(row.pinned, PINNED_MARKER), (row.has_notes, NOTES_MARKER)];
+        let markers_width: usize = markers.iter().filter(|(shown, _)| *shown).map(|(_, m)| m.width()).sum();
+        let text_width = (inner.width as usize).saturating_sub(prefix_width + markers_width).max(1);
+        let ranges = wrap_ranges(row.text, text_width);
+        if let (true, Mode::Insert { cursor, .. }) = (row.typing, &app.mode) {
+            typing_cursor = cursor_position(row.text, &ranges, *cursor, text_width);
+        }
+
+        let mut lines: Vec<Line> = ranges
+            .iter()
+            .enumerate()
+            .map(|(n, range)| {
+                let lead = if n == 0 { prefix.clone() } else { " ".repeat(prefix_width) };
+                Line::from(vec![
+                    Span::styled(lead, Style::new().fg(Color::DarkGray)),
+                    Span::styled(row.text[range.clone()].trim_end().to_string(), text_style),
+                ])
+            })
+            .collect();
+        let last = lines.last_mut().expect("wrap_ranges returns at least one line");
         if row.pinned {
-            line.push_span(PINNED_MARKER.fg(Color::Cyan));
+            last.push_span(PINNED_MARKER.fg(Color::Cyan));
         }
         if row.has_notes {
-            line.push_span(NOTES_MARKER.dim());
+            last.push_span(NOTES_MARKER.dim());
         }
         let style = if row.typing { Style::new().fg(Color::Yellow) } else { Style::new() };
-        items.push(ListItem::new(line).style(style));
+        heights.push(lines.len());
+        items.push(ListItem::new(lines).style(style));
     }
     let mut state = ListState::default().with_selected(selected.map(list_row));
 
@@ -112,10 +139,10 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Style::new().bg(Color::Rgb(50, 50, 60)).add_modifier(Modifier::BOLD));
     frame.render_stateful_widget(list, area, &mut state);
 
-    if let Mode::Insert { index, text, cursor, .. } = &app.mode {
-        let row = (list_row(*index) - state.offset()) as u16;
-        let col = (width + 2 + text[..*cursor].chars().count()) as u16;
-        frame.set_cursor_position(Position::new(inner.x + col, inner.y + row));
+    if let Mode::Insert { index, .. } = &app.mode {
+        let (line, col) = typing_cursor;
+        let row: usize = heights[state.offset()..list_row(*index)].iter().sum::<usize>() + line;
+        frame.set_cursor_position(Position::new(inner.x + (prefix_width + col) as u16, inner.y + row as u16));
     }
 }
 
@@ -198,34 +225,57 @@ fn draw_confirm(frame: &mut Frame, app: &App) {
     frame.render_widget(Paragraph::new(body).block(block), area);
 }
 
-/// Word-wraps `text` to `width` columns, splitting words that are too long on
-/// their own. Past `max_lines`, the last line ends with "…".
-fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let space = usize::from(!line.is_empty());
-        if line.width() + space + word.width() <= width {
-            if space == 1 {
-                line.push(' ');
-            }
-            line.push_str(word);
+/// Splits `text` into lines of at most `width` columns, breaking after spaces
+/// where possible and inside words that are longer than a line. The byte
+/// ranges cover all of `text`, so the text being typed keeps its spaces and a
+/// cursor offset can be placed on a line. Spaces at a break stay at the end of
+/// the line before it and may run past `width`; trim them for display.
+fn wrap_ranges(text: &str, width: usize) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut line_width = 0;
+    // Just after the latest run of spaces on this line, and the width up to there.
+    let mut last_break: Option<(usize, usize)> = None;
+    for (i, c) in text.char_indices() {
+        let w = c.width().unwrap_or(0);
+        if c == ' ' {
+            line_width += w;
+            last_break = Some((i + 1, line_width));
             continue;
         }
-        if !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
-        }
-        for c in word.chars() {
-            if line.width() + c.width().unwrap_or(0) > width && !line.is_empty() {
-                lines.push(std::mem::take(&mut line));
+        while line_width > 0 && line_width + w > width {
+            match last_break.take() {
+                Some((at, at_width)) if at > start => {
+                    ranges.push(start..at);
+                    start = at;
+                    line_width -= at_width;
+                }
+                _ => {
+                    ranges.push(start..i);
+                    start = i;
+                    line_width = 0;
+                }
             }
-            line.push(c);
         }
+        line_width += w;
     }
-    if !line.is_empty() || lines.is_empty() {
-        lines.push(line);
-    }
+    ranges.push(start..text.len());
+    ranges
+}
 
+/// The (line, column) of byte offset `cursor` in text wrapped into `ranges`. At
+/// a break the cursor goes to the start of the next line, like in an editor.
+fn cursor_position(text: &str, ranges: &[Range<usize>], cursor: usize, width: usize) -> (usize, usize) {
+    let line = ranges.iter().rposition(|range| range.start <= cursor).unwrap_or(0);
+    let col = text[ranges[line].start..cursor].width();
+    (line, col.min(width))
+}
+
+/// `text` wrapped to `width` columns for display. Past `max_lines`, the last
+/// line ends with "…".
+fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    let mut lines: Vec<String> =
+        wrap_ranges(text, width).into_iter().map(|range| text[range].trim_end().to_string()).collect();
     if lines.len() > max_lines {
         lines.truncate(max_lines);
         let last = lines.last_mut().expect("max_lines is at least 1");
@@ -503,9 +553,88 @@ mod tests {
     }
 
     #[test]
-    fn wrap_collapses_extra_spaces() {
-        assert_eq!(wrap("  a   b  ", 10, 5), ["a b"]);
+    fn wrap_keeps_spaces_as_typed() {
+        assert_eq!(wrap("a   b", 10, 5), ["a   b"]);
+        // Spaces at a break are dropped from the end of the line they follow.
+        assert_eq!(wrap("abc    def", 5, 5), ["abc", "def"]);
     }
+
+    #[test]
+    fn wrap_ranges_cover_the_whole_text() {
+        for text in ["", "a", "Ring the council about the parking permit", "a  b   ", "日本語 のテキスト", "x".repeat(30).as_str()] {
+            for width in 1..12 {
+                let ranges = wrap_ranges(text, width);
+                assert_eq!(ranges.first().unwrap().start, 0);
+                assert_eq!(ranges.last().unwrap().end, text.len());
+                assert!(ranges.windows(2).all(|pair| pair[0].end == pair[1].start), "{text:?} at {width}");
+                // Apart from spaces left hanging at a break, every line fits.
+                assert!(ranges.iter().all(|r| text[r.clone()].trim_end().width() <= width.max(2)), "{text:?} at {width}");
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_moves_to_the_next_line_at_a_break() {
+        let text = "the quick brown";
+        let ranges = wrap_ranges(text, 10);
+        assert_eq!(ranges, [0..10, 10..15]);
+        assert_eq!(cursor_position(text, &ranges, 0, 10), (0, 0));
+        assert_eq!(cursor_position(text, &ranges, 9, 10), (0, 9));
+        // Right after "quick ", the start of the next line.
+        assert_eq!(cursor_position(text, &ranges, 10, 10), (1, 0));
+        assert_eq!(cursor_position(text, &ranges, 15, 10), (1, 5));
+    }
+
+    #[test]
+    fn cursor_after_hanging_spaces_stays_inside_the_line() {
+        let text = "abcdefghi    ";
+        let ranges = wrap_ranges(text, 10);
+        assert_eq!(cursor_position(text, &ranges, text.len(), 10), (0, 10));
+    }
+
+    #[test]
+    fn cursor_counts_wide_characters_as_two_columns() {
+        let text = "日本語";
+        let ranges = wrap_ranges(text, 20);
+        assert_eq!(cursor_position(text, &ranges, text.len(), 20), (0, 6));
+    }
+
+    #[test]
+    fn long_items_wrap_on_the_list() {
+        let (mut app, _dir) = app_with(&[
+            "Buy milk",
+            "Ring the council about the parking permit renewal and ask whether the visitor passes carry over",
+            "Call mom",
+        ]);
+        app.store.toggle_pinned(app.day, 1).unwrap();
+        app.store.set_notes(app.day, 1, "notes".into()).unwrap();
+        app.store.insert(app.day, 3, "Send the signed contract back to the letting agency".into()).unwrap();
+        app.store.toggle_done(app.day, 3).unwrap();
+        type_str(&mut app, "j");
+        assert_snapshot!(render_sized(&app, 60, 12).backend());
+    }
+
+    #[test]
+    fn typing_a_long_item_wraps_and_the_cursor_follows() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, "aRing the council about the parking permit renewal and ask");
+        let mut terminal = render(&app);
+        assert_snapshot!(terminal.backend());
+        // Second line of item 2: border row + item 1 + one line of item 2,
+        // then border, the indent and "ask".
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 3, 3));
+    }
+
+    #[test]
+    fn typing_past_a_full_line_moves_the_cursor_to_the_next_line() {
+        let (mut app, _dir) = app_with(&[]);
+        // 55 columns fit after "1. ", so 11 "word "s fill the line exactly
+        // and the next character starts a new one.
+        type_str(&mut app, &format!("a{}x", "word ".repeat(11)));
+        let mut terminal = render(&app);
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 1, 2));
+    }
+
 
     #[test]
     fn wrap_splits_words_longer_than_a_line() {

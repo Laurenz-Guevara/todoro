@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 12).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Buy milk                                               │"
+"│2. Ring the council about the parking permit renewal      │"
+"│   and ask whether the visitor passes carry over ⚲ ≡      │"
+"│3. Call mom                                               │"
+"│── Completed (1) ─────────────────────────────────────────│"
+"│✓  Send the signed contract back to the letting agency    │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" NORMAL   a add  e edit  x done  d delete  ↵ notes  ? help  "

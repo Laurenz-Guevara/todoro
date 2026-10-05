@@ -3,7 +3,7 @@ source: src/ui.rs
 expression: render(&app).backend()
 ---
 "╭───────────── Monday, October 5 2026 (today) ─────────────╮"
-"│1. s╭ Delete item? ──────────────────────────────────╮ords│"
+"│    ╭ Delete item? ──────────────────────────────────╮    │"
 "│    │1. so many words so many words so many words so │    │"
 "│    │   many words so many words so many words so    │    │"
 "│    │   many words so many words so many words so    │    │"
