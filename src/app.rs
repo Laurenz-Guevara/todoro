@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::io;
 
 use chrono::{Days, NaiveDate};
@@ -32,6 +33,9 @@ pub struct App {
     pub today: NaiveDate,
     pub day: NaiveDate,
     pub selected: usize,
+    /// The first list row on screen. The UI updates it while drawing so the
+    /// view only scrolls when the cursor reaches its top or bottom edge.
+    pub list_offset: Cell<usize>,
     pub mode: Mode,
     pub quit: bool,
 }
@@ -43,6 +47,7 @@ impl App {
             today,
             day: today,
             selected: 0,
+            list_offset: Cell::new(0),
             mode: Mode::Normal,
             quit: false,
         }
@@ -216,6 +221,7 @@ impl App {
         if let Some(day) = next {
             self.day = day;
             self.selected = 0;
+            self.list_offset.set(0);
         }
     }
 }

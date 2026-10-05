@@ -1,0 +1,12 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│3. three                              │"
+"│4. four                               │"
+"│5. Ring the council about the parking │"
+"│   permit renewal and ask whether the │"
+"│   visitor passes                     │"
+"╰k ↑ up · j ↓ down · next day → l ─────╯"
+" NORMAL   a add  e edit  x done  d delet"

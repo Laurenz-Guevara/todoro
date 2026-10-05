@@ -125,7 +125,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         heights.push(lines.len());
         items.push(ListItem::new(lines).style(style));
     }
-    let mut state = ListState::default().with_selected(selected.map(list_row));
+    let mut state = ListState::default().with_offset(app.list_offset.get()).with_selected(selected.map(list_row));
 
     if items.is_empty() {
         let empty = Paragraph::new("Nothing to do. Press a to add an item.").dim().centered();
@@ -138,6 +138,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .block(block)
         .highlight_style(Style::new().bg(Color::Rgb(50, 50, 60)).add_modifier(Modifier::BOLD));
     frame.render_stateful_widget(list, area, &mut state);
+    app.list_offset.set(state.offset());
 
     if let Mode::Insert { index, .. } = &app.mode {
         let (line, col) = typing_cursor;
@@ -676,6 +677,63 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
         type_str(&mut app, "xjd");
         assert_snapshot!(render(&app).backend());
+    }
+
+    /// Presses each key and redraws after it, like the real event loop, so the
+    /// list's scroll position carries from one frame to the next.
+    fn press_and_draw(app: &mut App, keys: &str, width: u16, height: u16) -> Terminal<TestBackend> {
+        let mut terminal = render_sized(app, width, height);
+        for c in keys.chars() {
+            press(app, KeyCode::Char(c));
+            terminal = render_sized(app, width, height);
+        }
+        terminal
+    }
+
+    fn twenty_items() -> (App, tempfile::TempDir) {
+        let items: Vec<String> = (1..=20).map(|i| format!("item {i}")).collect();
+        app_with(&items.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn j_scrolls_down_once_the_cursor_reaches_the_bottom() {
+        let (mut app, _dir) = twenty_items();
+        let terminal = press_and_draw(&mut app, &"j".repeat(12), 40, 8);
+        assert_snapshot!(terminal.backend());
+    }
+
+    #[test]
+    fn k_moves_up_within_the_view_before_scrolling() {
+        let (mut app, _dir) = twenty_items();
+        // Down to item 13 (the view is 9-13), then up to item 10: the view stays put.
+        let terminal = press_and_draw(&mut app, &format!("{}kkk", "j".repeat(12)), 40, 8);
+        assert_snapshot!(terminal.backend());
+        assert_eq!(app.list_offset.get(), 8);
+    }
+
+    #[test]
+    fn k_scrolls_up_once_the_cursor_reaches_the_top() {
+        let (mut app, _dir) = twenty_items();
+        press_and_draw(&mut app, &format!("{}{}", "j".repeat(12), "k".repeat(6)), 40, 8);
+        // Item 7 is the top row.
+        assert_eq!(app.selected, 6);
+        assert_eq!(app.list_offset.get(), 6);
+    }
+
+    #[test]
+    fn changing_day_starts_the_list_at_the_top() {
+        let (mut app, _dir) = twenty_items();
+        press_and_draw(&mut app, &format!("{}lh", "j".repeat(15)), 40, 8);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.list_offset.get(), 0);
+    }
+
+    #[test]
+    fn scrolling_keeps_a_wrapped_item_fully_in_view() {
+        let long = "Ring the council about the parking permit renewal and ask whether the visitor passes";
+        let (mut app, _dir) = app_with(&["one", "two", "three", "four", long]);
+        let terminal = press_and_draw(&mut app, "jjjj", 40, 8);
+        assert_snapshot!(terminal.backend());
     }
 
     #[test]
