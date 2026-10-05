@@ -9,6 +9,19 @@ pub struct NotesEditor {
     pub insert: bool,
     /// First key of a two-key command (`gg`, `dd`) waiting for its second key.
     pending: Option<char>,
+    /// Undo history, kept here rather than in the text area so that every
+    /// command (and a whole visit to insert mode) is exactly one step.
+    undo: Vec<Snapshot>,
+    redo: Vec<Snapshot>,
+    /// The text from before insert mode began, recorded when it ends.
+    insert_before: Option<Snapshot>,
+}
+
+/// The text and cursor at one point, for undo.
+#[derive(Clone, PartialEq)]
+struct Snapshot {
+    lines: Vec<String>,
+    cursor: (usize, usize),
 }
 
 /// What the app should do after the editor handles a key.
@@ -23,13 +36,59 @@ pub enum Action {
 impl NotesEditor {
     pub fn new(notes: &str) -> Self {
         let lines = if notes.is_empty() { vec![String::new()] } else { notes.lines().map(String::from).collect() };
+        let mut editor = Self {
+            textarea: TextArea::default(),
+            insert: false,
+            pending: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            insert_before: None,
+        };
+        editor.set_lines(lines, (0, 0));
+        editor
+    }
+
+    /// Replaces the text and puts the cursor at `(row, col)`, clamped to it.
+    fn set_lines(&mut self, lines: Vec<String>, (row, col): (usize, usize)) {
         let mut textarea = TextArea::new(lines);
         textarea.set_cursor_line_style(Style::new());
         textarea.set_placeholder_text("No notes yet. Press i to start writing.");
         textarea.set_placeholder_style(Style::new().fg(Color::DarkGray));
-        let mut editor = Self { textarea, insert: false, pending: None };
-        editor.update_cursor_style();
-        editor
+        let row = row.min(textarea.lines().len() - 1);
+        let col = col.min(textarea.lines()[row].chars().count());
+        textarea.move_cursor(CursorMove::Jump(row as u16, col as u16));
+        self.textarea = textarea;
+        self.update_cursor_style();
+        if !self.insert {
+            self.clamp();
+        }
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        let cursor = self.textarea.cursor();
+        Snapshot { lines: self.textarea.lines().to_vec(), cursor: (cursor.0, cursor.1) }
+    }
+
+    /// Adds `before` to the undo history if the text has changed since.
+    fn record(&mut self, before: Snapshot) {
+        if before.lines != self.textarea.lines() {
+            self.undo.push(before);
+            self.redo.clear();
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(snapshot) = self.undo.pop() {
+            self.redo.push(self.snapshot());
+            self.set_lines(snapshot.lines, snapshot.cursor);
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(snapshot) = self.redo.pop() {
+            self.undo.push(self.snapshot());
+            self.set_lines(snapshot.lines, snapshot.cursor);
+        }
     }
 
     /// The notes as they should be saved: lines joined with `\n`, trailing
@@ -44,6 +103,9 @@ impl NotesEditor {
                 self.set_insert(false);
                 // Like vim, leaving insert mode steps back onto the last typed character.
                 self.back();
+                if let Some(before) = self.insert_before.take() {
+                    self.record(before);
+                }
             } else {
                 self.textarea.input(key);
             }
@@ -51,6 +113,32 @@ impl NotesEditor {
         }
 
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char('u') if !ctrl => {
+                self.pending = None;
+                self.undo();
+                return Action::Stay;
+            }
+            KeyCode::Char('r') if ctrl => {
+                self.pending = None;
+                self.redo();
+                return Action::Stay;
+            }
+            _ => {}
+        }
+        // Each command is one undo step. One that starts insert mode becomes a
+        // step when insert mode ends, with everything typed in it.
+        let before = self.snapshot();
+        let action = self.normal_key(key, ctrl);
+        if self.insert {
+            self.insert_before = Some(before);
+        } else {
+            self.record(before);
+        }
+        action
+    }
+
+    fn normal_key(&mut self, key: KeyEvent, ctrl: bool) -> Action {
         let KeyCode::Char(c) = key.code else {
             self.pending = None;
             return match key.code {
@@ -67,11 +155,6 @@ impl NotesEditor {
             (Some('g'), 'g') => self.motion_to(CursorMove::Top, CursorMove::Head),
             (Some('d'), 'd') => {
                 self.delete_line();
-                Action::Stay
-            }
-            (_, 'r') if ctrl => {
-                self.textarea.redo();
-                self.clamp();
                 Action::Stay
             }
             // Ignore other Ctrl combinations so Ctrl+U doesn't act like u.
@@ -118,11 +201,6 @@ impl NotesEditor {
                     self.textarea.delete_next_char();
                     self.clamp();
                 }
-                Action::Stay
-            }
-            (_, 'u') => {
-                self.textarea.undo();
-                self.clamp();
                 Action::Stay
             }
             _ => Action::Stay,
@@ -384,6 +462,52 @@ mod tests {
         assert_eq!(ed.notes(), "one\ntwo\nthree");
         ed.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         assert_eq!(ed.notes(), "one\nthree");
+    }
+
+    #[test]
+    fn u_undoes_everything_typed_in_one_visit_to_insert_mode() {
+        let mut ed = editor("start");
+        send(&mut ed, "A more words<esc>");
+        send(&mut ed, "oa new line<cr>and another<esc>");
+        assert_eq!(ed.notes(), "start more words\na new line\nand another");
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "start more words");
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "start");
+        // Nothing left to undo.
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "start");
+        ed.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        ed.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(ed.notes(), "start more words\na new line\nand another");
+    }
+
+    #[test]
+    fn undo_puts_the_cursor_back_where_the_change_started() {
+        let mut ed = editor("one\ntwo\nthree");
+        send(&mut ed, "jlx");
+        assert_eq!(cursor(&ed), (1, 1));
+        send(&mut ed, "ggu");
+        assert_eq!(ed.notes(), "one\ntwo\nthree");
+        assert_eq!(cursor(&ed), (1, 1));
+    }
+
+    #[test]
+    fn moving_around_is_not_an_undo_step() {
+        let mut ed = editor("one two");
+        send(&mut ed, "x");
+        send(&mut ed, "wbe$0i<esc>");
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "one two");
+    }
+
+    #[test]
+    fn a_new_change_clears_redo() {
+        let mut ed = editor("abc");
+        send(&mut ed, "xu");
+        send(&mut ed, "$x");
+        ed.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert_eq!(ed.notes(), "ab");
     }
 
     #[test]
