@@ -3,6 +3,7 @@ mod calendar;
 mod help;
 mod input;
 mod notes;
+mod search;
 mod store;
 #[cfg(test)]
 mod test_util;

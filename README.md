@@ -56,6 +56,7 @@ todoro
 | `Enter` | Open the selected item's notes |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `c` | Open the calendar |
+| `s` / `S` | Fuzzy search every day's items / items and their notes |
 | `?` | Show all keybindings |
 | `q` | Quit |
 
@@ -110,6 +111,12 @@ In normal mode:
 | `Esc` / `q` | Back to the list |
 
 In insert mode, type as normal (`Enter` starts a new line) and press `Esc` to go back to normal mode.
+
+### Search
+
+`s` opens a fuzzy search over the items on every day, and `S` searches their notes too. Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words match separately, capitals only match capitals, and plain letters match accented ones. The best matches come first, with the closest days first among equals, and the matched letters are highlighted. With `S`, the matching line of an item's notes shows under it.
+
+`↑` / `↓` (or `Ctrl+N` / `Ctrl+P`) select a result, `Enter` goes to that item on its day, and `Esc` closes the search.
 
 ### Calendar
 

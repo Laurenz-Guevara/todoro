@@ -18,6 +18,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/input.rs`: `LineInput`, single-line typing with a movable cursor
 - `src/notes.rs`: the notes editor, a vim key layer over `ratatui-textarea`
 - `src/calendar.rs`: the calendar's state and keys (`Calendar`, `Zoom`), returning an `Action` for the app to carry out
+- `src/search.rs`: fuzzy search over every day's items (and notes with `S`), using `nucleo-matcher`
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
 - `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
@@ -26,7 +27,9 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 ## Keybindings
 
-Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `H`/`L` move the item to the day before/after the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `t` triage (priority cycles none → High → Medium → Low → none), `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `u`/`Ctrl+R` undo/redo, `c` calendar, `?` help, `q` quit.
+Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `J`/`K` move the item down/up (within the open or completed items, and only among items stored on the same day), `H`/`L` move the item to the day before/after the one on screen and follow it there, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `t` triage (priority cycles none → High → Medium → Low → none), `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `u`/`Ctrl+R` undo/redo, `c` calendar, `s`/`S` search items / items and notes, `?` help, `q` quit.
+
+Search: every typed character goes into the query; `↑`/`↓`/`Ctrl+N`/`Ctrl+P`/`Ctrl+J`/`Ctrl+K` select, `Enter` goes to the item (its day, with it selected), `Esc` closes.
 
 Calendar: `h`/`j`/`k`/`l` follow the layout (month and year: `h`/`l` day, `j`/`k` week; week view: `j`/`k` day, `h`/`l` week), `H`/`L` month, `t` today, `w`/`m`/`y` week/month/year view, `a` add an item to the selected day (typed in a popup with `LineInput`; `Enter`/`Esc` save), `Enter` open that day's list, `u`/`Ctrl+R` undo/redo, `?` help, `Esc`/`q`/`c` back to the list.
 
@@ -61,6 +64,8 @@ Every new feature or bug fix comes with tests in the same commit. Tests live in 
 - `notes.rs`: the notes editor's keys, driven with the `send` helper (`<esc>` and `<cr>` stand for Escape and Enter).
 - `store.rs`: persistence, always against a temporary file.
 - `calendar.rs`: the calendar's keys and date maths, driven with its own `send` helper.
+- `search.rs`: matching and ordering (`find`) and the search's keys.
+- Match positions from `nucleo-matcher` count graphemes, not chars or bytes; highlight with `unicode-segmentation`'s graphemes (see `highlighted` in `ui.rs`).
 - `ui.rs`: screen snapshots with [insta](https://insta.rs). Add one for any new screen or popup.
 
 Tests run on a fixed date (`test_util::today()`, 2026-10-05) and must never read the clock, the real data file or `TODORO_FILE`.

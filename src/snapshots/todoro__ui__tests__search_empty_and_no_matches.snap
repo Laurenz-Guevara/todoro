@@ -1,0 +1,21 @@
+---
+source: src/ui.rs
+expression: "format!(\"{empty}\\n{none}\")"
+---
+"╭────────────────── Monday, October 5 2026 (today) ──────────────────╮"
+"│1╭ Search items and notes ────────────────────────────────────────╮ │"
+"│2│ Search: type to fuzzy find items and notes on any day          │ │"
+"│─│ ────────────────────────────────────────────────────────────── │─│"
+"│✓│                                                                │ │"
+"│ │                                                                │ │"
+"╰─╰──────────── ↑/↓ select · ↵ go to item · esc close ─────────────╯─╯"
+" SEARCH   ↑/↓ select  ↵ go to item  esc close                         "
+
+"╭────────────────── Monday, October 5 2026 (today) ──────────────────╮"
+"│1╭ Search items and notes ────────────────────────────────────────╮ │"
+"│2│ Search: zzz                                                    │ │"
+"│─│ ────────────────────────────────────────────────────────────── │─│"
+"│✓│ No items match "zzz"                                           │ │"
+"│ │                                                                │ │"
+"╰─╰──────────── ↑/↓ select · ↵ go to item · esc close ─────────────╯─╯"
+" SEARCH   ↑/↓ select  ↵ go to item  esc close                         "

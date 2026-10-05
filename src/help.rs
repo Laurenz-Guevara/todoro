@@ -27,6 +27,8 @@ pub const SECTIONS: &[Section] = &[
             ("d", "Delete the selected item"),
             ("Enter", "Open the selected item's notes"),
             ("c", "Open the calendar"),
+            ("s", "Search every day's items"),
+            ("S", "Search items and their notes"),
             ("u / Ctrl+R", "Undo / redo a change to the list"),
             ("?", "Show this help"),
             ("q", "Quit"),
@@ -65,6 +67,14 @@ pub const SECTIONS: &[Section] = &[
     Section {
         title: "Notes, insert mode",
         bindings: &[("Enter", "Start a new line"), ("Esc", "Back to normal mode")],
+    },
+    Section {
+        title: "Search",
+        bindings: &[
+            ("↑ / ↓", "Select a result"),
+            ("Enter", "Go to the selected item"),
+            ("Esc", "Close the search"),
+        ],
     },
     Section {
         title: "Calendar",

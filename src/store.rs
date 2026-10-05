@@ -166,6 +166,11 @@ impl Store {
         self.items(day).iter().take_while(|item| !item.done).count()
     }
 
+    /// Every day that has items, oldest first, with its items.
+    pub fn all(&self) -> impl Iterator<Item = (NaiveDate, &[Item])> {
+        self.days.iter().filter_map(|(k, items)| Some((NaiveDate::parse_from_str(k, "%Y-%m-%d").ok()?, items.as_slice())))
+    }
+
     pub fn items(&self, day: NaiveDate) -> &[Item] {
         self.days.get(&key(day)).map(Vec::as_slice).unwrap_or(&[])
     }

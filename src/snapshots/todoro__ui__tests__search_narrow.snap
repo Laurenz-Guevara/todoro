@@ -1,0 +1,18 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 30, 14).backend()"
+---
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1╭ Search items and notes ╮ │"
+"│2│ Search: dashboard      │ │"
+"│ │ ────────────────────── │ │"
+"│─│ Today                  │─│"
+"│✓│ Write the quarterly r… │ │"
+"│ │ ≡ …m the dashboard     │ │"
+"│ │ Wed 14 Oct             │ │"
+"│ │ Dashboard review with… │ │"
+"│ │                        │ │"
+"│ │                        │ │"
+"│ │                        │ │"
+"╰─╰─── ↵ go · esc close ───╯─╯"
+" SEARCH   esc close           "

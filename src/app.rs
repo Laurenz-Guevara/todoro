@@ -8,6 +8,7 @@ use crate::calendar::{self, Calendar};
 use crate::help::Help;
 use crate::input::LineInput;
 use crate::notes::{Action, NotesEditor};
+use crate::search::{self, Search};
 use crate::store::{Item, Snapshot, Store};
 
 /// How many changes `u` can undo.
@@ -28,6 +29,8 @@ pub enum Mode {
     ConfirmDelete,
     /// The notes screen for the selected item.
     Notes(Box<NotesEditor>),
+    /// Fuzzy search over every day's items.
+    Search(Box<Search>),
     /// The calendar, for planning ahead.
     Calendar(Box<Calendar>),
     /// The keybinding help popup, over the screen in `back`.
@@ -205,6 +208,18 @@ impl App {
                 }
                 calendar::Action::Help => self.open_help(),
             },
+            Mode::Search(search) => {
+                let hits = search.find(&self.store, self.today);
+                match search.handle_key(key, &hits) {
+                    search::Action::Stay => {}
+                    search::Action::Close => self.mode = Mode::Normal,
+                    search::Action::Open { day, index } => {
+                        self.mode = Mode::Normal;
+                        self.show_day(day);
+                        self.selected = self.slots().iter().position(|slot| *slot == Slot { day, index }).unwrap_or(0);
+                    }
+                }
+            }
             Mode::Help { help, back } => {
                 if help.handle_key(key) {
                     self.mode = std::mem::replace(back.as_mut(), Mode::Normal);
@@ -221,6 +236,8 @@ impl App {
         match code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.open_help(),
+            KeyCode::Char('s') => self.mode = Mode::Search(Box::new(Search::new(false))),
+            KeyCode::Char('S') => self.mode = Mode::Search(Box::new(Search::new(true))),
             KeyCode::Char('c') => self.mode = Mode::Calendar(Box::new(Calendar::new(self.day, self.today))),
             KeyCode::Char('h') | KeyCode::Left => self.change_day(-1),
             KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
@@ -1327,6 +1344,67 @@ mod tests {
         let (mut app, _dir) = app_with(&["one"]);
         type_str(&mut app, "ttu");
         assert_eq!(app.items()[0].priority, Some(crate::store::Priority::High));
+    }
+
+    #[test]
+    fn s_finds_an_item_on_another_day_and_enter_goes_to_it() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        let later = today() + chrono::Duration::days(9);
+        app.store.insert(later, 0, "Pay rent".into()).unwrap();
+        app.store.insert(later, 1, "Dentist at 3pm".into()).unwrap();
+        type_str(&mut app, "sdntst");
+        assert!(matches!(app.mode, Mode::Search(_)));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.day, later);
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.items()[app.selected].text, "Dentist at 3pm");
+    }
+
+    #[test]
+    fn search_selects_the_right_row_after_carried_and_completed_items() {
+        let (mut app, _dir) = app_with_future(&["pin a"], &["open", "finished"]);
+        let later = today() + chrono::Duration::days(2);
+        app.store.toggle_done(later, 1).unwrap();
+        type_str(&mut app, "sfinished");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.day, later);
+        // "pin a" is carried in first, then "open", then the completed one.
+        assert_eq!(items(&app), ["pin a", "open", "finished"]);
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn capital_s_also_searches_notes() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        app.store.set_notes(today(), 1, "remember the passport".into()).unwrap();
+        type_str(&mut app, "spassport");
+        press(&mut app, KeyCode::Enter);
+        // Plain search doesn't look in notes, so Enter does nothing.
+        assert!(matches!(app.mode, Mode::Search(_)));
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "Spassport");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn esc_closes_the_search_where_you_were() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "jlsone");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.day, today().succ_opt().unwrap());
+    }
+
+    #[test]
+    fn keys_typed_in_search_do_not_act_on_the_list() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "sxdpjtqu");
+        assert!(matches!(app.mode, Mode::Search(_)));
+        assert!(app.items().iter().all(|item| !item.done && !item.pinned && item.priority.is_none()));
+        assert!(!app.quit);
     }
 
     #[test]

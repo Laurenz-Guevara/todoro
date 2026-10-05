@@ -1,0 +1,18 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭────────────────── Monday, October 5 2026 (today) ──────────────────╮"
+"│1╭ Search items ──────────────────────────────────────────────────╮ │"
+"│2│ Search: bu                                                     │ │"
+"│─│ ────────────────────────────────────────────────────────────── │─│"
+"│✓│ Today      Buy milk                                            │ │"
+"│ │ Sun 4 Oct  Buy stamps for the birthday cards                   │ │"
+"│ │                                                                │ │"
+"│ │                                                                │ │"
+"│ │                                                                │ │"
+"│ │                                                                │ │"
+"│ │                                                                │ │"
+"│ │                                                                │ │"
+"╰─╰──────────── ↑/↓ select · ↵ go to item · esc close ─────────────╯─╯"
+" SEARCH   ↑/↓ select  ↵ go to item  esc close                         "

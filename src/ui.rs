@@ -5,6 +5,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 use ratatui::Frame;
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use chrono::{Datelike, Days, NaiveDate};
@@ -14,6 +15,7 @@ use crate::calendar::{self, Calendar, Zoom};
 use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
+use crate::search::Search;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [main, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
@@ -34,6 +36,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::ConfirmDelete => draw_confirm(frame, app),
         Mode::Help { help, .. } => draw_help(frame, help),
         Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, calendar),
+        Mode::Search(search) => draw_search(frame, app, search),
         _ => {}
     }
 }
@@ -229,6 +232,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
+        Mode::Search(_) => ("SEARCH", Color::Yellow, &[("↑/↓ select", 1), ("↵ go to item", 2), ("esc close", 3)]),
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
         }
@@ -633,6 +637,138 @@ fn draw_adding(frame: &mut Frame, calendar: &Calendar) {
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
     frame.set_cursor_position(Position::new(inner.x + col as u16, inner.y + line as u16));
+}
+
+fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
+    let screen = frame.area();
+    let area = centered(screen, screen.width.saturating_sub(4).min(80), screen.height.saturating_sub(2));
+    let room = area.width.saturating_sub(2) as usize;
+    let title = if search.notes {
+        fit_first(&[" Search items and notes ", " Items and notes ", " Search "], room)
+    } else {
+        fit_first(&[" Search items ", " Search "], room)
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Yellow))
+        .title(title.bold())
+        .title_bottom(
+            Line::from(fit_first(&[" ↑/↓ select · ↵ go to item · esc close ", " ↵ go · esc close ", " esc close "], room))
+                .centered()
+                .dim(),
+        )
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let [prompt_area, rule, results] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let prompt = "Search: ";
+    let query = &search.input.text;
+    let shown = if query.is_empty() {
+        let hints: &[&str] = if search.notes {
+            &["type to fuzzy find items and notes on any day", "items and notes, any day", "items and notes"]
+        } else {
+            &["type to fuzzy find items on any day", "items on any day", "any day"]
+        };
+        fit_first(hints, (prompt_area.width as usize).saturating_sub(prompt.width())).dark_gray()
+    } else {
+        query.as_str().into()
+    };
+    frame.render_widget(Line::from(vec![prompt.dim(), shown]), prompt_area);
+    frame.render_widget("─".repeat(rule.width as usize).dark_gray(), rule);
+    let typed = (prompt.width() + query[..search.input.cursor].width()) as u16;
+    frame.set_cursor_position(Position::new(prompt_area.x + typed.min(prompt_area.width), prompt_area.y));
+
+    if query.trim().is_empty() {
+        return;
+    }
+    let hits = search.find(&app.store, app.today);
+    if hits.is_empty() {
+        frame.render_widget(Line::from(format!("No items match \"{query}\"")).dim(), results);
+        return;
+    }
+
+    // The date goes beside each result, or above it when there isn't room.
+    let width = results.width as usize;
+    let date_width = 11;
+    let stacked = width < date_width + 20;
+    let text_width = if stacked { width } else { width - date_width };
+    let indent = if stacked { 0 } else { date_width };
+    let match_style = Style::new().fg(Color::Yellow).bold();
+    let items: Vec<ListItem> = hits
+        .iter()
+        .map(|hit| {
+            let item = &app.store.items(hit.day)[hit.index];
+            let date = if hit.day == app.today { "Today".to_string() } else { hit.day.format("%a %-d %b").to_string() };
+            let date_style = if hit.day == app.today { Style::new().fg(Color::Green) } else { Style::new().fg(Color::DarkGray) };
+            let mut text = highlighted(&item.text, &hit.text_matches, text_width, item_style(item), match_style);
+            let mut lines = Vec::new();
+            if stacked {
+                lines.push(Line::from(Span::styled(date, date_style)));
+                lines.push(Line::from(text));
+            } else {
+                text.insert(0, Span::styled(format!("{date:<date_width$}"), date_style));
+                lines.push(Line::from(text));
+            }
+            if let Some((note, matches)) = &hit.note {
+                let mut spans = vec![Span::raw(" ".repeat(indent)), "≡ ".dim()];
+                spans.extend(highlighted(note, matches, text_width.saturating_sub(2), Style::new().dim(), match_style));
+                lines.push(Line::from(spans));
+            }
+            ListItem::new(lines)
+        })
+        .collect();
+    let mut state = ListState::default().with_offset(search.offset.get()).with_selected(Some(search.selected));
+    let list = List::new(items).highlight_style(Style::new().bg(SELECTED_BG));
+    frame.render_stateful_widget(list, results, &mut state);
+    search.offset.set(state.offset());
+}
+
+/// `text` as spans no wider than `width`, with the graphemes at `matches` in
+/// `matched` style. If the first match wouldn't be visible, the start is cut
+/// (with "…") so it is.
+fn highlighted(text: &str, matches: &[usize], width: usize, base: Style, matched: Style) -> Vec<Span<'static>> {
+    let graphemes: Vec<&str> = text.graphemes(true).collect();
+    let before_first: usize = matches.first().map_or(0, |&first| graphemes[..first.min(graphemes.len())].iter().map(|g| g.width()).sum());
+    let mut start = 0;
+    let mut spans = Vec::new();
+    let mut used = 0;
+    if before_first + 1 > width.saturating_sub(1) && width > 4 {
+        // Keep a little context before the first match.
+        let mut skipped = 0;
+        while start < graphemes.len() && before_first - skipped > width / 3 {
+            skipped += graphemes[start].width();
+            start += 1;
+        }
+        spans.push(Span::styled("…", base));
+        used = 1;
+    }
+    let mut run = String::new();
+    let mut run_matched = false;
+    for (i, grapheme) in graphemes.iter().enumerate().skip(start) {
+        let w = grapheme.width();
+        let rest: usize = graphemes[i..].iter().map(|g| g.width()).sum();
+        if used + rest > width && used + w + 1 > width {
+            if !run.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut run), if run_matched { matched.patch(base) } else { base }));
+            }
+            spans.push(Span::styled("…", base));
+            return spans;
+        }
+        let is_match = matches.binary_search(&i).is_ok();
+        if is_match != run_matched && !run.is_empty() {
+            spans.push(Span::styled(std::mem::take(&mut run), if run_matched { matched.patch(base) } else { base }));
+        }
+        run_matched = is_match;
+        run.push_str(grapheme);
+        used += w;
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_matched { matched.patch(base) } else { base }));
+    }
+    spans
 }
 
 fn draw_help(frame: &mut Frame, help: &Help) {
@@ -1258,6 +1394,67 @@ mod tests {
         type_str(&mut app, "kkke");
         terminal = render(&app);
         assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 19, 1));
+    }
+
+    /// An app with items on several days, some with notes, and `keys` pressed.
+    fn search_app(keys: &str) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(&["Buy milk", "Write the quarterly report for the team", "Call mum"]);
+        app.store.set_notes(app.day, 1, "Ask Sam for the Q3 numbers\nPull the charts from the dashboard".into()).unwrap();
+        app.store.toggle_done(app.day, 2).unwrap();
+        let on = |offset: i64| app.day + chrono::Duration::days(offset);
+        let (yesterday, later) = (on(-1), on(9));
+        app.store.insert(yesterday, 0, "Buy stamps for the birthday cards".into()).unwrap();
+        app.store.insert(later, 0, "Dashboard review with the team".into()).unwrap();
+        type_str(&mut app, keys);
+        (app, dir)
+    }
+
+    #[test]
+    fn search_results() {
+        let (mut app, _dir) = search_app("sbu");
+        press(&mut app, KeyCode::Down);
+        let mut terminal = render_sized(&app, 70, 14);
+        assert_snapshot!(terminal.backend());
+        // The cursor follows the query: the 66-wide popup starts at x=2, then
+        // border, padding, "Search: " and "bu".
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(2 + 1 + 1 + 8 + 2, 2));
+    }
+
+    #[test]
+    fn search_including_notes() {
+        let (app, _dir) = search_app("Sdashboard");
+        assert_snapshot!(render_sized(&app, 70, 14).backend());
+    }
+
+    #[test]
+    fn search_empty_and_no_matches() {
+        let (mut app, _dir) = search_app("S");
+        let empty = render_sized(&app, 70, 8).backend().to_string();
+        type_str(&mut app, "zzz");
+        let none = render_sized(&app, 70, 8).backend().to_string();
+        assert_snapshot!(format!("{empty}\n{none}"));
+    }
+
+    #[test]
+    fn search_narrow() {
+        let (app, _dir) = search_app("Sdashboard");
+        assert_snapshot!(render_sized(&app, 30, 14).backend());
+    }
+
+    #[test]
+    fn highlighted_keeps_the_first_match_in_view() {
+        let base = Style::new();
+        let matched = Style::new().bold();
+        let text = |spans: Vec<Span>| spans.iter().map(|s| s.content.to_string()).collect::<String>();
+        assert_eq!(text(highlighted("Buy milk", &[0, 4], 20, base, matched)), "Buy milk");
+        assert_eq!(text(highlighted("Buy milk and bread", &[0], 10, base, matched)), "Buy milk …");
+        // A match near the end scrolls the text so it shows.
+        let long = "Pull the charts from the dashboard";
+        let spans = highlighted(long, &(25..34).collect::<Vec<_>>(), 16, base, matched);
+        let shown = text(spans.clone());
+        assert!(shown.starts_with('…') && shown.contains("dashboard"), "{shown}");
+        assert!(shown.width() <= 16, "{shown}");
+        assert!(spans.iter().any(|s| s.content == "dashboard" && s.style == matched));
     }
 
     #[test]
