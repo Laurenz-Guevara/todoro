@@ -76,6 +76,8 @@ pub struct App {
     notes_before: Option<State>,
     /// First key of a two-key command (`gg`, `yy`) waiting for its second key.
     pending: Option<char>,
+    /// A count typed before a command, like the 4 in `4j`.
+    count: Option<usize>,
     /// The items last copied (`yy`) or deleted, for `p` and `P` to paste.
     pub register: Vec<Item>,
 }
@@ -96,6 +98,7 @@ impl App {
             redo: Vec::new(),
             notes_before: None,
             pending: None,
+            count: None,
             register: Vec::new(),
         }
     }
@@ -289,11 +292,24 @@ impl App {
         let slot = self.slot(self.selected);
         let len = self.slots().len();
         let open = self.carried() + self.store.open_count(self.day);
+        // Digits build a count for the next command, as in vim: 4j moves down
+        // four items and 42G goes to item 42. A 0 only counts after another digit.
+        if let KeyCode::Char(c @ '0'..='9') = code
+            && (c != '0' || self.count.is_some())
+        {
+            let digit = c as usize - '0' as usize;
+            self.count = Some((self.count.unwrap_or(0) * 10 + digit).min(99_999));
+            return Ok(());
+        }
+        let count = self.count.take();
+        let times = count.unwrap_or(1);
+        // Item N is the Nth row, which is its number for open items.
+        let row = |n: usize| n.saturating_sub(1).min(len.saturating_sub(1));
         // Any other key cancels an unfinished two-key command, then does its
         // own thing, as in vim.
         match (self.pending.take(), code) {
             (Some('g'), KeyCode::Char('g')) => {
-                self.selected = 0;
+                self.selected = row(count.unwrap_or(1));
                 return Ok(());
             }
             (Some('y'), KeyCode::Char('y')) => {
@@ -305,11 +321,15 @@ impl App {
             _ => {}
         }
         match code {
-            KeyCode::Char('g' | 'y') => self.pending = Some(code.as_char().expect("a char key")),
+            KeyCode::Char('g' | 'y') => {
+                self.pending = Some(code.as_char().expect("a char key"));
+                // Keep the count for the second key, as in 7gg.
+                self.count = count;
+            }
             // Paste below or above the cursor, like a and its opposite.
             KeyCode::Char('p') => self.paste(if self.selected < open && len > 0 { self.selected + 1 } else { open })?,
             KeyCode::Char('P') => self.paste(self.selected.min(open))?,
-            KeyCode::Char('G') => self.selected = len.saturating_sub(1),
+            KeyCode::Char('G') => self.selected = count.map_or(len.saturating_sub(1), row),
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('o') => self.mode = Mode::Options(Options::default()),
@@ -319,8 +339,8 @@ impl App {
             KeyCode::Char('c') => self.mode = Mode::Calendar(Box::new(Calendar::new(self.day, self.today))),
             KeyCode::Char('h') | KeyCode::Left => self.change_day(-1),
             KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
-            KeyCode::Char('j') | KeyCode::Down if self.selected + 1 < len => self.selected += 1,
-            KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Char('j') | KeyCode::Down => self.selected = (self.selected + times).min(len.saturating_sub(1)),
+            KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(times),
             // Move the item down or up, within the open or completed items.
             KeyCode::Char('J') => self.move_selected(1)?,
             KeyCode::Char('K') => self.move_selected(-1)?,
@@ -2103,6 +2123,64 @@ mod tests {
         type_str(&mut app, "aone");
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    fn numbered(n: usize) -> Vec<String> {
+        (1..=n).map(|i| format!("item {i}")).collect()
+    }
+
+    #[test]
+    fn a_count_moves_several_items_with_j_and_k() {
+        let names = numbered(20);
+        let (mut app, _dir) = app_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        type_str(&mut app, "4j");
+        assert_eq!(app.selected, 4);
+        type_str(&mut app, "12j");
+        assert_eq!(app.selected, 16);
+        type_str(&mut app, "3k");
+        assert_eq!(app.selected, 13);
+        // Counts stop at the ends of the list.
+        type_str(&mut app, "99j");
+        assert_eq!(app.selected, 19);
+        type_str(&mut app, "99k");
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn a_count_before_capital_g_or_gg_goes_to_that_item() {
+        let names = numbered(50);
+        let (mut app, _dir) = app_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        type_str(&mut app, "42G");
+        assert_eq!(app.items()[app.selected].text, "item 42");
+        type_str(&mut app, "7gg");
+        assert_eq!(app.items()[app.selected].text, "item 7");
+        type_str(&mut app, "500G");
+        assert_eq!(app.selected, 49);
+        type_str(&mut app, "G");
+        assert_eq!(app.selected, 49);
+    }
+
+    #[test]
+    fn a_count_is_used_once_and_zero_alone_is_not_a_count() {
+        let names = numbered(10);
+        let (mut app, _dir) = app_with(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        type_str(&mut app, "3jj");
+        assert_eq!(app.selected, 4);
+        type_str(&mut app, "0j");
+        assert_eq!(app.selected, 5);
+        type_str(&mut app, "10k");
+        assert_eq!(app.selected, 0);
+        // A count before another key is dropped.
+        type_str(&mut app, "5xj");
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn digits_while_typing_are_text() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "a42j");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["42j"]);
     }
 
     #[test]

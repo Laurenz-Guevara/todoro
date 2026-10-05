@@ -19,6 +19,8 @@ pub const SECTIONS: &[Section] = &[
             ("t", "Go to today"),
             ("j / k", "Move down / up"),
             ("gg / G", "First / last item"),
+            ("4j / 4k", "Move four items down / up (any number)"),
+            ("42G", "Go to item 42"),
             ("J / K", "Move the item down / up the list"),
             ("H / L", "Move the item to the previous / next day"),
             ("a", "Add an item below the cursor"),

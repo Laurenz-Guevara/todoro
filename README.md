@@ -57,6 +57,8 @@ todoro
 | `t` | Go to today |
 | `j` / `k` | Move down / up |
 | `gg` / `G` | Jump to the first / last item |
+| `4j` / `4k` | Move 4 items down / up (any number works) |
+| `42G` | Go to item 42 |
 | `J` / `K` | Move the selected item down / up the list |
 | `H` / `L` | Move the selected item to the previous / next day, and go with it |
 | `a` | Add an item below the cursor |
