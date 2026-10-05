@@ -270,8 +270,34 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
         .title_bottom(Line::from(hint).centered().dim())
         .padding(Padding::horizontal(1));
     frame.render_widget(&block, area);
-    frame.render_widget(&editor.textarea, block.inner(area));
+    let inner = block.inner(area);
+    frame.render_widget(&editor.textarea, inner);
+    highlight_cursor_line_number(frame.buffer_mut(), editor, inner);
 }
+
+/// Colours the number of the line the cursor is on, as vim does. The text
+/// area styles every line number alike, so this finds that line's number in
+/// the drawn gutter (wrapped rows have none, so it appears once) and restyles it.
+fn highlight_cursor_line_number(buffer: &mut Buffer, editor: &NotesEditor, area: Rect) {
+    let number = (editor.textarea.cursor().0 + 1).to_string();
+    let gutter = editor.textarea.lines().len().to_string().len() as u16 + 2;
+    for y in area.top()..area.bottom() {
+        let cells = area.left()..(area.left() + gutter).min(area.right());
+        let text: String = cells.clone().map(|x| buffer[(x, y)].symbol().to_string()).collect();
+        if text.trim() == number {
+            for x in cells {
+                if buffer[(x, y)].symbol() != " " {
+                    buffer[(x, y)].set_style(CURSOR_LINE_NUMBER);
+                }
+            }
+            return;
+        }
+    }
+}
+
+/// The current line's number in the notes: bold, so it still stands out
+/// without colour.
+const CURSOR_LINE_NUMBER: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     // A : command in the notes takes over the bottom line, as in vim.
@@ -1846,6 +1872,29 @@ mod tests {
         assert!(buffer[(start + 2, 1)].modifier.contains(Modifier::REVERSED));
         assert_eq!(buffer[(start - 2, 1)].bg, Color::Reset);
         assert!(terminal.backend().to_string().contains("VISUAL"));
+    }
+
+    #[test]
+    fn the_cursor_lines_number_is_highlighted() {
+        let (mut app, _dir) = app_with(&["Write report"]);
+        let notes: Vec<String> = (1..=12).map(|i| format!("point {i}")).collect();
+        app.store.set_notes(app.day, 0, notes.join("\n")).unwrap();
+        press(&mut app, KeyCode::Enter);
+        // Rows of the notes area whose gutter has the highlight.
+        let highlighted = |app: &App| -> Vec<String> {
+            let terminal = render(app);
+            let buffer = terminal.backend().buffer().clone();
+            (1..9)
+                .filter(|&y| (2..5).any(|x| buffer[(x, y)].style().fg == Some(Color::Yellow)))
+                .map(|y| (2..5).map(|x| buffer[(x, y)].symbol().to_string()).collect::<String>().trim().to_string())
+                .collect()
+        };
+        assert_eq!(highlighted(&app), ["1"]);
+        type_str(&mut app, "2j");
+        assert_eq!(highlighted(&app), ["3"]);
+        // Scrolled down, the right number is still found.
+        type_str(&mut app, "G");
+        assert_eq!(highlighted(&app), ["12"]);
     }
 
     #[test]
