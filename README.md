@@ -151,7 +151,7 @@ In normal mode:
 | `dd` | Delete the line, keeping it to paste |
 | `yy` | Copy the line (it flashes briefly to show it's copied) |
 | `p` / `P` | Paste below / above (also into another item's notes) |
-| `v` | Select text by moving the cursor; then `y` copies it, `d` cuts it and `Esc` cancels |
+| `v` | Select text by moving the cursor; then `y` copies it, `d` cuts it, `J` / `K` move its lines down / up, and `Esc` cancels |
 | `J` / `K` | Move the line down / up |
 | `u` / `Ctrl+R` | Undo / redo |
 | `?` | Show all keybindings |

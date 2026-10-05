@@ -77,7 +77,7 @@ pub const SECTIONS: &[Section] = &[
             ("dd", "Delete the line, keeping it to paste"),
             ("yy", "Copy the line"),
             ("p / P", "Paste below / above"),
-            ("v", "Select text: then y copies, d cuts"),
+            ("v", "Select text: then y copies, d cuts, J / K move its lines"),
             ("u / Ctrl+R", "Undo / redo"),
             ("?", "Show this help"),
             ("Esc / q", "Back to the list"),

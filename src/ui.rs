@@ -381,7 +381,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         ),
         Mode::Notes(editor) if editor.insert => ("INSERT", Color::Green, &[("esc normal mode", 0)]),
         Mode::Notes(editor) if editor.visual.is_some() => {
-            ("VISUAL", Color::Magenta, &[("y copy", 2), ("d cut", 2), ("esc cancel", 3)])
+            ("VISUAL", Color::Magenta, &[("y copy", 2), ("d cut", 2), ("J/K move", 1), ("esc cancel", 3)])
         }
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])

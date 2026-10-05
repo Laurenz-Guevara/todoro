@@ -195,8 +195,9 @@ impl NotesEditor {
 
     fn normal_key(&mut self, key: KeyEvent, ctrl: bool) -> Action {
         let Some(anchor) = self.visual else { return self.command_key(key, ctrl) };
-        // While selecting, motions extend the selection, y copies it and d or x
-        // cuts it. Other commands do nothing until the selection ends.
+        // While selecting, motions extend the selection, y copies it, d or x
+        // cuts it, and J or K move its lines. Other commands do nothing until
+        // the selection ends.
         let action = match key.code {
             KeyCode::Esc | KeyCode::Char('v') => {
                 self.end_visual();
@@ -204,11 +205,20 @@ impl NotesEditor {
             }
             KeyCode::Char('y') if !ctrl => self.yank_selection(anchor),
             KeyCode::Char('d' | 'x') if !ctrl => self.cut_selection(anchor),
+            KeyCode::Char('J' | 'K') if !ctrl => {
+                let times = self.count.take().unwrap_or(1) as isize;
+                let by = if key.code == KeyCode::Char('J') { times } else { -times };
+                let ((first, _), (last, _)) = self.selection(anchor);
+                // The selection moves with its lines, so J or K can be pressed again.
+                let moved = self.move_lines(first..=last, by);
+                self.visual = Some((anchor.0.saturating_add_signed(moved), anchor.1));
+                Action::Stay
+            }
             KeyCode::Char(c) if c.is_ascii_digit() || "hjklwbe$_^Gg".contains(c) => self.command_key(key, ctrl),
             KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => self.command_key(key, ctrl),
             _ => Action::Stay,
         };
-        if self.visual.is_some() {
+        if let Some(anchor) = self.visual {
             self.show_selection(anchor);
         }
         action
@@ -402,15 +412,27 @@ impl NotesEditor {
     /// Moves the cursor's line `by` lines down (or up), as far as it can go,
     /// keeping the cursor on it.
     fn move_line(&mut self, by: isize) -> Action {
-        let mut lines = self.textarea.lines().to_vec();
-        let (row, col) = (self.textarea.cursor().0, self.textarea.cursor().1);
-        let to = row.saturating_add_signed(by).min(lines.len() - 1);
-        if to != row {
-            let line = lines.remove(row);
-            lines.insert(to, line);
-            self.set_lines(lines, (to, col));
-        }
+        let row = self.textarea.cursor().0;
+        self.move_lines(row..=row, by);
         Action::Stay
+    }
+
+    /// Moves the lines in `rows` `by` lines down (or up) together, as far as
+    /// they can go, keeping the cursor on the same text. Returns how far they
+    /// moved.
+    fn move_lines(&mut self, rows: RangeInclusive<usize>, by: isize) -> isize {
+        let mut lines = self.textarea.lines().to_vec();
+        let (start, end) = (*rows.start(), *rows.end());
+        let room_below = lines.len() - 1 - end;
+        let moved = by.clamp(-(start as isize), room_below as isize);
+        if moved != 0 {
+            let block: Vec<String> = lines.drain(start..=end).collect();
+            let to = start.saturating_add_signed(moved);
+            lines.splice(to..to, block);
+            let (row, col) = (self.textarea.cursor().0, self.textarea.cursor().1);
+            self.set_lines(lines, (row.saturating_add_signed(moved), col));
+        }
+        moved
     }
 
     /// Moves to the first character on the line that isn't a space or tab.
@@ -1069,7 +1091,7 @@ mod tests {
     #[test]
     fn other_commands_do_nothing_while_selecting() {
         let mut ed = editor("abc\ndef");
-        send(&mut ed, "viuJpo:q");
+        send(&mut ed, "viupo:q");
         assert!(ed.visual.is_some());
         assert!(!ed.insert);
         assert!(ed.command.is_none());
@@ -1190,6 +1212,54 @@ mod tests {
         ed.paste_text("zzz");
         assert_eq!(ed.notes(), "abc");
         assert!(ed.visual.is_some());
+    }
+
+    #[test]
+    fn capital_j_and_k_move_selected_lines_together() {
+        let mut ed = editor("one\ntwo\nthree\nfour\nfive");
+        send(&mut ed, "jvj");
+        send(&mut ed, "J");
+        assert_eq!(ed.notes(), "one\nfour\ntwo\nthree\nfive");
+        // Still selecting, on the same lines, so it can move again.
+        assert!(ed.visual.is_some());
+        assert_eq!(cursor(&ed), (3, 0));
+        send(&mut ed, "J");
+        assert_eq!(ed.notes(), "one\nfour\nfive\ntwo\nthree");
+        // It stops at the bottom, as a block.
+        send(&mut ed, "J");
+        assert_eq!(ed.notes(), "one\nfour\nfive\ntwo\nthree");
+        // v selects characters, so that's "two" and the "t" of "three".
+        send(&mut ed, "y");
+        assert_eq!(register(&ed), ("two\nt", false));
+    }
+
+    #[test]
+    fn a_count_moves_the_selection_further_and_it_stops_at_the_top() {
+        let mut ed = editor("one\ntwo\nthree\nfour\nfive");
+        send(&mut ed, "Gvk2K");
+        assert_eq!(ed.notes(), "one\nfour\nfive\ntwo\nthree");
+        send(&mut ed, "9K");
+        assert_eq!(ed.notes(), "four\nfive\none\ntwo\nthree");
+        assert_eq!(cursor(&ed).0, 0);
+    }
+
+    #[test]
+    fn moving_a_selection_upwards_keeps_it_selected_from_either_end() {
+        let mut ed = editor("one\ntwo\nthree\nfour");
+        // Selected from the bottom up: the cursor is on the first line.
+        send(&mut ed, "Gvk");
+        send(&mut ed, "K");
+        assert_eq!(ed.notes(), "one\nthree\nfour\ntwo");
+        // Still the same characters selected: "three" and the "f" of "four".
+        send(&mut ed, "d");
+        assert_eq!(ed.notes(), "one\nour\ntwo");
+    }
+
+    #[test]
+    fn moving_selected_lines_is_one_undo_step() {
+        let mut ed = editor("one\ntwo\nthree");
+        send(&mut ed, "vjJ<esc>u");
+        assert_eq!(ed.notes(), "one\ntwo\nthree");
     }
 
     #[test]
