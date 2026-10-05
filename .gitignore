@@ -1,0 +1,20 @@
+# Build output
+/target
+
+# Rust tooling leftovers
+**/*.rs.bk
+*.pdb
+
+# Local todo data (e.g. when testing with TODORO_FILE=./todos.json)
+*.json.tmp
+/todos.json
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
