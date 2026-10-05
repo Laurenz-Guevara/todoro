@@ -2,6 +2,30 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [0.3.0] - 2026-10-06
+
+### Features
+
+On the list:
+
+- A count before `j` or `k` moves that many items, like `4j`, and `42G` or `:42` goes to item 42. `:q` quits.
+- The selected item's number is highlighted in bold yellow.
+
+In notes:
+
+- Line numbers, with the current line's number highlighted.
+- Counts work with movement and editing, like `4j`, `3x` or `2dd`, and `42G` or `:42` goes to line 42. `:q` goes back to the list.
+- `_` and `^` go to the first non-blank character of the line.
+- `J` and `K` move the current line down or up.
+- `dd` keeps deleted lines to paste, `yy` copies lines, and `p` or `P` pastes them below or above, even into another item's notes.
+- `v` selects text to copy with `y` or cut with `d`, to paste inside a line.
+- Copied lines flash briefly to show what was copied.
+- Everything typed in one go in insert mode undoes in a single step, as in vim.
+
+### Bug fixes
+
+- Text selected in notes now has a dark background instead of a bright blue that made it hard to read.
+
 ## [0.2.0] - 2026-10-05
 
 ### Breaking
