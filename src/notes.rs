@@ -221,11 +221,9 @@ impl NotesEditor {
             (_, 'b') => self.repeat(times, CursorMove::WordBack),
             (_, 'e') => self.repeat(times, CursorMove::WordEnd),
             (_, '0') => self.motion(CursorMove::Head),
+            (_, '_' | '^') => self.first_non_blank(),
             (_, '$') => self.motion(CursorMove::End),
-            (_, 'G') => match count {
-                Some(line) => self.go_to_line(line),
-                None => self.motion_to(CursorMove::Bottom, CursorMove::Head),
-            },
+            (_, 'G') => self.go_to_line(count.unwrap_or(usize::MAX)),
             (_, 'i') => self.enter_insert(None),
             (_, 'a') => {
                 if self.col() < self.line_len() {
@@ -274,10 +272,20 @@ impl NotesEditor {
         }
     }
 
-    /// Moves to the start of line `line`, counting from 1, or the last line.
+    /// Moves to line `line`, counting from 1 (or the last line), on its first
+    /// non-blank character as in vim.
     fn go_to_line(&mut self, line: usize) -> Action {
         let row = line.saturating_sub(1).min(self.textarea.lines().len() - 1);
         self.textarea.move_cursor(CursorMove::Jump(row as u16, 0));
+        self.first_non_blank()
+    }
+
+    /// Moves to the first character on the line that isn't a space or tab.
+    fn first_non_blank(&mut self) -> Action {
+        let row = self.textarea.cursor().0;
+        let col = self.textarea.lines()[row].chars().take_while(|c| c.is_whitespace()).count();
+        self.textarea.move_cursor(CursorMove::Jump(row as u16, col as u16));
+        self.clamp();
         Action::Stay
     }
 
@@ -299,12 +307,6 @@ impl NotesEditor {
             self.textarea.move_cursor(m);
         }
         self.clamp();
-        Action::Stay
-    }
-
-    fn motion_to(&mut self, row: CursorMove, col: CursorMove) -> Action {
-        self.textarea.move_cursor(row);
-        self.textarea.move_cursor(col);
         Action::Stay
     }
 
@@ -680,6 +682,31 @@ mod tests {
         send(&mut ed, ":xddu");
         assert_eq!(ed.command.as_ref().unwrap().text, "xddu");
         assert_eq!(ed.notes(), "abc");
+    }
+
+    #[test]
+    fn underscore_and_caret_go_to_the_first_non_blank_character() {
+        let mut ed = editor("    indented line\n\t tabbed\n   ");
+        send(&mut ed, "$_");
+        assert_eq!(cursor(&ed), (0, 4));
+        send(&mut ed, "0^");
+        assert_eq!(cursor(&ed), (0, 4));
+        send(&mut ed, "j$_");
+        assert_eq!(cursor(&ed), (1, 2));
+        // A line of only spaces: the last one, as in vim.
+        send(&mut ed, "j_");
+        assert_eq!(cursor(&ed), (2, 2));
+    }
+
+    #[test]
+    fn going_to_a_line_lands_on_its_first_non_blank_character() {
+        let mut ed = editor("first\n  second\n    third");
+        send(&mut ed, "G");
+        assert_eq!(cursor(&ed), (2, 4));
+        send(&mut ed, ":2<cr>");
+        assert_eq!(cursor(&ed), (1, 2));
+        send(&mut ed, "gg");
+        assert_eq!(cursor(&ed), (0, 0));
     }
 
     #[test]

@@ -63,6 +63,7 @@ pub const SECTIONS: &[Section] = &[
             ("h j k l", "Move"),
             ("w / b / e", "Next word / previous word / end of word"),
             ("0 / $", "Start / end of the line"),
+            ("_ / ^", "First non-blank character of the line"),
             ("gg / G", "First / last line"),
             ("4j / 4k", "Move four lines down / up (any number)"),
             (":42 / 42G", "Go to line 42"),

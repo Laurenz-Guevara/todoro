@@ -138,6 +138,7 @@ In normal mode:
 | `h` `j` `k` `l` | Move |
 | `w` / `b` / `e` | Next word / previous word / end of word |
 | `0` / `$` | Start / end of the line |
+| `_` / `^` | First non-blank character of the line |
 | `gg` / `G` | First / last line |
 | `4j` / `4k` | Move 4 lines down / up (a count works with most keys, like `3x` or `2dd`) |
 | `:42` / `42G` | Go to line 42 |
