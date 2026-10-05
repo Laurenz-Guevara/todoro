@@ -44,6 +44,7 @@ todoro
 | Key | Action |
 |---|---|
 | `h` / `l` | Previous / next day |
+| `t` | Go to today |
 | `j` / `k` | Move down / up |
 | `J` / `K` | Move the selected item down / up the list |
 | `H` / `L` | Move the selected item to the previous / next day, and go with it |
@@ -51,7 +52,7 @@ todoro
 | `e` | Edit the selected item |
 | `x` | Mark the selected item done, or not done again |
 | `p` | Pin or unpin the selected item, so it moves to the next day until done |
-| `t` | Triage the selected item: High, Medium, Low, then no priority again |
+| `!` | Triage the selected item: High, Medium, Low, then no priority again |
 | `d` | Delete the selected item (asks to confirm) |
 | `Enter` | Open the selected item's notes |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |

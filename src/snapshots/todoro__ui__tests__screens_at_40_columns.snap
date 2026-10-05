@@ -52,9 +52,9 @@ help
 "│ │ List                             │ │"
 "│ │   h / l                          │ │"
 "│ │     Previous / next day          │ │"
+"│ │   t                              │ │"
+"│ │     Go to today                  │ │"
 "│ │   j / k                          │ │"
-"│ │     Move down / up               │ │"
-"│ │   J / K                          │ │"
 "╰─╰───── ↑/↓ scroll · esc close ─────╯─╯"
 " HELP   ↑/↓ scroll  esc close           "
 

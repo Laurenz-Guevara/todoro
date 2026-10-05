@@ -16,6 +16,7 @@ pub const SECTIONS: &[Section] = &[
         title: "List",
         bindings: &[
             ("h / l", "Previous / next day"),
+            ("t", "Go to today"),
             ("j / k", "Move down / up"),
             ("J / K", "Move the item down / up the list"),
             ("H / L", "Move the item to the previous / next day"),
@@ -23,7 +24,7 @@ pub const SECTIONS: &[Section] = &[
             ("e", "Edit the selected item"),
             ("x", "Mark the selected item done / not done"),
             ("p", "Pin / unpin: move to today until done"),
-            ("t", "Triage: High, Medium, Low, then none"),
+            ("!", "Triage: High, Medium, Low, then none"),
             ("d", "Delete the selected item"),
             ("Enter", "Open the selected item's notes"),
             ("c", "Open the calendar"),

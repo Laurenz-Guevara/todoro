@@ -53,8 +53,8 @@ help
 "│ │   h / l                │ │"
 "│ │     Previous / next    │ │"
 "│ │     day                │ │"
-"│ │   j / k                │ │"
-"│ │     Move down / up     │ │"
+"│ │   t                    │ │"
+"│ │     Go to today        │ │"
 "╰─╰ ↑/↓ scroll · esc close ╯─╯"
 " HELP   ↑/↓ scroll  esc close "
 

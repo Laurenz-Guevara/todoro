@@ -291,8 +291,10 @@ impl App {
                     self.clamp_selection();
                 }
             }
+            // Like the calendar's t: back to today, where you were if already there.
+            KeyCode::Char('t') if self.day != self.today => self.show_day(self.today),
             // Triage: cycle the item's priority.
-            KeyCode::Char('t') => {
+            KeyCode::Char('!') => {
                 if let Some(slot) = slot {
                     self.store.cycle_priority(slot.day, slot.index)?;
                 }
@@ -1329,13 +1331,13 @@ mod tests {
     }
 
     #[test]
-    fn t_cycles_the_selected_items_priority() {
+    fn exclamation_mark_cycles_the_selected_items_priority() {
         use crate::store::Priority;
         let (mut app, _dir) = app_with(&["one", "two"]);
         type_str(&mut app, "j");
         let mut seen = Vec::new();
         for _ in 0..4 {
-            type_str(&mut app, "t");
+            type_str(&mut app, "!");
             seen.push(app.items()[1].priority);
         }
         assert_eq!(seen, [Some(Priority::High), Some(Priority::Medium), Some(Priority::Low), None]);
@@ -1346,25 +1348,45 @@ mod tests {
     }
 
     #[test]
-    fn t_on_an_empty_day_does_nothing() {
+    fn exclamation_mark_on_an_empty_day_does_nothing() {
         let (mut app, _dir) = app_with(&[]);
-        type_str(&mut app, "t");
+        type_str(&mut app, "!");
         assert!(app.items().is_empty());
     }
 
     #[test]
-    fn t_while_typing_is_text() {
+    fn exclamation_mark_and_t_while_typing_are_text() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "at");
+        type_str(&mut app, "lat!");
         press(&mut app, KeyCode::Enter);
-        assert_eq!(items(&app), ["one", "t"]);
+        assert_eq!(app.day, today().succ_opt().unwrap());
+        assert_eq!(items(&app), ["t!"]);
+        assert!(app.items().iter().all(|item| item.priority.is_none()));
+    }
+
+    #[test]
+    fn t_goes_back_to_today() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "hhhhjt");
+        assert_eq!(app.day, today());
+        assert_eq!(app.selected, 0);
+        type_str(&mut app, "lllllllllt");
+        assert_eq!(app.day, today());
+    }
+
+    #[test]
+    fn t_on_today_keeps_the_selection() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "jt");
+        assert_eq!(app.day, today());
+        assert_eq!(app.selected, 1);
         assert!(app.items().iter().all(|item| item.priority.is_none()));
     }
 
     #[test]
     fn u_undoes_triage() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "ttu");
+        type_str(&mut app, "!!u");
         assert_eq!(app.items()[0].priority, Some(crate::store::Priority::High));
     }
 

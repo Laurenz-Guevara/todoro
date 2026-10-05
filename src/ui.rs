@@ -1491,7 +1491,7 @@ mod tests {
             "Sort the recycling",
         ]);
         app.store.toggle_pinned(app.day, 1).unwrap();
-        type_str(&mut app, "tjttjjttt");
+        type_str(&mut app, "!j!!jj!!!");
         let mut terminal = render(&app);
         assert_snapshot!(terminal.backend());
         // Only the numbers' colours change, so the text and cursor stay put.
@@ -1580,7 +1580,7 @@ mod tests {
     fn semantic_icons_show_beside_triaged_items() {
         let (mut app, _dir) = app_with(&["Fix the leaking tap", "Book flights", "Water the plants", "Sort the recycling", "Old"]);
         app.settings.semantic_icons = true;
-        type_str(&mut app, "tjttjjtttjtx");
+        type_str(&mut app, "!j!!jj!!!j!x");
         assert_snapshot!(render(&app).backend());
         // Off again, the list looks as it does without triage icons.
         app.settings.semantic_icons = false;
@@ -1591,7 +1591,7 @@ mod tests {
     fn no_colour_removes_every_colour_but_keeps_highlights() {
         let (mut app, _dir) = app_with(&["Fix the tap", "Book flights"]);
         app.store.set_notes(app.day, 0, "notes".into()).unwrap();
-        type_str(&mut app, "tjp");
+        type_str(&mut app, "!jp");
         app.settings.no_colour = true;
         let mut screens = vec![render(&app)];
         type_str(&mut app, "c");
