@@ -46,14 +46,20 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let mut rows: Vec<Row> = app
         .items()
         .iter()
-        .map(|item| Row { text: &item.text, has_notes: !item.notes.is_empty(), done: item.done, typing: false })
+        .map(|item| Row {
+            text: &item.text,
+            pinned: item.pinned,
+            has_notes: !item.notes.is_empty(),
+            done: item.done,
+            typing: false,
+        })
         .collect();
     let mut selected = (!rows.is_empty()).then_some(app.selected);
     if let Mode::Insert { index, text, editing, .. } = &app.mode {
         if *editing {
             rows[*index] = Row { text, typing: true, ..rows[*index] };
         } else {
-            rows.insert(*index, Row { text, has_notes: false, done: false, typing: true });
+            rows.insert(*index, Row { text, pinned: false, has_notes: false, done: false, typing: true });
         }
         selected = Some(*index);
     }
@@ -82,6 +88,9 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(prefix, Style::new().fg(Color::DarkGray)),
             Span::styled(row.text.to_string(), text_style),
         ]);
+        if row.pinned {
+            line.push_span(PINNED_MARKER.fg(Color::Cyan));
+        }
         if row.has_notes {
             line.push_span(NOTES_MARKER.dim());
         }
@@ -112,6 +121,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 /// One item row on the main list.
 struct Row<'a> {
     text: &'a str,
+    pinned: bool,
     has_notes: bool,
     done: bool,
     /// The item being added or edited.
@@ -120,6 +130,9 @@ struct Row<'a> {
 
 /// Shown after an item on the main list when it has notes.
 const NOTES_MARKER: &str = " ≡";
+
+/// Shown after a pinned item, which moves forward to today until completed.
+const PINNED_MARKER: &str = " »";
 
 fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     let title = format!(" {}. {} ", app.selected + 1, app.items()[app.selected].text);
@@ -396,6 +409,14 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "?undo");
         assert_snapshot!(render_sized(&app, 80, 16).backend());
+    }
+
+    #[test]
+    fn pinned_items_are_marked() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom"]);
+        app.store.set_notes(app.day, 1, "notes".into()).unwrap();
+        type_str(&mut app, "pjpjpx");
+        assert_snapshot!(render(&app).backend());
     }
 
     #[test]

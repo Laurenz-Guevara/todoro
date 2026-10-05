@@ -24,7 +24,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 ## Keybindings
 
-Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `?` help, `q` quit.
+Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `a` add below the cursor (or at the end of the open items when on a completed one), `e` edit, `x` toggle done, `p` toggle pinned, `d` delete (opens a popup; `d` confirms, `c` cancels), `Enter` open notes, `?` help, `q` quit.
 
 Insert mode: type to insert at the cursor, `←`/`→`/`Home`/`End` move, `Backspace`/`Delete` remove, `Enter`/`Esc` save. Saving an empty new item discards it. Saving an edited item as empty opens the delete popup.
 
@@ -37,8 +37,8 @@ Keep new bindings vim-like. When you add or change one, update `SECTIONS` in `sr
 ## Conventions
 
 - Each day's items are stored with the open ones first and the completed ones after; `Store` keeps this order (`open_count` gives the boundary). `x` moves an item to the boundary: the top of the completed items or the bottom of the open ones. Only open items are numbered in the UI; completed ones follow a "Completed" header row, so their list row is their index plus one.
-- On startup, `Store::roll_over` moves open items from earlier days to the top of today. Completed items stay on their day.
-- On disk an item is a plain string, or an object with `text` and optional `notes` and `done` (see `RawItem` in `store.rs`). Items with only text must stay plain strings so simple files stay readable by older versions.
+- Items stay on their day by default. On startup, `Store::roll_over` moves pinned, open items from earlier days to the top of today, still pinned. Unpinned and completed items stay on their day.
+- On disk an item is a plain string, or an object with `text` and optional `notes`, `done` and `pinned` (see `RawItem` in `store.rs`). Items with only text must stay plain strings so simple files stay readable by older versions.
 - `Store` saves after every change by writing a temp file and renaming it. Don't defer or batch saves.
 - `Insert { cursor }` is a byte offset that must stay on a char boundary. Use `prev_boundary`/`next_boundary` in `app.rs`.
 - The notes editor must keep vim's behavior where it differs from `ratatui-textarea`'s defaults: `h`/`l`/`x` never cross line boundaries, the normal-mode cursor never sits past the last character, and each command is one undo step.

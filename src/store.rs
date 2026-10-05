@@ -7,12 +7,15 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 /// One todo entry. `notes` is longer free text shown only on the notes screen.
+/// A `pinned` item moves forward to today until it is completed; others stay
+/// on their day.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "RawItem", into = "RawItem")]
 pub struct Item {
     pub text: String,
     pub notes: String,
     pub done: bool,
+    pub pinned: bool,
 }
 
 /// How an item is written to disk. Items with only text stay plain strings, so
@@ -28,6 +31,8 @@ enum RawItem {
         notes: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         done: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pinned: bool,
     },
 }
 
@@ -35,17 +40,17 @@ impl From<RawItem> for Item {
     fn from(raw: RawItem) -> Self {
         match raw {
             RawItem::Text(text) => Item { text, ..Item::default() },
-            RawItem::Full { text, notes, done } => Item { text, notes, done },
+            RawItem::Full { text, notes, done, pinned } => Item { text, notes, done, pinned },
         }
     }
 }
 
 impl From<Item> for RawItem {
     fn from(item: Item) -> Self {
-        if item.notes.is_empty() && !item.done {
+        if item.notes.is_empty() && !item.done && !item.pinned {
             RawItem::Text(item.text)
         } else {
-            RawItem::Full { text: item.text, notes: item.notes, done: item.done }
+            RawItem::Full { text: item.text, notes: item.notes, done: item.done, pinned: item.pinned }
         }
     }
 }
@@ -85,14 +90,15 @@ impl Store {
         Ok(Self { path, days })
     }
 
-    /// Moves every open item from days before `today` to the start of today's
-    /// list, oldest day first. Completed items stay on the day they were done.
+    /// Moves every pinned, open item from days before `today` to the start of
+    /// today's list, oldest day first. They stay pinned, so they keep moving
+    /// forward until completed. Everything else stays on its day.
     pub fn roll_over(&mut self, today: NaiveDate) -> io::Result<()> {
         let today_key = key(today);
         let mut carried = Vec::new();
         self.days.retain(|day, items| {
             if *day < today_key {
-                carried.extend(items.extract_if(.., |item| !item.done));
+                carried.extend(items.extract_if(.., |item| item.pinned && !item.done));
             }
             !items.is_empty()
         });
@@ -147,6 +153,13 @@ impl Store {
         item.done = !item.done;
         let boundary = items.iter().take_while(|item| !item.done).count();
         items.insert(boundary, item);
+        self.save()
+    }
+
+    pub fn toggle_pinned(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
+        if let Some(item) = self.item_mut(day, index) {
+            item.pinned = !item.pinned;
+        }
         self.save()
     }
 
@@ -357,24 +370,33 @@ mod tests {
         assert_eq!(texts(&store, today()), ["o1", "o2", "d1", "d2"]);
     }
 
+    /// Adds an item to the end of `day`'s open items and pins it.
+    fn insert_pinned(store: &mut Store, day: NaiveDate, text: &str) {
+        let index = store.open_count(day);
+        store.insert(day, index, text.into()).unwrap();
+        store.toggle_pinned(day, index).unwrap();
+    }
+
     #[test]
-    fn roll_over_moves_open_items_from_past_days_to_today() {
+    fn roll_over_moves_pinned_open_items_from_past_days_to_today() {
         let (_dir, path) = temp_path();
         let mut store = Store::open(path.clone()).unwrap();
-        store.insert(day(-2), 0, "oldest".into()).unwrap();
-        store.insert(day(-1), 0, "yesterday".into()).unwrap();
-        store.insert(day(-1), 1, "finished".into()).unwrap();
+        insert_pinned(&mut store, day(-2), "oldest");
+        insert_pinned(&mut store, day(-1), "yesterday");
         store.set_notes(day(-1), 0, "keep me".into()).unwrap();
-        store.toggle_done(day(-1), 1).unwrap();
+        store.insert(day(-1), 1, "stays".into()).unwrap();
+        insert_pinned(&mut store, day(-1), "finished");
+        store.toggle_done(day(-1), 2).unwrap();
         store.insert(today(), 0, "planned".into()).unwrap();
-        store.insert(day(1), 0, "tomorrow".into()).unwrap();
+        insert_pinned(&mut store, day(1), "tomorrow");
 
         store.roll_over(today()).unwrap();
 
         assert_eq!(texts(&store, today()), ["oldest", "yesterday", "planned"]);
         assert_eq!(store.items(today())[1].notes, "keep me");
+        assert!(store.items(today())[..2].iter().all(|item| item.pinned));
         assert!(store.items(day(-2)).is_empty());
-        assert_eq!(texts(&store, day(-1)), ["finished"]);
+        assert_eq!(texts(&store, day(-1)), ["stays", "finished"]);
         assert_eq!(texts(&store, day(1)), ["tomorrow"]);
 
         // Saved, and the emptied day is gone from the file.
@@ -384,10 +406,47 @@ mod tests {
     }
 
     #[test]
+    fn pinned_items_keep_moving_forward_each_day() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        insert_pinned(&mut store, day(-1), "ongoing");
+        store.roll_over(today()).unwrap();
+        store.roll_over(day(1)).unwrap();
+        assert!(store.items(today()).is_empty());
+        assert_eq!(texts(&store, day(1)), ["ongoing"]);
+    }
+
+    #[test]
+    fn roll_over_leaves_unpinned_items_on_their_day() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(day(-1), 0, "dentist at 3pm".into()).unwrap();
+        store.roll_over(today()).unwrap();
+        assert_eq!(texts(&store, day(-1)), ["dentist at 3pm"]);
+        assert!(store.items(today()).is_empty());
+    }
+
+    #[test]
+    fn toggle_pinned_is_saved_and_reloads() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "a".into()).unwrap();
+        store.insert(today(), 1, "b".into()).unwrap();
+        store.toggle_pinned(today(), 0).unwrap();
+        store.toggle_pinned(today(), 1).unwrap();
+        store.toggle_pinned(today(), 1).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json, serde_json::json!({ "2026-10-05": [{ "text": "a", "pinned": true }, "b"] }));
+        let reloaded = Store::open(path).unwrap();
+        assert!(reloaded.items(today())[0].pinned);
+        assert!(!reloaded.items(today())[1].pinned);
+    }
+
+    #[test]
     fn roll_over_keeps_carried_items_above_completed_ones() {
         let (_dir, path) = temp_path();
         let mut store = Store::open(path).unwrap();
-        store.insert(day(-1), 0, "carried".into()).unwrap();
+        insert_pinned(&mut store, day(-1), "carried");
         store.insert(today(), 0, "done today".into()).unwrap();
         store.toggle_done(today(), 0).unwrap();
         store.roll_over(today()).unwrap();

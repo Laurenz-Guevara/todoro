@@ -20,6 +20,7 @@ pub const SECTIONS: &[Section] = &[
             ("a", "Add an item below the cursor"),
             ("e", "Edit the selected item"),
             ("x", "Mark the selected item done / not done"),
+            ("p", "Pin / unpin: move to today until done"),
             ("d", "Delete the selected item"),
             ("Enter", "Open the selected item's notes"),
             ("?", "Show this help"),

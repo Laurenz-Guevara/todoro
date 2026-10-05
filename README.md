@@ -1,6 +1,6 @@
 # todoro
 
-A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and anything you don't finish moves to the next day. Any item can have longer notes, which you open with `Enter`.
+A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and pin the ones you want to follow you to the next day with `p`. Any item can have longer notes, which you open with `Enter`.
 
 ```
 ╭───────────── Monday, October 5 2026 (today) ─────────────╮
@@ -48,18 +48,23 @@ todoro
 | `a` | Add an item below the cursor |
 | `e` | Edit the selected item |
 | `x` | Mark the selected item done, or not done again |
+| `p` | Pin or unpin the selected item, so it moves to the next day until done |
 | `d` | Delete the selected item (asks to confirm) |
 | `Enter` | Open the selected item's notes |
 | `?` | Show all keybindings |
 | `q` | Quit |
 
-Items that have notes are marked with `≡`.
+Pinned items are marked with `»` and items that have notes with `≡`.
 
 ### Completed items
 
 `x` moves an item under the Completed header, crossed out. The cursor stays where it was, so you can tick off several items in a row. `x` on a completed item moves it back to the bottom of the numbered list.
 
-When you start todoro, any items you didn't complete on earlier days move to the top of today's list, keeping their notes. Completed items stay on the day you completed them, so you can go back with `h` to see what you did.
+### Pinned items
+
+Items stay on their day by default, so something like "Dentist at 3pm" doesn't follow you around. Pin an item with `p` if it should: when you start todoro, pinned items you didn't complete on earlier days move to the top of today's list, keeping their notes. They stay pinned, so they keep moving forward each day until you complete or unpin them.
+
+Completed items always stay on the day you completed them, so you can go back with `h` to see what you did.
 
 ### Insert mode
 

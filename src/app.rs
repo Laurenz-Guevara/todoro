@@ -138,6 +138,7 @@ impl App {
             KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete,
             // The cursor stays put, so you can tick off several items in a row.
             KeyCode::Char('x') if len > 0 => self.store.toggle_done(self.day, self.selected)?,
+            KeyCode::Char('p') if len > 0 => self.store.toggle_pinned(self.day, self.selected)?,
             KeyCode::Enter if len > 0 => {
                 let editor = NotesEditor::new(&self.items()[self.selected].notes);
                 self.mode = Mode::Notes(Box::new(editor));
@@ -567,6 +568,42 @@ mod tests {
         type_str(&mut app, "?");
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap();
         assert!(app.quit);
+    }
+
+    #[test]
+    fn p_pins_and_unpins_the_selected_item_in_place() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "jp");
+        assert_eq!(items(&app), ["one", "two"]);
+        assert!(!app.items()[0].pinned);
+        assert!(app.items()[1].pinned);
+        assert_eq!(app.selected, 1);
+        type_str(&mut app, "p");
+        assert!(!app.items()[1].pinned);
+    }
+
+    #[test]
+    fn p_on_an_empty_day_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "p");
+        assert!(app.items().is_empty());
+    }
+
+    #[test]
+    fn p_while_typing_is_text() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "e p");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["one p"]);
+        assert!(!app.items()[0].pinned);
+    }
+
+    #[test]
+    fn completing_a_pinned_item_keeps_it_pinned() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "px");
+        assert!(app.items()[0].done);
+        assert!(app.items()[0].pinned);
     }
 
     #[test]
