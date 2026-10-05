@@ -8,6 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui_textarea::{CursorMove, TextArea};
 
 use crate::input::LineInput;
+use crate::ui::VISUAL_BG;
 
 pub struct NotesEditor {
     pub textarea: TextArea<'static>,
@@ -86,6 +87,9 @@ impl NotesEditor {
         textarea.set_placeholder_text("No notes yet. Press i to start writing.");
         textarea.set_placeholder_style(Style::new().fg(Color::DarkGray));
         textarea.set_line_number_style(Style::new().fg(Color::DarkGray));
+        // The text area's default selection is a bright blue that hides the
+        // text; use the list's dark selection colour instead.
+        textarea.set_selection_style(Style::new().bg(VISUAL_BG));
         let row = row.min(textarea.lines().len() - 1);
         let col = col.min(textarea.lines()[row].chars().count());
         textarea.move_cursor(CursorMove::Jump(row as u16, col as u16));

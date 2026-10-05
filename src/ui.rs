@@ -610,7 +610,8 @@ fn draw_tags(frame: &mut Frame, app: &App, picker: &TagPicker) {
 }
 
 /// Background of the rows selected with `V`.
-const VISUAL_BG: Color = Color::Rgb(70, 50, 90);
+/// Also used for text selected with `v` in the notes, so both look alike.
+pub const VISUAL_BG: Color = Color::Rgb(70, 50, 90);
 
 fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
     let cursor = calendar.cursor;
@@ -1903,9 +1904,11 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let text: String = (1..58).map(|x| buffer[(x, 1)].symbol().to_string()).collect();
         let start = text.find("the").unwrap() as u16 + 1;
-        // "th" has the selection's background; the cursor covers the "e".
-        assert_ne!(buffer[(start, 1)].bg, Color::Reset);
-        assert_ne!(buffer[(start + 1, 1)].bg, Color::Reset);
+        // "th" has the selection's dark background, the same as the list's
+        // selection, and the text keeps its colour; the cursor covers the "e".
+        assert_eq!(buffer[(start, 1)].bg, VISUAL_BG);
+        assert_eq!(buffer[(start + 1, 1)].bg, VISUAL_BG);
+        assert_eq!(buffer[(start, 1)].fg, Color::Reset);
         assert!(buffer[(start + 2, 1)].modifier.contains(Modifier::REVERSED));
         assert_eq!(buffer[(start - 2, 1)].bg, Color::Reset);
         assert!(terminal.backend().to_string().contains("VISUAL"));
