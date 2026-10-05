@@ -41,7 +41,7 @@ Calendar: `h`/`j`/`k`/`l` follow the layout (month and year: `h`/`l` day, `j`/`k
 
 Insert mode: type to insert at the cursor, `←`/`→`/`Home`/`End` move, `Backspace`/`Delete` remove, `Enter`/`Esc` save. Saving an empty new item discards it. Saving an edited item as empty opens the delete popup.
 
-Notes screen, normal mode: `h`/`j`/`k`/`l`, `w`/`b`/`e`, `0`/`$`, `gg`/`G` move; `i`/`a`/`I`/`A`/`o`/`O` enter insert mode; `x` deletes a character, `dd` a line; `u`/`Ctrl+R` undo/redo; `?` help; `Esc`/`q` back to the list. Notes insert mode: type freely, `Esc` back to normal mode. Anything not listed here is not implemented (no visual mode, `:` commands or counts).
+Notes screen, normal mode: `h`/`j`/`k`/`l`, `w`/`b`/`e`, `0`/`$`, `gg`/`G` move, with a count (`4j`, `42G`; also `3x`, `2dd`); `:` opens a command line (`NotesEditor::command`, drawn in place of the status bar): `:42` goes to line 42, `:q`/`:wq`/`:x` close, `:w` does nothing; `i`/`a`/`I`/`A`/`o`/`O` enter insert mode; `x` deletes a character, `dd` a line; `u`/`Ctrl+R` undo/redo; `?` help; `Esc`/`q` back to the list. Notes insert mode: type freely, `Esc` back to normal mode. Anything not listed here is not implemented (only the `:` commands above).
 
 Help popup (from the list or notes normal mode): every typed character goes into the search, `↑`/`↓`/`Ctrl+N`/`Ctrl+P`/`PageUp`/`PageDown` scroll, `Backspace` and `Ctrl+U` edit the search, `Esc` returns to the screen it was opened from. One-character searches match key names only (case-sensitive); longer ones match keys or descriptions (case-insensitive).
 

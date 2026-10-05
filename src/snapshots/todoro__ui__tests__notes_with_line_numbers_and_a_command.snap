@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭──────────────────── 1. Write report ─────────────────────╮"
+"│   1 point 1                                              │"
+"│   2 point 2                                              │"
+"│   3 point 3                                              │"
+"│   4 point 4                                              │"
+"│   5 point 5                                              │"
+"│   6 point 6                                              │"
+"│   7 point 7                                              │"
+"╰─────────────────── esc/q back to list ───────────────────╯"
+":1                                                          "

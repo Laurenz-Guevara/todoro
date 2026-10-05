@@ -3,7 +3,7 @@ source: src/ui.rs
 expression: render(&app).backend()
 ---
 "╭────────────────────── 1. Buy milk ───────────────────────╮"
-"│ oat milk                                                 │"
+"│  1 oat milk                                              │"
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"

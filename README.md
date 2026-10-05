@@ -129,7 +129,7 @@ With `A`, `Enter` adds the item and starts a new one below it, so you can type a
 
 ### Notes
 
-`Enter` on an item opens its notes: free text that isn't shown on the main list. The notes screen has its own small vim-style editor and saves as you type.
+`Enter` on an item opens its notes: free text that isn't shown on the main list. The notes screen has its own small vim-style editor, with line numbers, and saves as you type.
 
 In normal mode:
 
@@ -139,6 +139,9 @@ In normal mode:
 | `w` / `b` / `e` | Next word / previous word / end of word |
 | `0` / `$` | Start / end of the line |
 | `gg` / `G` | First / last line |
+| `4j` / `4k` | Move 4 lines down / up (a count works with most keys, like `3x` or `2dd`) |
+| `:42` / `42G` | Go to line 42 |
+| `:q` / `:wq` | Back to the list |
 | `i` / `a` | Insert before / after the cursor |
 | `I` / `A` | Insert at the start / end of the line |
 | `o` / `O` | Open a new line below / above |

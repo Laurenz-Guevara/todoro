@@ -274,6 +274,15 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    // A : command in the notes takes over the bottom line, as in vim.
+    if let Mode::Notes(editor) = &app.mode
+        && let Some(input) = &editor.command
+    {
+        frame.render_widget(Line::from(format!(":{}", input.text)), area);
+        let col = 1 + input.text[..input.cursor].width() as u16;
+        frame.set_cursor_position(Position::new(area.x + col.min(area.width.saturating_sub(1)), area.y));
+        return;
+    }
     // Each hint has a priority. On a narrow screen the lowest go first, so
     // `? help` is the last to go.
     let (mode, color, hints): (_, _, &[(&str, u8)]) = match &app.mode {
@@ -1800,6 +1809,22 @@ mod tests {
         assert_snapshot!(terminal.backend());
         // The cursor is on the new line, after "Call".
         assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(1 + 3 + 4, 3));
+    }
+
+    #[test]
+    fn notes_with_line_numbers_and_a_command() {
+        let (mut app, _dir) = app_with(&["Write report"]);
+        app.store.set_notes(app.day, 0, (1..=12).map(|i| format!("point {i}")).collect::<Vec<_>>().join("\n")).unwrap();
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, ":1");
+        let mut terminal = render(&app);
+        assert_snapshot!(terminal.backend());
+        // The cursor is on the bottom line, after ":1".
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(2, 9));
+        type_str(&mut app, "1");
+        press(&mut app, KeyCode::Enter);
+        let Mode::Notes(editor) = &app.mode else { panic!("still in the notes") };
+        assert_eq!(editor.textarea.cursor().0, 10);
     }
 
     #[test]

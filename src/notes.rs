@@ -4,11 +4,17 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui_textarea::{CursorMove, TextArea};
 
+use crate::input::LineInput;
+
 pub struct NotesEditor {
     pub textarea: TextArea<'static>,
     pub insert: bool,
     /// First key of a two-key command (`gg`, `dd`) waiting for its second key.
     pending: Option<char>,
+    /// A count typed before a command, like the 4 in `4j`.
+    count: Option<usize>,
+    /// The `:` command being typed, if any.
+    pub command: Option<LineInput>,
     /// Undo history, kept here rather than in the text area so that every
     /// command (and a whole visit to insert mode) is exactly one step.
     undo: Vec<Snapshot>,
@@ -40,6 +46,8 @@ impl NotesEditor {
             textarea: TextArea::default(),
             insert: false,
             pending: None,
+            count: None,
+            command: None,
             undo: Vec::new(),
             redo: Vec::new(),
             insert_before: None,
@@ -54,6 +62,7 @@ impl NotesEditor {
         textarea.set_cursor_line_style(Style::new());
         textarea.set_placeholder_text("No notes yet. Press i to start writing.");
         textarea.set_placeholder_style(Style::new().fg(Color::DarkGray));
+        textarea.set_line_number_style(Style::new().fg(Color::DarkGray));
         let row = row.min(textarea.lines().len() - 1);
         let col = col.min(textarea.lines()[row].chars().count());
         textarea.move_cursor(CursorMove::Jump(row as u16, col as u16));
@@ -112,6 +121,23 @@ impl NotesEditor {
             return Action::Stay;
         }
 
+        if let Some(input) = &mut self.command {
+            match key.code {
+                KeyCode::Esc => self.command = None,
+                // Backspace past the : leaves the command line, as in vim.
+                KeyCode::Backspace if input.text.is_empty() => self.command = None,
+                KeyCode::Enter => {
+                    let command = input.text.clone();
+                    self.command = None;
+                    return self.run_command(&command);
+                }
+                code => {
+                    input.handle_key(code);
+                }
+            }
+            return Action::Stay;
+        }
+
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('u') if !ctrl => {
@@ -141,40 +167,65 @@ impl NotesEditor {
     fn normal_key(&mut self, key: KeyEvent, ctrl: bool) -> Action {
         let KeyCode::Char(c) = key.code else {
             self.pending = None;
+            let times = self.count.take().unwrap_or(1);
             return match key.code {
                 KeyCode::Esc => Action::Close,
-                KeyCode::Left => self.motion(CursorMove::Back),
-                KeyCode::Right => self.motion(CursorMove::Forward),
-                KeyCode::Up => self.motion(CursorMove::Up),
-                KeyCode::Down => self.motion(CursorMove::Down),
+                KeyCode::Left => self.repeat(times, CursorMove::Back),
+                KeyCode::Right => self.repeat(times, CursorMove::Forward),
+                KeyCode::Up => self.repeat(times, CursorMove::Up),
+                KeyCode::Down => self.repeat(times, CursorMove::Down),
                 _ => Action::Stay,
             };
         };
+        // Ignore Ctrl combinations other than undo and redo, so Ctrl+U doesn't act like u.
+        if ctrl {
+            self.pending = None;
+            self.count = None;
+            return Action::Stay;
+        }
+        // Digits build a count for the next command, as in vim: 4j moves down
+        // four lines and 42G goes to line 42. A 0 only counts after another digit.
+        if c.is_ascii_digit() && (c != '0' || self.count.is_some()) {
+            let digit = c as usize - '0' as usize;
+            self.count = Some((self.count.unwrap_or(0) * 10 + digit).min(99_999));
+            return Action::Stay;
+        }
+        let count = self.count.take();
+        let times = count.unwrap_or(1);
 
         match (self.pending.take(), c) {
-            (Some('g'), 'g') => self.motion_to(CursorMove::Top, CursorMove::Head),
+            (Some('g'), 'g') => self.go_to_line(count.unwrap_or(1)),
             (Some('d'), 'd') => {
-                self.delete_line();
+                for _ in 0..times {
+                    self.delete_line();
+                }
                 Action::Stay
             }
-            // Ignore other Ctrl combinations so Ctrl+U doesn't act like u.
-            _ if ctrl => Action::Stay,
             (_, 'g' | 'd') => {
                 self.pending = Some(c);
+                // Keep the count for the second key, as in 3dd.
+                self.count = count;
+                Action::Stay
+            }
+            (_, ':') => {
+                self.command = Some(LineInput::default());
                 Action::Stay
             }
             (_, 'q') => Action::Close,
             (_, '?') => Action::Help,
-            (_, 'h') => self.motion(CursorMove::Back),
-            (_, 'l') => self.motion(CursorMove::Forward),
-            (_, 'j') => self.motion(CursorMove::Down),
-            (_, 'k') => self.motion(CursorMove::Up),
-            (_, 'w') => self.motion(CursorMove::WordForward),
-            (_, 'b') => self.motion(CursorMove::WordBack),
-            (_, 'e') => self.motion(CursorMove::WordEnd),
+            (_, 'h') => self.repeat(times, CursorMove::Back),
+            (_, 'l') => self.repeat(times, CursorMove::Forward),
+            (_, 'j') => self.repeat(times, CursorMove::Down),
+            (_, 'k') => self.repeat(times, CursorMove::Up),
+            (_, 'w') => self.repeat(times, CursorMove::WordForward),
+            (_, 'b') => self.repeat(times, CursorMove::WordBack),
+            (_, 'e') => self.repeat(times, CursorMove::WordEnd),
             (_, '0') => self.motion(CursorMove::Head),
             (_, '$') => self.motion(CursorMove::End),
-            (_, 'G') => self.motion_to(CursorMove::Bottom, CursorMove::Head),
+            (_, 'G') => match count {
+                Some(line) => self.go_to_line(line),
+                None => self.motion_to(CursorMove::Bottom, CursorMove::Head),
+            },
             (_, 'i') => self.enter_insert(None),
             (_, 'a') => {
                 if self.col() < self.line_len() {
@@ -197,14 +248,44 @@ impl NotesEditor {
             }
             (_, 'x') => {
                 // Unlike delete_next_char, x never joins the next line onto this one.
-                if self.col() < self.line_len() {
-                    self.textarea.delete_next_char();
-                    self.clamp();
+                for _ in 0..times {
+                    if self.col() < self.line_len() {
+                        self.textarea.delete_next_char();
+                    }
                 }
+                self.clamp();
                 Action::Stay
             }
             _ => Action::Stay,
         }
+    }
+
+    /// Runs a `:` command: a line number to go to it, `:q` (or `:wq`, `:x`)
+    /// to go back to the list. Notes save as you type, so `:w` does nothing.
+    fn run_command(&mut self, command: &str) -> Action {
+        match command.trim() {
+            "q" | "q!" | "wq" | "wq!" | "x" | "x!" => Action::Close,
+            line => {
+                if let Ok(line) = line.parse::<usize>() {
+                    self.go_to_line(line);
+                }
+                Action::Stay
+            }
+        }
+    }
+
+    /// Moves to the start of line `line`, counting from 1, or the last line.
+    fn go_to_line(&mut self, line: usize) -> Action {
+        let row = line.saturating_sub(1).min(self.textarea.lines().len() - 1);
+        self.textarea.move_cursor(CursorMove::Jump(row as u16, 0));
+        Action::Stay
+    }
+
+    fn repeat(&mut self, times: usize, m: CursorMove) -> Action {
+        for _ in 0..times {
+            self.motion(m);
+        }
+        Action::Stay
     }
 
     fn motion(&mut self, m: CursorMove) -> Action {
@@ -508,6 +589,97 @@ mod tests {
         send(&mut ed, "$x");
         ed.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
         assert_eq!(ed.notes(), "ab");
+    }
+
+    fn lines(n: usize) -> String {
+        (1..=n).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn a_count_repeats_motions() {
+        let mut ed = editor(&lines(20));
+        send(&mut ed, "4j");
+        assert_eq!(cursor(&ed), (4, 0));
+        send(&mut ed, "12j3k");
+        assert_eq!(cursor(&ed), (13, 0));
+        send(&mut ed, "3l");
+        assert_eq!(cursor(&ed), (13, 3));
+        send(&mut ed, "99j");
+        assert_eq!(cursor(&ed), (19, 3));
+    }
+
+    #[test]
+    fn a_count_before_capital_g_or_gg_goes_to_that_line() {
+        let mut ed = editor(&lines(50));
+        send(&mut ed, "42G");
+        assert_eq!(cursor(&ed), (41, 0));
+        send(&mut ed, "7gg");
+        assert_eq!(cursor(&ed), (6, 0));
+        send(&mut ed, "500G");
+        assert_eq!(cursor(&ed), (49, 0));
+    }
+
+    #[test]
+    fn zero_alone_goes_to_the_line_start_but_counts_after_a_digit() {
+        let mut ed = editor(&lines(20));
+        send(&mut ed, "$0");
+        assert_eq!(cursor(&ed), (0, 0));
+        send(&mut ed, "10j");
+        assert_eq!(cursor(&ed), (10, 0));
+    }
+
+    #[test]
+    fn a_count_repeats_x_and_dd_as_one_undo_step() {
+        let mut ed = editor("abcdef\ntwo\nthree\nfour");
+        send(&mut ed, "3x");
+        assert_eq!(ed.notes(), "def\ntwo\nthree\nfour");
+        send(&mut ed, "j2dd");
+        assert_eq!(ed.notes(), "def\nfour");
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "def\ntwo\nthree\nfour");
+    }
+
+    #[test]
+    fn colon_and_a_number_goes_to_that_line() {
+        let mut ed = editor(&lines(50));
+        send(&mut ed, ":42");
+        assert_eq!(ed.command.as_ref().unwrap().text, "42");
+        assert_eq!(send(&mut ed, "<cr>"), Action::Stay);
+        assert!(ed.command.is_none());
+        assert_eq!(cursor(&ed), (41, 0));
+        send(&mut ed, ":999<cr>");
+        assert_eq!(cursor(&ed), (49, 0));
+    }
+
+    #[test]
+    fn colon_q_wq_and_x_close_and_w_does_nothing() {
+        for command in [":q<cr>", ":wq<cr>", ":x<cr>", ":q!<cr>"] {
+            assert_eq!(send(&mut editor("a"), command), Action::Close, "{command}");
+        }
+        let mut ed = editor("a");
+        assert_eq!(send(&mut ed, ":w<cr>"), Action::Stay);
+        assert_eq!(send(&mut ed, ":nonsense<cr>"), Action::Stay);
+        assert_eq!(ed.notes(), "a");
+    }
+
+    #[test]
+    fn esc_or_backspacing_past_the_colon_leaves_the_command_line() {
+        let mut ed = editor(&lines(5));
+        assert_eq!(send(&mut ed, ":3<esc>"), Action::Stay);
+        assert!(ed.command.is_none());
+        assert_eq!(cursor(&ed), (0, 0));
+        send(&mut ed, ":3");
+        ed.handle_key(key(KeyCode::Backspace));
+        ed.handle_key(key(KeyCode::Backspace));
+        assert!(ed.command.is_none());
+    }
+
+    #[test]
+    fn keys_typed_in_the_command_line_are_text() {
+        let mut ed = editor("abc");
+        send(&mut ed, ":xddu");
+        assert_eq!(ed.command.as_ref().unwrap().text, "xddu");
+        assert_eq!(ed.notes(), "abc");
     }
 
     #[test]

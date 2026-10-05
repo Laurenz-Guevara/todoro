@@ -3,9 +3,9 @@ source: src/ui.rs
 expression: render(&app).backend()
 ---
 "╭──────────────────── 2. Write report ─────────────────────╮"
-"│ Draft intro by Wed                                       │"
-"│ - ask for Q3 numbers                                     │"
-"│ - charts                                                 │"
+"│  1 Draft intro by Wed                                    │"
+"│  2 - ask for Q3 numbers                                  │"
+"│  3 - charts                                              │"
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"

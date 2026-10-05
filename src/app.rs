@@ -2184,6 +2184,18 @@ mod tests {
     }
 
     #[test]
+    fn colon_q_in_the_notes_goes_back_to_the_list_with_them_saved() {
+        let (mut app, _dir) = app_with(&["one"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "inote");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, ":wq");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].notes, "note");
+    }
+
+    #[test]
     fn q_quits_from_normal_mode_only() {
         let (mut app, _dir) = app_with(&[]);
         type_str(&mut app, "aq");
