@@ -26,7 +26,7 @@ Normal mode: `h`/`l` previous/next day, `j`/`k` move down/up, `a` add below the 
 
 Insert mode: type to insert at the cursor, `←`/`→`/`Home`/`End` move, `Backspace`/`Delete` remove, `Enter`/`Esc` save. Saving an empty new item discards it. Saving an edited item as empty opens the delete popup.
 
-Keep new bindings vim-like. When you add or change one, update the hints in `src/ui.rs` (bottom border and status bar) and the list above.
+Keep new bindings vim-like. When you add or change one, update the hints in `src/ui.rs` (bottom border and status bar), the list above and the tables in `README.md`.
 
 ## Conventions
 
