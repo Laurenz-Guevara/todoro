@@ -228,12 +228,17 @@ Press `d` to delete the item, or `c` (or `Esc`) to cancel.
 
 ## Your todos folder
 
-The first time you start todoro, it asks where to keep your todos (suggesting `~/todoro`). Everything goes in that folder: each workspace is a folder inside it, holding its own `todos.json` with all its items and notes.
+The first time you start todoro, it asks where to keep your todos (suggesting `~/todoro`). Everything goes in that folder: each workspace is a folder inside it, holding its own `todos.json` with its items, and a `notes` folder with each item's notes as a Markdown file.
 
 ```
 ~/todoro/
-└── Personal/todos.json
+└── Personal/
+    ├── todos.json
+    └── notes/
+        └── write-the-quarterly-report.md
 ```
+
+Notes files are named after their item when you first write notes, and are plain Markdown, so you can read and edit them in any editor or open the workspace folder in Obsidian. todoro reads a note again each time you open it. If a note changes somewhere else while you're editing it in todoro, todoro never overwrites it: it keeps that version and saves yours beside it as `<name> (conflict).md`, and tells you.
 
 todoro never backs anything up for you. Because it's one plain folder, that's easy to do yourself: copy it, put it in a folder you back up or sync, or commit it to git (ignore `*.json.tmp`, a file that briefly appears while saving). To restore, put the folder back; if you choose a folder that already has workspaces in it, todoro uses them.
 
@@ -241,13 +246,13 @@ If you used todoro before it had this folder, your existing todos move into your
 
 To keep everything somewhere else later, open the options (`o`), select **Todoro folder** under **Data** and press `Enter`, then type the new folder. todoro moves every workspace there. If the new folder already has a workspace with the same name, it moves nothing and tells you.
 
-Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes": ..., "done": true, "pinned": true, "priority": "high" }`.
+Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes_file": "....md", "done": true, "pinned": true, "priority": "high" }`.
 
 If a folder is synced between machines, don't have todoro open on two of them at once: the last one to save wins.
 
 Settings (options, the folder and workspace you use) are kept separately, in `settings.json` in your config folder (`~/.config/todoro/` on Linux, `~/Library/Application Support/todoro/` on macOS, `%APPDATA%\todoro\` on Windows), or wherever `TODORO_SETTINGS` points, since they belong to each machine.
 
-To use a single file instead of the folder and workspaces (for scripts or testing), set `TODORO_FILE`:
+To use a single file instead of the folder and workspaces (for scripts or testing), set `TODORO_FILE`. Its notes go in a folder beside it named after it, like `work-todos-notes`:
 
 ```sh
 TODORO_FILE=~/work-todos.json todoro

@@ -28,6 +28,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
 - `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
+- `src/notes_files.rs`: items' notes as Markdown files in a folder beside the todos file (`notes/` in a workspace), synced on every save
 - `src/test_util.rs`: helpers shared by the tests
 - `src/snapshots/`: saved screen snapshots for the UI tests
 
@@ -59,7 +60,8 @@ Keep new bindings vim-like. When you add or change one, update `SECTIONS` in `sr
 - The event loop also wakes when `App::redraw_at` says something on screen is timed, such as the brief (0.1 s) flash of lines copied in the notes (`NotesEditor::flash`), and calls `App::tick` to end it. Timed things take the current `Instant` as an argument (`tick`, `expire_flash`), so tests can pass any time instead of waiting.
 - The event loop wakes every 30 seconds to call `App::set_today`, so midnight is noticed while todoro is open. It only acts in `Normal` mode (positions mustn't shift mid-edit), carries pinned items over and clears undo history.
 - Today and future days also show the pinned, open items from earlier days (`Store::pinned_before`), first, without moving them. So an unfinished pinned item shows on its own day and every day after it. So screen positions aren't always store positions: `App::slots()` maps each row on screen to the `(day, index)` where its item is stored. Use it (or `App::items()`) for anything that reads or changes the selected item, never `store.items(app.day)[app.selected]`.
-- On disk an item is a plain string, or an object with `text` and optional `notes`, `done`, `pinned` and `priority` (`"high"`, `"medium"` or `"low"`) (see `RawItem` in `store.rs`). Items with only text must stay plain strings so simple files stay readable by older versions.
+- On disk an item is a plain string, or an object with `text` and optional `notes_file`, `done`, `pinned` and `priority` (`"high"`, `"medium"` or `"low"`) (see `RawItem` in `store.rs`). Items with only text must stay plain strings. An inline `notes` field (from before notes files) is read and moved into a file on open, but never written.
+- Notes are plain Markdown files, one per item with notes, named from the item's text when first written (`buy-milk.md`, `buy-milk-2.md`) and never renamed. In memory, `Item::notes` still holds the text, so nothing outside `Store` handles files; `NotesFiles::sync` writes, names and deletes files on every save. It never overwrites or deletes a file that changed outside todoro since todoro last read or wrote it: the outside version stays (and becomes the item's notes) and todoro's goes in `<name> (conflict).md`, reported through `Store::take_conflicts` and shown by `App::report_conflicts`. Opening an item's notes rereads its file (`Store::reload_notes`).
 - `Store` saves after every change by writing a temp file and renaming it. Don't defer or batch saves.
 - "No colours" (`Settings::no_colour`) is applied after drawing, by `strip_colour` in `ui.rs`: background colours become reversed text and grey becomes dim. New UI needs no special handling, but anything highlighted only by colour must also differ in some other way (a symbol, bold, reversed) to stay readable without colour.
 - The calendar shows only the items stored on each day, not pinned items carried forward, which would fill every later day.

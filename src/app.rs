@@ -90,6 +90,8 @@ pub struct App {
     count: Option<usize>,
     /// The `:` command being typed on the list, if any.
     pub command: Option<LineInput>,
+    /// Something to tell the user, shown in the status bar until the next key.
+    pub message: Option<String>,
     /// The items last copied (`yy`) or deleted, for `p` and `P` to paste.
     pub register: Vec<Item>,
     /// Text last copied or deleted in any item's notes, kept for the next
@@ -117,6 +119,7 @@ impl App {
             pending: None,
             count: None,
             command: None,
+            message: None,
             register: Vec::new(),
             notes_register: None,
         }
@@ -155,6 +158,33 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> io::Result<()> {
+        self.message = None;
+        let result = self.key(key);
+        self.report_conflicts();
+        result
+    }
+
+    /// Tells the user about notes files that changed outside todoro, which
+    /// saving left alone. If those notes are open, they show the outside
+    /// version, so the next key can't overwrite it.
+    fn report_conflicts(&mut self) {
+        let conflicts = self.store.take_conflicts();
+        let Some(conflict) = conflicts.first() else { return };
+        self.message = Some(format!(
+            "{} changed outside todoro, so it was kept. Your version is in {}.",
+            conflict.file, conflict.copy
+        ));
+        let slot = self.slots().get(self.selected).copied();
+        if let Mode::Notes(editor) = &mut self.mode
+            && let Some(slot) = slot
+        {
+            let register = editor.register.clone();
+            **editor = NotesEditor::new(&self.store.items(slot.day)[slot.index].notes);
+            editor.register = register;
+        }
+    }
+
+    fn key(&mut self, key: KeyEvent) -> io::Result<()> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && key.code == KeyCode::Char('c') {
             self.quit = true;
@@ -464,6 +494,10 @@ impl App {
                 }
             }
             KeyCode::Enter if len > 0 => {
+                // Read the notes file again, in case something else changed it.
+                if let Some(slot) = slot {
+                    self.store.reload_notes(slot.day, slot.index)?;
+                }
                 self.notes_before = Some(self.state());
                 let mut editor = NotesEditor::new(&self.items()[self.selected].notes);
                 editor.register = self.notes_register.clone();
@@ -653,6 +687,13 @@ impl App {
     /// Notes keep its lines; single-line inputs get it on one line; anywhere
     /// else it's ignored.
     pub fn handle_paste(&mut self, text: &str) -> io::Result<()> {
+        self.message = None;
+        let result = self.paste_text(text);
+        self.report_conflicts();
+        result
+    }
+
+    fn paste_text(&mut self, text: &str) -> io::Result<()> {
         match &mut self.mode {
             Mode::Notes(editor) => {
                 editor.paste_text(text);
@@ -2678,6 +2719,84 @@ mod tests {
         assert!(!ok && message.contains("Work"), "{message}");
         assert_eq!(app.workspaces.as_ref().unwrap().dir, dir.path().join("todoro"));
         assert!(dir.path().join("todoro").join("Home").exists());
+    }
+
+    fn notes_file(dir: &tempfile::TempDir, file: &str) -> std::path::PathBuf {
+        dir.path().join("notes").join(file)
+    }
+
+    #[test]
+    fn notes_are_saved_to_a_markdown_file_as_you_type() {
+        let (mut app, dir) = app_with(&["Buy milk"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "i# Oat");
+        assert_eq!(std::fs::read_to_string(notes_file(&dir, "buy-milk.md")).unwrap(), "# Oat");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "q");
+        let json = std::fs::read_to_string(dir.path().join("todos.json")).unwrap();
+        assert!(json.contains("\"notes_file\": \"buy-milk.md\"") && !json.contains("# Oat"), "{json}");
+    }
+
+    #[test]
+    fn opening_notes_shows_changes_made_in_another_app() {
+        let (mut app, dir) = app_with(&["Buy milk"]);
+        app.store.set_notes(today(), 0, "oat".into()).unwrap();
+        std::fs::write(notes_file(&dir, "buy-milk.md"), "oat, two litres").unwrap();
+        press(&mut app, KeyCode::Enter);
+        let Mode::Notes(editor) = &app.mode else { panic!("the notes") };
+        assert_eq!(editor.notes(), "oat, two litres");
+    }
+
+    #[test]
+    fn a_clash_while_editing_keeps_both_versions_and_says_so() {
+        let (mut app, dir) = app_with(&["Buy milk"]);
+        app.store.set_notes(today(), 0, "oat".into()).unwrap();
+        press(&mut app, KeyCode::Enter);
+        std::fs::write(notes_file(&dir, "buy-milk.md"), "changed in another app").unwrap();
+        // The first key typed is saved, which finds the clash.
+        type_str(&mut app, "A,");
+        // todoro's version went beside it, and the outside one stayed.
+        assert_eq!(std::fs::read_to_string(notes_file(&dir, "buy-milk.md")).unwrap(), "changed in another app");
+        assert_eq!(std::fs::read_to_string(notes_file(&dir, "buy-milk (conflict).md")).unwrap(), "oat,");
+        assert!(app.message.as_ref().unwrap().contains("buy-milk (conflict).md"));
+        // The open notes now show the outside version, so typing on can't overwrite it.
+        let Mode::Notes(editor) = &app.mode else { panic!("still in the notes") };
+        assert_eq!(editor.notes(), "changed in another app");
+        // The message goes with the next key.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.message.is_none());
+    }
+
+    #[test]
+    fn copying_an_item_copies_its_notes_into_a_new_file() {
+        let (mut app, dir) = app_with(&["Buy milk"]);
+        app.store.set_notes(today(), 0, "oat".into()).unwrap();
+        type_str(&mut app, "yyp");
+        assert_eq!(app.items()[1].notes, "oat");
+        assert_eq!(app.items()[1].notes_file.as_deref(), Some("buy-milk-2.md"));
+        assert_eq!(std::fs::read_to_string(notes_file(&dir, "buy-milk-2.md")).unwrap(), "oat");
+    }
+
+    #[test]
+    fn deleting_an_item_deletes_its_notes_file_and_undo_brings_it_back() {
+        let (mut app, dir) = app_with(&["Buy milk"]);
+        app.store.set_notes(today(), 0, "oat".into()).unwrap();
+        type_str(&mut app, "dd");
+        assert!(!notes_file(&dir, "buy-milk.md").exists());
+        type_str(&mut app, "u");
+        assert_eq!(std::fs::read_to_string(notes_file(&dir, "buy-milk.md")).unwrap(), "oat");
+    }
+
+    #[test]
+    fn each_workspace_has_its_own_notes_folder() {
+        let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "ihome notes");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "q");
+        let path = dir.path().join("todoro").join("Home").join("notes").join("home-item.md");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "home notes");
+        assert!(!dir.path().join("todoro").join("Work").join("notes").exists());
     }
 
     #[test]

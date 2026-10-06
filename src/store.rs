@@ -6,14 +6,18 @@ use std::path::PathBuf;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-/// One todo entry. `notes` is longer free text shown only on the notes screen.
-/// A `pinned` item moves forward to today until it is completed; others stay
-/// on their day.
+use crate::notes_files::{Conflict, NotesFiles};
+
+/// One todo entry. `notes` is longer free text shown only on the notes screen,
+/// kept in its own Markdown file named by `notes_file`. A `pinned` item moves
+/// forward to today until it is completed; others stay on their day.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "RawItem", into = "RawItem")]
 pub struct Item {
     pub text: String,
     pub notes: String,
+    /// The notes file, in the notes folder, once the item has notes.
+    pub notes_file: Option<String>,
     pub done: bool,
     pub pinned: bool,
     pub priority: Option<Priority>,
@@ -49,8 +53,12 @@ enum RawItem {
     Text(String),
     Full {
         text: String,
-        #[serde(default, skip_serializing_if = "String::is_empty")]
+        /// Notes from before they had files; read, to move them into one,
+        /// but never written.
+        #[serde(default, skip_serializing)]
         notes: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notes_file: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         done: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -64,18 +72,20 @@ impl From<RawItem> for Item {
     fn from(raw: RawItem) -> Self {
         match raw {
             RawItem::Text(text) => Item { text, ..Item::default() },
-            RawItem::Full { text, notes, done, pinned, priority } => Item { text, notes, done, pinned, priority },
+            RawItem::Full { text, notes, notes_file, done, pinned, priority } => {
+                Item { text, notes, notes_file, done, pinned, priority }
+            }
         }
     }
 }
 
 impl From<Item> for RawItem {
     fn from(item: Item) -> Self {
-        if item.notes.is_empty() && !item.done && !item.pinned && item.priority.is_none() {
+        if item.notes_file.is_none() && !item.done && !item.pinned && item.priority.is_none() {
             RawItem::Text(item.text)
         } else {
-            let Item { text, notes, done, pinned, priority } = item;
-            RawItem::Full { text, notes, done, pinned, priority }
+            let Item { text, notes, notes_file, done, pinned, priority } = item;
+            RawItem::Full { text, notes, notes_file, done, pinned, priority }
         }
     }
 }
@@ -89,6 +99,10 @@ pub struct Snapshot(BTreeMap<String, Vec<Item>>);
 pub struct Store {
     path: PathBuf,
     days: BTreeMap<String, Vec<Item>>,
+    notes: NotesFiles,
+    /// Notes files changed outside todoro that a save left alone, to tell
+    /// the user about.
+    conflicts: Vec<Conflict>,
 }
 
 impl Store {
@@ -104,7 +118,43 @@ impl Store {
         for items in days.values_mut() {
             items.sort_by_key(|item| item.done);
         }
-        Ok(Self { path, days })
+        // Notes from before they had files move into them now.
+        let inline = days.values().flatten().any(|item| !item.notes.is_empty() && item.notes_file.is_none());
+        let mut notes = NotesFiles::for_todos(&path);
+        notes.load(&mut days)?;
+        let mut store = Self { path, days, notes, conflicts: Vec::new() };
+        if inline {
+            store.save()?;
+        }
+        Ok(store)
+    }
+
+    /// The folder notes files are kept in.
+    #[cfg(test)]
+    pub fn notes_dir(&self) -> &std::path::Path {
+        &self.notes.dir
+    }
+
+    /// Reads an item's notes from its file again, in case something else
+    /// changed it, as before opening them.
+    pub fn reload_notes(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
+        let Some(file) = self.items(day).get(index).and_then(|item| item.notes_file.clone()) else { return Ok(()) };
+        let text = self.notes.read(&file)?;
+        if let Some(item) = self.item_mut(day, index) {
+            match text {
+                Some(text) => item.notes = text,
+                None => {
+                    item.notes.clear();
+                    item.notes_file = None;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Notes files that saves left alone because they changed outside todoro.
+    pub fn take_conflicts(&mut self) -> Vec<Conflict> {
+        std::mem::take(&mut self.conflicts)
     }
 
     /// Moves every pinned, open item from days before `today` to the start of
@@ -173,7 +223,8 @@ impl Store {
         // New items are open, so they always go among the open ones.
         let index = index.min(self.open_count(day));
         let day_items = self.days.entry(key(day)).or_default();
-        day_items.splice(index..index, items.into_iter().map(|item| Item { done: false, ..item }));
+        // Copies get notes files of their own.
+        day_items.splice(index..index, items.into_iter().map(|item| Item { done: false, notes_file: None, ..item }));
         self.save()?;
         Ok(index)
     }
@@ -325,10 +376,13 @@ impl Store {
         self.days.get_mut(&key(day)).and_then(|items| items.get_mut(index))
     }
 
-    fn save(&self) -> io::Result<()> {
+    fn save(&mut self) -> io::Result<()> {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
+        // Notes first, since new ones get their file names here.
+        let conflicts = self.notes.sync(&mut self.days)?;
+        self.conflicts.extend(conflicts);
         // Write to a temp file and rename so a crash never leaves a half-written file.
         let tmp = self.path.with_extension("json.tmp");
         fs::write(&tmp, serde_json::to_string_pretty(&self.days).map_err(io::Error::other)?)?;
@@ -407,11 +461,14 @@ mod tests {
         store.insert(today(), 0, "plain".into()).unwrap();
         store.insert(today(), 1, "detailed".into()).unwrap();
         store.set_notes(today(), 1, "some notes".into()).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({ "2026-10-05": ["plain", { "text": "detailed", "notes": "some notes" }] })
+            serde_json::json!({ "2026-10-05": ["plain", { "text": "detailed", "notes_file": "detailed.md" }] })
         );
+        // The notes themselves are a Markdown file beside it.
+        let notes = fs::read_to_string(path.parent().unwrap().join("notes").join("detailed.md")).unwrap();
+        assert_eq!(notes, "some notes");
     }
 
     #[test]
@@ -498,7 +555,7 @@ mod tests {
             json,
             serde_json::json!({ "2026-10-05": [
                 "plain",
-                { "text": "both", "notes": "n", "done": true },
+                { "text": "both", "notes_file": "both.md", "done": true },
                 { "text": "done", "done": true },
             ] })
         );
@@ -720,13 +777,17 @@ mod tests {
         let copy = Item {
             text: "copy".into(),
             notes: "n".into(),
+            notes_file: Some("original.md".into()),
             done: true,
             pinned: true,
             priority: Some(Priority::High),
         };
         assert_eq!(store.insert_items(today(), 9, vec![copy.clone(), copy.clone()]).unwrap(), 1);
         assert_eq!(texts(&store, today()), ["a", "copy", "copy", "b"]);
-        assert_eq!(store.items(today())[1], Item { done: false, ..copy });
+        // Open, with the same notes, pin and priority, but notes files of their own.
+        let pasted = &store.items(today())[1..3];
+        assert_eq!(pasted[0], Item { done: false, notes_file: Some("copy.md".into()), ..copy.clone() });
+        assert_eq!(pasted[1].notes_file.as_deref(), Some("copy-2.md"));
     }
 
     /// A store with ["a", "b", "c", "d" (done), "e" (done)] today.
@@ -785,6 +846,63 @@ mod tests {
         assert_eq!(store.open_count(day(1)), 2);
         assert_eq!(texts(&store, today()), ["a", "c", "e"]);
         assert_eq!(store.move_many(today(), &[], day(1)).unwrap(), None);
+    }
+
+    #[test]
+    fn notes_from_before_files_move_into_files_when_opened() {
+        let (_dir, path) = temp_path();
+        fs::write(&path, r#"{ "2026-10-05": [{ "text": "Write report", "notes": "Ask for numbers\n- charts" }, "plain"] }"#)
+            .unwrap();
+        let store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.items(today())[0].notes, "Ask for numbers\n- charts");
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json, serde_json::json!({ "2026-10-05": [{ "text": "Write report", "notes_file": "write-report.md" }, "plain"] }));
+        assert_eq!(fs::read_to_string(store.notes_dir().join("write-report.md")).unwrap(), "Ask for numbers\n- charts");
+        // And reopening reads them back from the file.
+        assert_eq!(Store::open(path).unwrap().items(today())[0].notes, "Ask for numbers\n- charts");
+    }
+
+    #[test]
+    fn reload_notes_picks_up_changes_made_elsewhere() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "Buy milk".into()).unwrap();
+        store.set_notes(today(), 0, "oat".into()).unwrap();
+        fs::write(store.notes_dir().join("buy-milk.md"), "edited elsewhere").unwrap();
+        store.reload_notes(today(), 0).unwrap();
+        assert_eq!(store.items(today())[0].notes, "edited elsewhere");
+        // A file deleted elsewhere means no notes.
+        fs::remove_file(store.notes_dir().join("buy-milk.md")).unwrap();
+        store.reload_notes(today(), 0).unwrap();
+        assert_eq!(store.items(today())[0].notes, "");
+        assert_eq!(store.items(today())[0].notes_file, None);
+    }
+
+    #[test]
+    fn undoing_a_delete_brings_back_the_notes_file() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "Buy milk".into()).unwrap();
+        store.set_notes(today(), 0, "oat".into()).unwrap();
+        let before = store.snapshot();
+        store.remove_many(today(), &[0]).unwrap();
+        assert!(!store.notes_dir().join("buy-milk.md").exists());
+        store.restore(before).unwrap();
+        assert_eq!(fs::read_to_string(store.notes_dir().join("buy-milk.md")).unwrap(), "oat");
+    }
+
+    #[test]
+    fn a_conflict_is_reported_once() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "Buy milk".into()).unwrap();
+        store.set_notes(today(), 0, "oat".into()).unwrap();
+        fs::write(store.notes_dir().join("buy-milk.md"), "edited elsewhere").unwrap();
+        store.set_notes(today(), 0, "edited here".into()).unwrap();
+        let conflicts = store.take_conflicts();
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(store.items(today())[0].notes, "edited elsewhere");
+        assert!(store.take_conflicts().is_empty());
     }
 
     #[test]

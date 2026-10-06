@@ -5,6 +5,7 @@ mod cli;
 mod help;
 mod input;
 mod notes;
+mod notes_files;
 mod options;
 mod search;
 mod setup;

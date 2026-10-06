@@ -357,6 +357,11 @@ fn highlight_cursor_line_number(buffer: &mut Buffer, editor: &NotesEditor, area:
 const CURSOR_LINE_NUMBER: Style = Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    // A message for the user takes the bottom line until the next key.
+    if let Some(message) = &app.message {
+        frame.render_widget(Line::from(truncate(message, area.width as usize).yellow()), area);
+        return;
+    }
     // A : command on the list or in the notes takes over the bottom line, as in vim.
     let command = match &app.mode {
         Mode::Notes(editor) => editor.command.as_ref(),
@@ -2481,6 +2486,14 @@ mod tests {
         type_str(&mut app, "jj");
         press(&mut app, KeyCode::Enter);
         assert_snapshot!(render_sized(&app, 70, 24).backend());
+    }
+
+    #[test]
+    fn a_message_takes_the_status_bar() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.message = Some("buy-milk.md changed outside todoro, so it was kept.".into());
+        let screen = render(&app).backend().to_string();
+        assert!(screen.lines().last().unwrap().contains("changed outside todoro"), "{screen}");
     }
 
     #[test]
