@@ -1,0 +1,18 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 14).backend()"
+---
+"╭ Home ─────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Home item                                              │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│    ╭ Workspaces ────────────────────────────────────╮    │"
+"│    │ ● Home                                         │    │"
+"│    │   Side project                                 │    │"
+"│    │   Work                                         │    │"
+"│    ╰──── ↵ open · a new · d delete · esc close ─────╯    │"
+"│                                                          │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" WORKSPACES   ↵ open  a new  d delete  esc close            "

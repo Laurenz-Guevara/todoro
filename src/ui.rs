@@ -20,6 +20,7 @@ use crate::notes::NotesEditor;
 use crate::options::{Options, TOGGLES};
 use crate::search::Search;
 use crate::setup::Setup;
+use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -44,6 +45,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Search(search) => draw_search(frame, app, search),
         Mode::Options(options) => draw_options(frame, app, options),
         Mode::Changelog(view) => draw_changelog(frame, view),
+        Mode::Workspaces(picker) => draw_workspaces(frame, app, picker),
         Mode::Tags(picker) => draw_tags(frame, app, picker),
         _ => {}
     }
@@ -409,6 +411,14 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
         Mode::Tags(_) => ("TAGS", Color::Cyan, &[("j/k move", 1), ("↵ show items", 2), ("esc close", 3)]),
+        Mode::Workspaces(picker) if picker.adding.is_some() || picker.deleting.is_some() => {
+            ("WORKSPACES", Color::Cyan, &[("enter confirm", 2), ("esc back", 1)])
+        }
+        Mode::Workspaces(_) => (
+            "WORKSPACES",
+            Color::Cyan,
+            &[("↵ open", 3), ("a new", 2), ("d delete", 1), ("esc close", 4)],
+        ),
         Mode::Changelog(_) => ("NEWS", Color::Cyan, &[("j/k scroll", 1), ("esc close", 2)]),
         Mode::Options(_) => ("OPTIONS", Color::Blue, &[("j/k move", 1), ("space toggle", 2), ("esc close", 3)]),
         Mode::Search(_) => ("SEARCH", Color::Yellow, &[("↑/↓ select", 1), ("↵ go to item", 2), ("esc close", 3)]),
@@ -1259,6 +1269,75 @@ pub fn draw_setup(frame: &mut Frame, setup: &Setup) {
         let y = inner.y + row as u16;
         if y < inner.bottom() {
             frame.set_cursor_position(Position::new(inner.x + 2 + col as u16, y));
+        }
+    }
+}
+
+fn draw_workspaces(frame: &mut Frame, app: &App, picker: &Picker) {
+    let names = app.workspaces.as_ref().and_then(|folder| folder.list().ok()).unwrap_or_default();
+    let current = app.workspace.as_deref().unwrap_or_default();
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(50);
+    let text_width = (width as usize).saturating_sub(4).max(1);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let marker = if name == current { "● ".cyan() } else { "  ".into() };
+        let mut line = Line::from(vec![marker, truncate(name, text_width.saturating_sub(2)).into()]);
+        if i == picker.selected && picker.adding.is_none() && picker.deleting.is_none() {
+            line = line.bg(SELECTED_BG).bold();
+        }
+        lines.push(line);
+    }
+    // Where the cursor goes, if a name is being typed: (line, column).
+    let mut cursor = None;
+    let mut typing = |lines: &mut Vec<Line>, prompt: &str, input: &crate::input::LineInput| {
+        lines.push(Line::default());
+        lines.extend(wrap(prompt, text_width, usize::MAX).into_iter().map(Line::from));
+        cursor = Some((lines.len(), 2 + input.text[..input.cursor].width()));
+        lines.push(Line::from(vec!["› ".cyan().bold(), truncate(&input.text, text_width.saturating_sub(2)).into()]));
+    };
+    if let Some(input) = &picker.adding {
+        typing(&mut lines, "Name the new workspace:", input);
+    }
+    if let Some((name, input)) = &picker.deleting {
+        let prompt = format!("This deletes {name} and all its todos and notes for good. Type its name to confirm:");
+        typing(&mut lines, &prompt, input);
+    }
+    if let Some(error) = &picker.error {
+        lines.push(Line::default());
+        lines.extend(wrap(error, text_width, usize::MAX).into_iter().map(|line| Line::from(line).red()));
+    }
+
+    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let area = centered(screen, width, height);
+    let room = (width as usize).saturating_sub(2);
+    let (title, border) = if picker.deleting.is_some() {
+        (fit_first(&[" Delete workspace? ", " Delete? "], room), Color::Red)
+    } else {
+        (fit_first(&[" Workspaces ", " Spaces "], room), Color::Cyan)
+    };
+    let hint = if picker.adding.is_some() || picker.deleting.is_some() {
+        fit_first(&[" enter confirm · esc back ", " esc back "], room)
+    } else {
+        fit_first(&[" ↵ open · a new · d delete · esc close ", " ↵ open · esc ", " esc "], room)
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(border))
+        .title(title.bold())
+        .title_bottom(Line::from(hint).centered().dim())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    // Keep the selected workspace (or the name being typed) in view.
+    let focus = cursor.map_or(picker.selected, |(line, _)| line);
+    let scroll = (focus + 1).saturating_sub(inner.height as usize);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll as u16, 0)), area);
+    if let Some((line, col)) = cursor {
+        let y = inner.y + (line - scroll) as u16;
+        if y < inner.bottom() {
+            frame.set_cursor_position(Position::new(inner.x + (col as u16).min(inner.width), y));
         }
     }
 }
@@ -2333,6 +2412,25 @@ mod tests {
         // Beside a long date on a narrow screen there's no room, so it's left out.
         let narrow = render_sized(&app, 30, 6).backend().to_string();
         assert!(!narrow.lines().next().unwrap().contains("Work"), "{narrow}");
+    }
+
+    #[test]
+    fn workspaces_popup() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home", "Side project", "Work"]);
+        type_str(&mut app, "Wj");
+        assert_snapshot!(render_sized(&app, 60, 14).backend());
+    }
+
+    #[test]
+    fn deleting_a_workspace() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
+        type_str(&mut app, "WjdWor");
+        let mut terminal = render_sized(&app, 60, 16);
+        assert_snapshot!(terminal.backend());
+        // The cursor is after what's been typed.
+        let cursor = terminal.get_cursor_position().unwrap();
+        let row: String = (0..60).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
+        assert!(row.contains("› Wor"), "{row}");
     }
 
     #[test]

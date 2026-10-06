@@ -23,6 +23,23 @@ pub fn app_with(items: &[&str]) -> (App, TempDir) {
     (App::new(store, today()), dir)
 }
 
+/// An app on `today()` in a todoro folder with these workspaces, each with
+/// one item named after it, open in the first.
+pub fn app_with_workspaces(names: &[&str]) -> (App, TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = crate::workspaces::Workspaces::new(dir.path().join("todoro"));
+    for name in names {
+        folder.create(name).unwrap();
+        let mut store = Store::open(folder.todos_path(name)).unwrap();
+        store.insert(today(), 0, format!("{name} item")).unwrap();
+    }
+    let store = Store::open(folder.todos_path(names[0])).unwrap();
+    let mut app = App::new(store, today());
+    app.workspaces = Some(folder);
+    app.workspace = Some(names[0].to_string());
+    (app, dir)
+}
+
 pub fn press(app: &mut App, code: KeyCode) {
     app.handle_key(KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
 }

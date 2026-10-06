@@ -41,6 +41,7 @@ pub const SECTIONS: &[Section] = &[
             ("u / Ctrl+R", "Undo / redo a change to the list"),
             ("o", "Options, including accessibility"),
             ("N", "What's new: every release's notes"),
+            ("W", "Workspaces: switch, create or delete"),
             ("?", "Show this help"),
             ("q / :q", "Quit"),
         ],
@@ -107,6 +108,16 @@ pub const SECTIONS: &[Section] = &[
             ("j / k", "Select an option"),
             ("Space / Enter", "Turn it on or off"),
             ("Esc / q / o", "Close"),
+        ],
+    },
+    Section {
+        title: "Workspaces",
+        bindings: &[
+            ("j / k", "Select a workspace"),
+            ("Enter", "Open it"),
+            ("a", "Create a workspace"),
+            ("d", "Delete one (type its name to confirm)"),
+            ("Esc / W", "Close"),
         ],
     },
     Section {
@@ -336,7 +347,8 @@ mod tests {
         let max = h.line_count() - 10;
         press(&mut h, KeyCode::Up);
         assert_eq!(h.scroll, 0);
-        for _ in 0..100 {
+        // More presses than there are lines, so it must stop at the end.
+        for _ in 0..1000 {
             press(&mut h, KeyCode::Down);
         }
         assert_eq!(h.scroll, max);

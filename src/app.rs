@@ -14,7 +14,7 @@ use crate::options::{self, Options, Settings, TOGGLES};
 use crate::search::{self, Search};
 use crate::tags::{self, TagPicker};
 use crate::store::{Item, Priority, Snapshot, Store};
-use crate::workspaces::Workspaces;
+use crate::workspaces::{self, Picker, Workspaces};
 
 /// How many changes `u` can undo.
 const UNDO_LIMIT: usize = 200;
@@ -41,6 +41,8 @@ pub enum Mode {
     Notes(Box<NotesEditor>),
     /// The options popup.
     Options(Options),
+    /// The `W` popup, to switch, create or delete workspaces.
+    Workspaces(Picker),
     /// Release notes: what's new after an update, or all of them.
     Changelog(ChangelogView),
     /// The `#` list of every tag.
@@ -269,6 +271,31 @@ impl App {
                     self.mode = Mode::Normal;
                 }
             }
+            Mode::Workspaces(picker) => {
+                let (Some(folder), Some(current)) = (&self.workspaces, &self.workspace) else {
+                    self.mode = Mode::Normal;
+                    return Ok(());
+                };
+                let names = folder.list()?;
+                match picker.handle_key(key.code, &names, current) {
+                    workspaces::Action::Stay => {}
+                    workspaces::Action::Close => self.mode = Mode::Normal,
+                    workspaces::Action::Open(name) => self.switch_workspace(name)?,
+                    workspaces::Action::Create(name) => match folder.create(&name) {
+                        Ok(name) => self.switch_workspace(name)?,
+                        Err(error) => picker.error = Some(error.to_string()),
+                    },
+                    workspaces::Action::Delete(name) => {
+                        let result = folder.delete(&name);
+                        let left = folder.list()?.len();
+                        picker.deleting = None;
+                        picker.selected = picker.selected.min(left.saturating_sub(1));
+                        if let Err(error) = result {
+                            picker.error = Some(format!("Couldn't delete {name}: {error}"));
+                        }
+                    }
+                }
+            }
             Mode::Options(popup) => match popup.handle_key(key) {
                 options::Action::Stay => {}
                 options::Action::Close => self.mode = Mode::Normal,
@@ -354,6 +381,11 @@ impl App {
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('o') => self.mode = Mode::Options(Options::default()),
             KeyCode::Char('N') => self.mode = Mode::Changelog(ChangelogView::all()),
+            KeyCode::Char('W') => {
+                if let (Some(folder), Some(current)) = (&self.workspaces, &self.workspace) {
+                    self.mode = Mode::Workspaces(Picker::new(&folder.list()?, current));
+                }
+            }
             KeyCode::Char('#') => self.mode = Mode::Tags(TagPicker::default()),
             KeyCode::Char('s') => self.mode = Mode::Search(Box::new(Search::new(false))),
             KeyCode::Char('S') => self.mode = Mode::Search(Box::new(Search::new(true))),
@@ -573,6 +605,27 @@ impl App {
         Ok(())
     }
 
+    /// Opens another workspace: its todos, on today, with pinned items
+    /// carried over, and a fresh undo history, so `u` never reaches into the
+    /// workspace left. It's remembered for next time.
+    pub fn switch_workspace(&mut self, name: String) -> io::Result<()> {
+        let Some(folder) = &self.workspaces else { return Ok(()) };
+        let mut store = Store::open(folder.todos_path(&name))?;
+        store.roll_over(self.today)?;
+        self.store = store;
+        self.mode = Mode::Normal;
+        self.show_day(self.today);
+        self.undo.clear();
+        self.redo.clear();
+        self.notes_before = None;
+        self.settings.workspace = Some(name.clone());
+        self.workspace = Some(name);
+        if let Some(path) = &self.settings_path {
+            self.settings.save(path)?;
+        }
+        Ok(())
+    }
+
     /// Handles text pasted into the terminal, which arrives in one piece
     /// (bracketed paste) rather than as keys, so it's never run as commands.
     /// Notes keep its lines; single-line inputs get it on one line; anywhere
@@ -592,6 +645,11 @@ impl App {
             }
             Mode::Normal => {
                 if let Some(input) = &mut self.command {
+                    input.paste(text);
+                }
+            }
+            Mode::Workspaces(picker) => {
+                if let Some(input) = picker.adding.as_mut().or(picker.deleting.as_mut().map(|(_, input)| input)) {
                     input.paste(text);
                 }
             }
@@ -2476,6 +2534,77 @@ mod tests {
         app.handle_paste("2").unwrap();
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn capital_w_switches_workspace_and_keeps_them_separate() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
+        assert_eq!(items(&app), ["Home item"]);
+        type_str(&mut app, "W");
+        let Mode::Workspaces(picker) = &app.mode else { panic!("the workspaces popup") };
+        assert_eq!(picker.selected, 0);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.workspace.as_deref(), Some("Work"));
+        assert_eq!(items(&app), ["Work item"]);
+        // Changes stay in their own workspace.
+        type_str(&mut app, "anew");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "W");
+        type_str(&mut app, "k");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["Home item"]);
+        assert_eq!(app.settings.workspace.as_deref(), Some("Home"));
+    }
+
+    #[test]
+    fn undo_never_reaches_into_another_workspace() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
+        type_str(&mut app, "x");
+        type_str(&mut app, "Wj");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Work item"]);
+        assert!(!app.items()[0].done);
+    }
+
+    #[test]
+    fn a_in_the_workspaces_popup_creates_one_and_opens_it() {
+        let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home"]);
+        type_str(&mut app, "Wa");
+        type_str(&mut app, "Side project");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.workspace.as_deref(), Some("Side project"));
+        assert!(app.items().is_empty());
+        assert!(dir.path().join("todoro").join("Side project").join("todos.json").exists());
+        // A name that's taken stays in the popup with a message.
+        type_str(&mut app, "Wahome");
+        press(&mut app, KeyCode::Enter);
+        let Mode::Workspaces(picker) = &app.mode else { panic!("still in the popup") };
+        assert!(picker.error.as_ref().unwrap().contains("already"));
+    }
+
+    #[test]
+    fn d_deletes_another_workspace_after_typing_its_name() {
+        let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
+        type_str(&mut app, "Wjd");
+        type_str(&mut app, "Work");
+        press(&mut app, KeyCode::Enter);
+        let Mode::Workspaces(picker) = &app.mode else { panic!("still in the popup") };
+        assert!(picker.deleting.is_none());
+        assert_eq!(picker.selected, 0);
+        assert!(!dir.path().join("todoro").join("Work").exists());
+        assert_eq!(app.workspaces.as_ref().unwrap().list().unwrap(), ["Home"]);
+        assert_eq!(items(&app), ["Home item"]);
+    }
+
+    #[test]
+    fn capital_w_does_nothing_with_a_single_todos_file() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, "W");
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]

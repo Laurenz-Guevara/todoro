@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭ Home ─────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Home item                                              │"
+"│                                                          │"
+"│                                                          │"
+"│    ╭ Delete workspace? ─────────────────────────────╮    │"
+"│    │ ● Home                                         │    │"
+"│    │   Work                                         │    │"
+"│    │                                                │    │"
+"│    │ This deletes Work and all its todos and notes  │    │"
+"│    │ for good. Type its name to confirm:            │    │"
+"│    │ › Wor                                          │    │"
+"│    ╰─────────── enter confirm · esc back ───────────╯    │"
+"│                                                          │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" WORKSPACES   enter confirm  esc back                       "

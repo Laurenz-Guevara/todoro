@@ -78,6 +78,7 @@ todoro
 | `#` | List your tags, to show every item with one |
 | `o` | Options, including accessibility |
 | `N` | What's new: the notes for every release |
+| `W` | Workspaces: switch, create or delete |
 | `?` | Show all keybindings |
 | `q` / `:q` | Quit |
 
@@ -201,6 +202,12 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 - **Semantic priority icons:** show `∧` High, `–` Medium and `∨` Low beside triaged items, as well as the coloured number, for anyone who can't tell the colours apart.
 - **No colours:** draw everything in your terminal's own colours. Highlights such as the selected item use reversed text instead. This starts on if you set the standard [`NO_COLOR`](https://no-color.org) environment variable, until you change it here.
+
+### Workspaces
+
+Workspaces keep separate sets of todos and notes, as if you had several todoros: say, Personal and Work. The one you're in shows in the top-left corner of the list.
+
+`W` lists them. `j` / `k` pick one and `Enter` opens it; `a` creates a new one and opens it; `d` deletes one, after you type its name to confirm, since it deletes its todos and notes for good. You can't delete the workspace you're in or your only one. Each workspace has its own undo history, and todoro opens the one you used last.
 
 ### What's new
 

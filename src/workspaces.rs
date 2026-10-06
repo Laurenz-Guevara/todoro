@@ -6,6 +6,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use ratatui::crossterm::event::KeyCode;
+
+use crate::input::LineInput;
+
 /// The file each workspace's todos are kept in.
 pub const TODOS_FILE: &str = "todos.json";
 
@@ -57,6 +61,97 @@ impl Workspaces {
         Ok(name)
     }
 
+    /// Deletes a workspace's folder and everything in it, for good.
+    pub fn delete(&self, name: &str) -> io::Result<()> {
+        // Only ever a folder directly inside the todoro folder.
+        let name = valid_name(name).map_err(io::Error::other)?;
+        fs::remove_dir_all(self.dir.join(name))
+    }
+}
+
+/// The `W` popup listing workspaces, to open, create or delete one.
+#[derive(Default)]
+pub struct Picker {
+    pub selected: usize,
+    /// The name of a new workspace being typed.
+    pub adding: Option<LineInput>,
+    /// The workspace being deleted, and its name being typed to confirm.
+    pub deleting: Option<(String, LineInput)>,
+    /// Why the last attempt didn't work.
+    pub error: Option<String>,
+}
+
+/// What the app should do after the workspace popup handles a key.
+#[derive(Debug, PartialEq)]
+pub enum Action {
+    Stay,
+    Close,
+    Open(String),
+    Create(String),
+    Delete(String),
+}
+
+impl Picker {
+    /// A popup with `current` selected.
+    pub fn new(names: &[String], current: &str) -> Self {
+        Self { selected: names.iter().position(|name| name == current).unwrap_or(0), ..Self::default() }
+    }
+
+    pub fn handle_key(&mut self, code: KeyCode, names: &[String], current: &str) -> Action {
+        if let Some(input) = &mut self.adding {
+            match code {
+                KeyCode::Esc => self.adding = None,
+                KeyCode::Enter => match valid_name(&input.text) {
+                    Ok(name) => return Action::Create(name),
+                    Err(error) => self.error = Some(error.into()),
+                },
+                code => {
+                    input.handle_key(code);
+                    self.error = None;
+                }
+            }
+            return Action::Stay;
+        }
+        if let Some((name, input)) = &mut self.deleting {
+            match code {
+                KeyCode::Esc => self.deleting = None,
+                // Deleting is for good, so the name must be typed exactly.
+                KeyCode::Enter if input.text.trim() == name.as_str() => return Action::Delete(name.clone()),
+                KeyCode::Enter => self.error = Some(format!("Type {name} exactly to delete it")),
+                code => {
+                    input.handle_key(code);
+                    self.error = None;
+                }
+            }
+            return Action::Stay;
+        }
+
+        self.error = None;
+        let last = names.len().saturating_sub(1);
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.selected = (self.selected + 1).min(last),
+            KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Char('g') => self.selected = 0,
+            KeyCode::Char('G') => self.selected = last,
+            KeyCode::Enter => {
+                if let Some(name) = names.get(self.selected) {
+                    return Action::Open(name.clone());
+                }
+            }
+            KeyCode::Char('a') => self.adding = Some(LineInput::default()),
+            KeyCode::Char('d') => match names.get(self.selected) {
+                Some(name) if name == current => {
+                    self.error = Some("You can't delete the workspace you're in. Open another one first.".into());
+                }
+                Some(_) if names.len() == 1 => self.error = Some("You can't delete your only workspace.".into()),
+                Some(name) => self.deleting = Some((name.clone(), LineInput::default())),
+                None => {}
+            },
+            KeyCode::Esc | KeyCode::Char('q' | 'W') => return Action::Close,
+            _ => {}
+        }
+        Action::Stay
+    }
 }
 
 /// Which workspace to open in `dir`: `wanted` if it's there, otherwise the
@@ -202,6 +297,94 @@ mod tests {
         assert_eq!(expand_path(" ~ "), home);
         assert!(expand_path("relative/folder").is_absolute());
         assert_eq!(display_path(&home.join("todoro")), format!("~{}todoro", std::path::MAIN_SEPARATOR));
+    }
+
+    #[test]
+    fn delete_removes_the_workspace_folder() {
+        let (_dir, workspaces) = folder();
+        workspaces.create("Work").unwrap();
+        workspaces.create("Home").unwrap();
+        workspaces.delete("Work").unwrap();
+        assert_eq!(workspaces.list().unwrap(), ["Home"]);
+        assert!(!workspaces.dir.join("Work").exists());
+        // Never anything outside the todoro folder.
+        assert!(workspaces.delete("../todoro").is_err());
+        assert!(workspaces.dir.exists());
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    fn keys(picker: &mut Picker, keys: &str, names: &[String], current: &str) -> Action {
+        let mut action = Action::Stay;
+        for c in keys.chars() {
+            let code = match c {
+                '\n' => KeyCode::Enter,
+                '\x1b' => KeyCode::Esc,
+                c => KeyCode::Char(c),
+            };
+            action = picker.handle_key(code, names, current);
+        }
+        action
+    }
+
+    #[test]
+    fn the_picker_starts_on_the_current_workspace_and_opens_another() {
+        let list = names(&["Home", "Side", "Work"]);
+        let mut picker = Picker::new(&list, "Side");
+        assert_eq!(picker.selected, 1);
+        assert_eq!(keys(&mut picker, "j\n", &list, "Side"), Action::Open("Work".into()));
+        assert_eq!(keys(&mut picker, "kkk\n", &list, "Side"), Action::Open("Home".into()));
+        assert_eq!(keys(&mut picker, "G\n", &list, "Side"), Action::Open("Work".into()));
+        assert_eq!(keys(&mut picker, "W", &list, "Side"), Action::Close);
+    }
+
+    #[test]
+    fn a_names_a_new_workspace() {
+        let list = names(&["Home"]);
+        let mut picker = Picker::new(&list, "Home");
+        keys(&mut picker, "a", &list, "Home");
+        assert!(picker.adding.is_some());
+        // Keys are typed into the name, not run as commands.
+        assert_eq!(keys(&mut picker, "dq W\n", &list, "Home"), Action::Create("dq W".into()));
+        let mut picker = Picker::new(&list, "Home");
+        assert_eq!(keys(&mut picker, "a  \n", &list, "Home"), Action::Stay);
+        assert!(picker.error.is_some());
+        keys(&mut picker, "\x1b", &list, "Home");
+        assert!(picker.adding.is_none());
+    }
+
+    #[test]
+    fn deleting_needs_the_name_typed_exactly() {
+        let list = names(&["Home", "Work"]);
+        let mut picker = Picker::new(&list, "Home");
+        keys(&mut picker, "jd", &list, "Home");
+        assert_eq!(picker.deleting.as_ref().unwrap().0, "Work");
+        assert_eq!(keys(&mut picker, "work\n", &list, "Home"), Action::Stay);
+        assert!(picker.error.as_ref().unwrap().contains("Work"));
+        for _ in 0..4 {
+            picker.handle_key(KeyCode::Backspace, &list, "Home");
+        }
+        assert_eq!(keys(&mut picker, "Work\n", &list, "Home"), Action::Delete("Work".into()));
+        // Esc backs out.
+        let mut picker = Picker::new(&list, "Home");
+        keys(&mut picker, "jd\x1b", &list, "Home");
+        assert!(picker.deleting.is_none());
+    }
+
+    #[test]
+    fn the_current_or_only_workspace_cant_be_deleted() {
+        let list = names(&["Home", "Work"]);
+        let mut picker = Picker::new(&list, "Home");
+        keys(&mut picker, "d", &list, "Home");
+        assert!(picker.deleting.is_none());
+        assert!(picker.error.is_some());
+        let one = names(&["Home"]);
+        let mut picker = Picker::new(&one, "Other");
+        keys(&mut picker, "d", &one, "Other");
+        assert!(picker.deleting.is_none());
+        assert!(picker.error.is_some());
     }
 
     #[test]
