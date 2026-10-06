@@ -236,6 +236,8 @@ todoro never backs anything up for you. Because it's one plain folder, that's ea
 
 If you used todoro before it had this folder, your existing todos move into your first workspace when you set it up.
 
+To keep everything somewhere else later, open the options (`o`), select **Todoro folder** under **Data** and press `Enter`, then type the new folder. todoro moves every workspace there. If the new folder already has a workspace with the same name, it moves nothing and tells you.
+
 Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes": ..., "done": true, "pinned": true, "priority": "high" }`.
 
 If a folder is synced between machines, don't have todoro open on two of them at once: the last one to save wins.

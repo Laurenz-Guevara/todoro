@@ -36,7 +36,7 @@ Normal mode: `h`/`l` previous/next day, `t` today, `j`/`k` move down/up, `gg`/`G
 
 Selecting (`Mode::Visual`): `j`/`k`/`G` extend, `x` complete all (or reopen if all complete), `m` pin all (or unpin if all pinned), `!` next priority after the first item's, `d` delete (one confirmation), `y` copy, `H`/`L` move to the previous/next day and follow, `Esc`/`V` stop. Each action returns to `Normal`. Selections can include carried items, so act through `App::group_by_day`, which groups screen rows by the day they're stored on.
 
-Options: `j`/`k` select, `Space`/`Enter` toggle (saved immediately), `Esc`/`q`/`o` close. To add an option, add a field to `Settings` (with a default of off) and an entry to `TOGGLES`; the popup, saving and loading follow.
+Options: `j`/`k` select, `Space`/`Enter` toggle (saved immediately), `Esc`/`q`/`o` close. After the toggles comes the todoro folder (`Options::folder`, only with workspaces): `Enter` types a new one and moves every workspace there with `Workspaces::move_to`, which moves nothing if a name clashes; the open store is then reopened from its new path. To add an option, add a field to `Settings` (with a default of off) and an entry to `TOGGLES`; the popup, saving and loading follow.
 
 Search: every typed character goes into the query; `↑`/`↓`/`Ctrl+N`/`Ctrl+P`/`Ctrl+J`/`Ctrl+K` select, `Enter` goes to the item (its day, with it selected), `Esc` closes.
 

@@ -307,6 +307,25 @@ impl App {
                         self.settings.save(path)?;
                     }
                 }
+                options::Action::MoveFolder(to) => {
+                    let (Some(folder), Some(current)) = (&self.workspaces, &self.workspace) else { return Ok(()) };
+                    match folder.move_to(&to) {
+                        Ok(moved) => {
+                            // The open todos moved too, so reopen them where they are now.
+                            self.store = Store::open(moved.todos_path(current))?;
+                            self.settings.data_dir = Some(moved.dir.clone());
+                            if let Some(path) = &self.settings_path {
+                                self.settings.save(path)?;
+                            }
+                            let shown = workspaces::display_path(&moved.dir);
+                            popup.message = Some((format!("Moved your workspaces to {shown}"), true));
+                            popup.folder = Some(shown);
+                            popup.editing = None;
+                            self.workspaces = Some(moved);
+                        }
+                        Err(error) => popup.message = Some((format!("Couldn't move them: {error}"), false)),
+                    }
+                }
             },
             Mode::Tags(picker) => match picker.handle_key(key, &tags::all_tags(&self.store)) {
                 tags::Action::Stay => {}
@@ -379,7 +398,10 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char(':') => self.command = Some(LineInput::default()),
             KeyCode::Char('?') => self.open_help(),
-            KeyCode::Char('o') => self.mode = Mode::Options(Options::default()),
+            KeyCode::Char('o') => {
+                let folder = self.workspaces.as_ref().map(|folder| workspaces::display_path(&folder.dir));
+                self.mode = Mode::Options(Options::new(folder));
+            }
             KeyCode::Char('N') => self.mode = Mode::Changelog(ChangelogView::all()),
             KeyCode::Char('W') => {
                 if let (Some(folder), Some(current)) = (&self.workspaces, &self.workspace) {
@@ -645,6 +667,11 @@ impl App {
             }
             Mode::Normal => {
                 if let Some(input) = &mut self.command {
+                    input.paste(text);
+                }
+            }
+            Mode::Options(popup) => {
+                if let Some(input) = &mut popup.editing {
                     input.paste(text);
                 }
             }
@@ -2605,6 +2632,52 @@ mod tests {
         let (mut app, _dir) = app_with(&["one"]);
         type_str(&mut app, "W");
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn moving_the_folder_from_the_options_moves_every_workspace() {
+        let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
+        let to = dir.path().join("moved here");
+        type_str(&mut app, "o");
+        let Mode::Options(options) = &app.mode else { panic!("the options") };
+        assert!(options.folder.is_some());
+        type_str(&mut app, "jjj");
+        press(&mut app, KeyCode::Enter);
+        for _ in 0..200 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        app.handle_paste(&to.display().to_string()).unwrap();
+        press(&mut app, KeyCode::Enter);
+        let Mode::Options(options) = &app.mode else { panic!("still in the options") };
+        assert!(options.message.as_ref().unwrap().1, "{:?}", options.message);
+        assert_eq!(app.workspaces.as_ref().unwrap().list().unwrap(), ["Home", "Work"]);
+        assert_eq!(app.settings.data_dir.as_deref(), Some(to.as_path()));
+        assert!(!dir.path().join("todoro").exists());
+        // The open todos were reopened from their new place, so changes save there.
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "aafter the move");
+        press(&mut app, KeyCode::Enter);
+        let saved = Store::open(to.join("Home").join("todos.json")).unwrap();
+        assert_eq!(saved.items(today()).len(), 2);
+    }
+
+    #[test]
+    fn a_clash_when_moving_the_folder_moves_nothing() {
+        let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
+        let to = dir.path().join("taken");
+        std::fs::create_dir_all(to.join("Work")).unwrap();
+        type_str(&mut app, "ojjj");
+        press(&mut app, KeyCode::Enter);
+        for _ in 0..200 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        app.handle_paste(&to.display().to_string()).unwrap();
+        press(&mut app, KeyCode::Enter);
+        let Mode::Options(options) = &app.mode else { panic!("still in the options") };
+        let (message, ok) = options.message.as_ref().unwrap();
+        assert!(!ok && message.contains("Work"), "{message}");
+        assert_eq!(app.workspaces.as_ref().unwrap().dir, dir.path().join("todoro"));
+        assert!(dir.path().join("todoro").join("Home").exists());
     }
 
     #[test]

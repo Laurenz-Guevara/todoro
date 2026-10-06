@@ -1082,6 +1082,38 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
         }
     }
 
+    // Where the folder is, and a way to move it. Where the cursor goes while
+    // typing a new one: (line, column).
+    let mut cursor = None;
+    if let Some(folder) = &options.folder {
+        let text_width = inner_width.saturating_sub(2).max(1);
+        lines.push(Line::default());
+        lines.push(Line::from("Data".bold()));
+        let start = lines.len();
+        let mut row = Line::from(vec!["Todoro folder: ".into(), truncate(folder, text_width.saturating_sub(15)).cyan()]);
+        if options.selected == TOGGLES.len() {
+            row = row.bg(SELECTED_BG);
+        }
+        lines.push(row);
+        let about = "Where every workspace is kept. Enter to move them all to another folder.";
+        lines.extend(wrap(about, text_width, usize::MAX).into_iter().map(|part| Line::from(format!("  {part}")).dim()));
+        if let Some(input) = &options.editing {
+            lines.push(Line::from("  Move to:"));
+            let shown = truncate(&input.text, text_width.saturating_sub(2));
+            cursor = Some((lines.len(), 4 + input.text[..input.cursor].width()));
+            lines.push(Line::from(vec!["  › ".cyan().bold(), shown.into()]));
+        }
+        if let Some((message, ok)) = &options.message {
+            let style = if *ok { Style::new().fg(Color::Green) } else { Style::new().fg(Color::Red) };
+            for part in wrap(message, text_width, usize::MAX) {
+                lines.push(Line::from(Span::styled(format!("  {part}"), style)));
+            }
+        }
+        if options.selected == TOGGLES.len() {
+            selected_lines = start..lines.len();
+        }
+    }
+
     let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
     let area = centered(screen, width, height);
     let room = (width as usize).saturating_sub(2);
@@ -1101,6 +1133,12 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
     let scroll = selected_lines.end.saturating_sub(visible).min(selected_lines.start);
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll as u16, 0)), area);
+    if let Some((line, col)) = cursor
+        && line >= scroll
+        && inner.y + ((line - scroll) as u16) < inner.bottom()
+    {
+        frame.set_cursor_position(Position::new(inner.x + (col as u16).min(inner.width), inner.y + (line - scroll) as u16));
+    }
 }
 
 fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
@@ -2431,6 +2469,18 @@ mod tests {
         let cursor = terminal.get_cursor_position().unwrap();
         let row: String = (0..60).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
         assert!(row.contains("› Wor"), "{row}");
+    }
+
+    #[test]
+    fn options_with_the_todoro_folder() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
+        type_str(&mut app, "o");
+        let Mode::Options(options) = &mut app.mode else { panic!("the options") };
+        // A fixed path, so the snapshot doesn't depend on where the test runs.
+        options.folder = Some("~/todoro".into());
+        type_str(&mut app, "jj");
+        press(&mut app, KeyCode::Enter);
+        assert_snapshot!(render_sized(&app, 70, 24).backend());
     }
 
     #[test]

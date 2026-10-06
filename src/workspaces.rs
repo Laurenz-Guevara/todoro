@@ -67,6 +67,30 @@ impl Workspaces {
         let name = valid_name(name).map_err(io::Error::other)?;
         fs::remove_dir_all(self.dir.join(name))
     }
+
+    /// Moves every workspace into `to`, which becomes the todoro folder. If
+    /// any would clash with a folder already there, nothing is moved.
+    pub fn move_to(&self, to: &Path) -> io::Result<Workspaces> {
+        let target = Workspaces::new(to.to_path_buf());
+        if same_folder(&self.dir, to) {
+            return Ok(target);
+        }
+        let names = self.list()?;
+        let clashes: Vec<&String> = names.iter().filter(|name| to.join(name).exists()).collect();
+        if !clashes.is_empty() {
+            let list = clashes.iter().map(|name| name.as_str()).collect::<Vec<_>>().join(", ");
+            return Err(io::Error::other(format!("{} already has {list}", to.display())));
+        }
+        fs::create_dir_all(to)?;
+        for name in &names {
+            move_dir(&self.dir.join(name), &to.join(name))?;
+        }
+        // Tidy up the old folder if moving left it empty.
+        if fs::read_dir(&self.dir).is_ok_and(|mut entries| entries.next().is_none()) {
+            let _ = fs::remove_dir(&self.dir);
+        }
+        Ok(target)
+    }
 }
 
 /// The `W` popup listing workspaces, to open, create or delete one.
@@ -233,6 +257,36 @@ pub fn legacy_file() -> Option<PathBuf> {
     Some(dirs::data_dir()?.join("todoro").join(TODOS_FILE))
 }
 
+fn same_folder(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// Moves a folder, copying it when a plain rename can't (another drive).
+fn move_dir(from: &Path, to: &Path) -> io::Result<()> {
+    if fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    copy_dir(from, to)?;
+    fs::remove_dir_all(from)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 /// Moves a file, copying it when a plain rename can't (another drive).
 pub fn move_file(from: &Path, to: &Path) -> io::Result<()> {
     if let Some(dir) = to.parent() {
@@ -385,6 +439,39 @@ mod tests {
         keys(&mut picker, "d", &one, "Other");
         assert!(picker.deleting.is_none());
         assert!(picker.error.is_some());
+    }
+
+    #[test]
+    fn move_to_moves_every_workspace_and_tidies_up() {
+        let (dir, workspaces) = folder();
+        workspaces.create("Work").unwrap();
+        workspaces.create("Home").unwrap();
+        fs::write(workspaces.todos_path("Home"), r#"{"2026-10-05":["one"]}"#).unwrap();
+        let moved = workspaces.move_to(&dir.path().join("elsewhere")).unwrap();
+        assert_eq!(moved.list().unwrap(), ["Home", "Work"]);
+        assert_eq!(fs::read_to_string(moved.todos_path("Home")).unwrap(), r#"{"2026-10-05":["one"]}"#);
+        assert!(!workspaces.dir.exists());
+    }
+
+    #[test]
+    fn move_to_moves_nothing_if_a_name_clashes() {
+        let (dir, workspaces) = folder();
+        workspaces.create("Work").unwrap();
+        workspaces.create("Home").unwrap();
+        let other = Workspaces::new(dir.path().join("other"));
+        other.create("Work").unwrap();
+        let error = workspaces.move_to(&other.dir).unwrap_err().to_string();
+        assert!(error.contains("Work"), "{error}");
+        assert_eq!(workspaces.list().unwrap(), ["Home", "Work"]);
+        assert_eq!(other.list().unwrap(), ["Work"]);
+    }
+
+    #[test]
+    fn move_to_the_same_folder_does_nothing() {
+        let (_dir, workspaces) = folder();
+        workspaces.create("Work").unwrap();
+        let same = workspaces.move_to(&workspaces.dir).unwrap();
+        assert_eq!(same.list().unwrap(), ["Work"]);
     }
 
     #[test]

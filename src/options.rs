@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use serde::{Deserialize, Serialize};
 
+use crate::input::LineInput;
+use crate::workspaces;
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -89,6 +92,13 @@ impl Settings {
 #[derive(Default)]
 pub struct Options {
     pub selected: usize,
+    /// The todoro folder as shown, if there is one to change (not with
+    /// `TODORO_FILE`). It's the row after the toggles.
+    pub folder: Option<String>,
+    /// A new folder being typed.
+    pub editing: Option<LineInput>,
+    /// The result of the last change: what happened, and whether it worked.
+    pub message: Option<(String, bool)>,
 }
 
 /// What the app should do after the options popup handles a key.
@@ -98,13 +108,39 @@ pub enum Action {
     Close,
     /// Flip this entry of `TOGGLES`.
     Toggle(usize),
+    /// Move every workspace into this folder.
+    MoveFolder(PathBuf),
 }
 
 impl Options {
+    pub fn new(folder: Option<String>) -> Self {
+        Self { folder, ..Self::default() }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if let Some(input) = &mut self.editing {
+            match key.code {
+                KeyCode::Esc => self.editing = None,
+                KeyCode::Enter if input.text.trim().is_empty() => {
+                    self.message = Some(("Type the folder to move your workspaces to".into(), false));
+                }
+                KeyCode::Enter => return Action::MoveFolder(workspaces::expand_path(&input.text)),
+                code => {
+                    input.handle_key(code);
+                    self.message = None;
+                }
+            }
+            return Action::Stay;
+        }
+        let rows = TOGGLES.len() + usize::from(self.folder.is_some());
+        let on_folder = self.selected == TOGGLES.len();
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.selected = (self.selected + 1).min(TOGGLES.len() - 1),
+            KeyCode::Char('j') | KeyCode::Down => self.selected = (self.selected + 1).min(rows - 1),
             KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(1),
+            KeyCode::Char(' ') | KeyCode::Enter if on_folder => {
+                self.editing = Some(LineInput::new(self.folder.as_deref().unwrap_or_default()));
+                self.message = None;
+            }
             KeyCode::Char(' ') | KeyCode::Enter => return Action::Toggle(self.selected),
             KeyCode::Esc | KeyCode::Char('q' | 'o') => return Action::Close,
             _ => {}
@@ -171,6 +207,35 @@ mod tests {
         assert!(Settings::load(Some(&path), true).no_colour);
         Settings::default().save(&path).unwrap();
         assert!(!Settings::load(Some(&path), true).no_colour);
+    }
+
+    #[test]
+    fn the_folder_row_comes_after_the_toggles_and_opens_for_typing() {
+        let mut options = Options::new(Some("~/todoro".into()));
+        for _ in 0..5 {
+            press(&mut options, KeyCode::Char('j'));
+        }
+        assert_eq!(options.selected, TOGGLES.len());
+        press(&mut options, KeyCode::Enter);
+        assert_eq!(options.editing.as_ref().unwrap().text, "~/todoro");
+        // Keys are typed, not run.
+        for c in "/xq".chars() {
+            press(&mut options, KeyCode::Char(c));
+        }
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(press(&mut options, KeyCode::Enter), Action::MoveFolder(home.join("todoro").join("xq")));
+        // Esc stops typing without closing.
+        assert_eq!(press(&mut options, KeyCode::Esc), Action::Stay);
+        assert!(options.editing.is_none());
+    }
+
+    #[test]
+    fn without_a_folder_there_is_no_folder_row() {
+        let mut options = Options::new(None);
+        for _ in 0..5 {
+            press(&mut options, KeyCode::Char('j'));
+        }
+        assert_eq!(options.selected, TOGGLES.len() - 1);
     }
 
     #[test]
