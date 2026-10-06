@@ -144,6 +144,8 @@ In normal mode:
 | `w` / `b` / `e` | Next word / previous word / end of word |
 | `Ctrl+→` / `Ctrl+←` | Next / previous word, in normal mode and while typing |
 | `0` / `$` | Start / end of the line |
+| `Home` / `End` | Start / end of the line, in normal mode and while typing |
+| `Ctrl+Home` / `Ctrl+End` | Start / end of the notes, in normal mode and while typing |
 | `_` / `^` | First non-blank character of the line |
 | `gg` / `G` | First / last line |
 | `4j` / `4k` | Move 4 lines down / up (a count works with most keys, like `3x` or `2dd`) |

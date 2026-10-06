@@ -36,6 +36,19 @@ pub struct NotesEditor {
     insert_before: Option<Snapshot>,
 }
 
+/// Where Ctrl+Home and Ctrl+End go: the note's first line's start, or its
+/// last line's end.
+fn file_end(key: KeyEvent) -> Option<(CursorMove, CursorMove)> {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Home => Some((CursorMove::Top, CursorMove::Head)),
+        KeyCode::End => Some((CursorMove::Bottom, CursorMove::End)),
+        _ => None,
+    }
+}
+
 /// How long copied lines stay highlighted.
 pub const FLASH: Duration = Duration::from_millis(100);
 
@@ -147,6 +160,10 @@ impl NotesEditor {
                 if let Some(before) = self.insert_before.take() {
                     self.record(before);
                 }
+            } else if let Some(m) = file_end(key) {
+                // The text area takes Ctrl+Home and Ctrl+End to the line's ends.
+                self.textarea.move_cursor(m.0);
+                self.textarea.move_cursor(m.1);
             } else {
                 self.textarea.input(key);
             }
@@ -238,7 +255,9 @@ impl NotesEditor {
                 Action::Stay
             }
             KeyCode::Char(c) if c.is_ascii_digit() || "hjklwbe$_^Gg".contains(c) => self.command_key(key, ctrl),
-            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down => self.command_key(key, ctrl),
+            KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End => {
+                self.command_key(key, ctrl)
+            }
             _ => Action::Stay,
         };
         // Characters are highlighted by the text area; whole lines are painted
@@ -266,6 +285,16 @@ impl NotesEditor {
                 // Ctrl+arrows jump words, like b and w (and as they do while typing).
                 KeyCode::Left if ctrl => self.repeat(times, CursorMove::WordBack),
                 KeyCode::Right if ctrl => self.repeat(times, CursorMove::WordForward),
+                // Home and End go to the line's ends, with Ctrl the note's.
+                KeyCode::Home | KeyCode::End if ctrl => {
+                    let (row, col) = file_end(key).expect("Ctrl+Home or Ctrl+End");
+                    self.textarea.move_cursor(row);
+                    self.textarea.move_cursor(col);
+                    self.clamp();
+                    Action::Stay
+                }
+                KeyCode::Home => self.motion(CursorMove::Head),
+                KeyCode::End => self.motion(CursorMove::End),
                 KeyCode::Left => self.repeat(times, CursorMove::Back),
                 KeyCode::Right => self.repeat(times, CursorMove::Forward),
                 KeyCode::Up => self.repeat(times, CursorMove::Up),
@@ -1419,6 +1448,54 @@ mod tests {
         ctrl_arrow(&mut ed, KeyCode::Right);
         send(&mut ed, "y");
         assert_eq!(register(&ed), ("one t", false));
+    }
+
+    #[test]
+    fn home_and_end_go_to_the_lines_ends() {
+        let mut ed = editor("  one two\nthree");
+        send(&mut ed, "w");
+        ed.handle_key(key(KeyCode::End));
+        // On the last character, as normal mode's cursor always is.
+        assert_eq!(cursor(&ed), (0, 8));
+        ed.handle_key(key(KeyCode::Home));
+        assert_eq!(cursor(&ed), (0, 0));
+    }
+
+    #[test]
+    fn ctrl_home_and_ctrl_end_go_to_the_notes_ends() {
+        let mut ed = editor("one\ntwo\nthe last line");
+        send(&mut ed, "jl");
+        ed.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        assert_eq!(cursor(&ed), (2, 12));
+        ed.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
+        assert_eq!(cursor(&ed), (0, 0));
+    }
+
+    #[test]
+    fn home_end_and_their_ctrl_versions_work_while_typing() {
+        let mut ed = editor("one\ntwo");
+        send(&mut ed, "ji");
+        ed.handle_key(key(KeyCode::End));
+        send(&mut ed, "!");
+        ed.handle_key(key(KeyCode::Home));
+        send(&mut ed, "<");
+        ed.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
+        send(&mut ed, "^");
+        ed.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        send(&mut ed, "$<esc>");
+        assert_eq!(ed.notes(), "^one\n<two!$");
+    }
+
+    #[test]
+    fn home_and_end_extend_a_selection() {
+        let mut ed = editor("one two");
+        send(&mut ed, "wv");
+        ed.handle_key(key(KeyCode::End));
+        send(&mut ed, "y");
+        assert_eq!(register(&ed), ("two", false));
+        send(&mut ed, "V");
+        ed.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        assert!(ed.visual_lines);
     }
 
     #[test]
