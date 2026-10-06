@@ -142,7 +142,7 @@ In normal mode:
 |---|---|
 | `h` `j` `k` `l` | Move |
 | `w` / `b` / `e` | Next word / previous word / end of word |
-| `Ctrl+→` / `Ctrl+←` | Next / previous word, in normal mode and while typing |
+| `Ctrl+→` / `Ctrl+←` | End / start of a word, in normal mode and while typing |
 | `0` / `$` | Start / end of the line |
 | `Home` / `End` | Start / end of the line, in normal mode and while typing |
 | `Ctrl+Home` / `Ctrl+End` | Start / end of the notes, in normal mode and while typing |

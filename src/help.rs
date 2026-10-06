@@ -64,7 +64,7 @@ pub const SECTIONS: &[Section] = &[
         bindings: &[
             ("h j k l", "Move"),
             ("w / b / e", "Next word / previous word / end of word"),
-            ("Ctrl+→ / Ctrl+←", "Next / previous word, also while typing"),
+            ("Ctrl+→ / Ctrl+←", "End / start of a word, also while typing"),
             ("0 / $", "Start / end of the line"),
             ("Home / End", "Start / end of the line, also while typing"),
             ("Ctrl+Home / End", "Start / end of the notes, also while typing"),

@@ -160,6 +160,13 @@ impl NotesEditor {
                 if let Some(before) = self.insert_before.take() {
                     self.record(before);
                 }
+            } else if key.code == KeyCode::Right && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // To just after the end of the word, ready to type on, where the
+                // text area would go to the start of the next one.
+                self.textarea.move_cursor(CursorMove::WordEnd);
+                if self.col() < self.line_len() {
+                    self.textarea.move_cursor(CursorMove::Forward);
+                }
             } else if let Some(m) = file_end(key) {
                 // The text area takes Ctrl+Home and Ctrl+End to the line's ends.
                 self.textarea.move_cursor(m.0);
@@ -282,9 +289,9 @@ impl NotesEditor {
             let times = self.count.take().unwrap_or(1);
             return match key.code {
                 KeyCode::Esc => Action::Close,
-                // Ctrl+arrows jump words, like b and w (and as they do while typing).
+                // Ctrl+arrows go to the start of a word (like b) or its end (like e).
                 KeyCode::Left if ctrl => self.repeat(times, CursorMove::WordBack),
-                KeyCode::Right if ctrl => self.repeat(times, CursorMove::WordForward),
+                KeyCode::Right if ctrl => self.repeat(times, CursorMove::WordEnd),
                 // Home and End go to the line's ends, with Ctrl the note's.
                 KeyCode::Home | KeyCode::End if ctrl => {
                     let (row, col) = file_end(key).expect("Ctrl+Home or Ctrl+End");
@@ -1412,42 +1419,48 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_arrows_jump_words_like_w_and_b() {
+    fn ctrl_arrows_go_to_the_end_or_start_of_a_word() {
         let mut ed = editor("one two three\nfour");
         ctrl_arrow(&mut ed, KeyCode::Right);
-        assert_eq!(cursor(&ed), (0, 4));
+        assert_eq!(cursor(&ed), (0, 2), "end of one");
         ctrl_arrow(&mut ed, KeyCode::Right);
-        assert_eq!(cursor(&ed), (0, 8));
+        assert_eq!(cursor(&ed), (0, 6), "end of two");
+        ctrl_arrow(&mut ed, KeyCode::Left);
+        assert_eq!(cursor(&ed), (0, 4), "start of two");
+        // From inside a word, the start of that word.
+        send(&mut ed, "l");
         ctrl_arrow(&mut ed, KeyCode::Left);
         assert_eq!(cursor(&ed), (0, 4));
-        // A count works too, and words continue onto the next line, as with w.
-        send(&mut ed, "2");
+        // A count works too, and words continue onto the next line.
+        send(&mut ed, "3");
         ctrl_arrow(&mut ed, KeyCode::Right);
-        assert_eq!(cursor(&ed), (1, 0));
+        assert_eq!(cursor(&ed), (1, 3), "end of four");
     }
 
     #[test]
-    fn ctrl_arrows_jump_words_while_typing() {
-        let mut ed = editor("");
-        send(&mut ed, "ione two three");
-        ctrl_arrow(&mut ed, KeyCode::Left);
-        send(&mut ed, ">");
-        ctrl_arrow(&mut ed, KeyCode::Left);
-        ctrl_arrow(&mut ed, KeyCode::Left);
-        send(&mut ed, "<");
-        assert_eq!(ed.textarea.lines(), ["one <two >three"]);
-        ctrl_arrow(&mut ed, KeyCode::Right);
-        send(&mut ed, "!<esc>");
-        assert_eq!(ed.notes(), "one <two !>three");
-    }
-
-    #[test]
-    fn ctrl_arrows_extend_a_selection() {
+    fn ctrl_arrows_while_typing_go_after_a_words_end_or_to_its_start() {
         let mut ed = editor("one two three");
-        send(&mut ed, "v");
+        send(&mut ed, "i");
+        ctrl_arrow(&mut ed, KeyCode::Right);
+        send(&mut ed, "!");
+        ctrl_arrow(&mut ed, KeyCode::Right);
+        send(&mut ed, "?");
+        assert_eq!(ed.textarea.lines(), ["one! two? three"]);
+        // From inside a word, back to its start.
+        ctrl_arrow(&mut ed, KeyCode::Right);
+        ed.handle_key(key(KeyCode::Left));
+        ctrl_arrow(&mut ed, KeyCode::Left);
+        send(&mut ed, "<<esc>");
+        assert_eq!(ed.notes(), "one! two? <three");
+    }
+
+    #[test]
+    fn ctrl_arrows_extend_a_selection_to_a_words_end() {
+        let mut ed = editor("one two three");
+        send(&mut ed, "wv");
         ctrl_arrow(&mut ed, KeyCode::Right);
         send(&mut ed, "y");
-        assert_eq!(register(&ed), ("one t", false));
+        assert_eq!(register(&ed), ("two", false));
     }
 
     #[test]
