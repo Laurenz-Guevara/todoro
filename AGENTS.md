@@ -22,6 +22,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/options.rs`: `Settings` (saved to `settings.json`), the `TOGGLES` shown in the `o` popup, and the popup's keys
 - `src/tags.rs`: finding `#tags` in items' text (`find_tags`), counting them (`all_tags`) and the `#` popup's keys
 - `src/changelog.rs`: the release notes, built in from `CHANGELOG.md` with `include_str!`, and the popup showing them (`N`, and "what's new" on the first start after an update, tracked by `Settings::last_seen_version`)
+- `src/cli.rs`: command-line flags (`--where`, `--version`, `--help`); `--where` prints only the folder path, for scripts
 - `src/workspaces.rs`: the todoro folder the user chooses on first run and the workspaces in it (one folder each, with its own `todos.json`), plus first-run setup and moving pre-folder todos in
 - `src/setup.rs`: the first-run screen's state and keys
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search

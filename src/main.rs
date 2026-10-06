@@ -1,6 +1,7 @@
 mod app;
 mod calendar;
 mod changelog;
+mod cli;
 mod help;
 mod input;
 mod notes;
@@ -33,6 +34,20 @@ fn main() -> io::Result<()> {
     let settings_path = Settings::default_path();
     let mut settings =
         Settings::load(settings_path.as_ref(), std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()));
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let todoro_file = std::env::var_os("TODORO_FILE").map(PathBuf::from);
+    match cli::parse(&args, &settings, todoro_file.as_deref()) {
+        cli::Run::App => {}
+        cli::Run::Print(text) => {
+            println!("{text}");
+            return Ok(());
+        }
+        cli::Run::Fail(message, code) => {
+            eprintln!("{message}");
+            std::process::exit(code);
+        }
+    }
 
     let mut terminal = ratatui::init();
     // Have pasted text arrive in one piece rather than as typed keys. Old
