@@ -2,6 +2,30 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [0.4.0] - 2026-10-06
+
+### Breaking
+
+- todoro now keeps everything in a folder you choose. The first time you start this version, it asks where (suggesting `~/todoro`) and what to call your first workspace, and moves your existing todos and notes into it. The old file in your system's data folder is no longer used.
+
+### Features
+
+Workspaces:
+
+- Keep separate sets of todos and notes in workspaces, like Personal and Work. `W` lists them to switch, create or delete one; deleting asks you to type its name first. The workspace you're in shows in the corner of the list.
+- Each workspace is a plain folder inside your todoro folder, so backing up is copying one folder. todoro leaves backups to you.
+- Move the todoro folder from the options (`o`), under Data. Every workspace moves with it.
+- `todoro --where` prints the folder, handy for backup scripts. `--version` and `--help` work too.
+
+Notes:
+
+- Paste text from elsewhere straight into notes, and it keeps its lines. Pasted text can no longer run as commands.
+- `V` selects whole lines, `j` and `k` extend the selection, and `J` and `K` move the selected lines. `J` and `K` also move a `v` selection's lines.
+
+Release notes:
+
+- After an update, todoro shows what's new. `N` shows every release's notes at any time, with your place shown in the corner as you scroll.
+
 ## [0.3.0] - 2026-10-06
 
 ### Features
