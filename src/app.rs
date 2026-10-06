@@ -13,6 +13,7 @@ use crate::notes::{Action, NotesEditor, Register};
 use crate::options::{self, Options, Settings, TOGGLES};
 use crate::search::{self, Search};
 use crate::tags::{self, TagPicker};
+use crate::viewer::{self, Viewer};
 use crate::store::{Item, Priority, Snapshot, Store};
 use crate::workspaces::{self, Picker, Workspaces};
 
@@ -39,6 +40,8 @@ pub enum Mode {
     Visual { anchor: usize },
     /// The notes screen for the selected item.
     Notes(Box<NotesEditor>),
+    /// The selected item's notes as formatted Markdown, to read.
+    View(Viewer),
     /// The options popup.
     Options(Options),
     /// The `W` popup, to switch, create or delete workspaces.
@@ -100,6 +103,8 @@ pub struct App {
     /// Notes to open in the user's own editor (`Settings::editor`): the item,
     /// once `Enter` asks for it, then also the state before, while it's open.
     external: Option<(Slot, Option<State>)>,
+    /// Whether editing was started from the viewer, to go back to it after.
+    view_after_edit: bool,
 }
 
 impl App {
@@ -126,6 +131,7 @@ impl App {
             register: Vec::new(),
             notes_register: None,
             external: None,
+            view_after_edit: false,
         }
     }
 
@@ -283,10 +289,24 @@ impl App {
                         if let Some(before) = self.notes_before.take() {
                             self.record(before);
                         }
+                        self.back_to_viewer();
                     }
                     Action::Help => self.open_help(),
                 }
             }
+            Mode::View(viewer) => match viewer.handle_key(key) {
+                viewer::Action::Stay => {}
+                viewer::Action::Close => self.mode = Mode::Normal,
+                viewer::Action::Help => self.open_help(),
+                viewer::Action::Edit => {
+                    self.mode = Mode::Normal;
+                    self.view_after_edit = true;
+                    // Recorded for undo like editing from the list.
+                    let before = self.state();
+                    self.open_notes()?;
+                    self.record(before);
+                }
+            },
             Mode::Calendar(calendar) => match calendar.handle_key(key) {
                 calendar::Action::Stay => {}
                 calendar::Action::Close => self.mode = Mode::Normal,
@@ -503,23 +523,42 @@ impl App {
                     self.clamp_selection();
                 }
             }
-            KeyCode::Enter if len > 0 && self.editor().is_some() => {
-                // The event loop opens the editor, since it owns the terminal.
-                self.external = slot.map(|slot| (slot, None));
-            }
-            KeyCode::Enter if len > 0 => {
+            KeyCode::Enter if len > 0 => self.open_notes()?,
+            KeyCode::Char('v') if len > 0 => {
                 // Read the notes file again, in case something else changed it.
                 if let Some(slot) = slot {
                     self.store.reload_notes(slot.day, slot.index)?;
                 }
-                self.notes_before = Some(self.state());
-                let mut editor = NotesEditor::new(&self.items()[self.selected].notes);
-                editor.register = self.notes_register.clone();
-                self.mode = Mode::Notes(Box::new(editor));
+                self.mode = Mode::View(Viewer::default());
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Opens the selected item's notes to edit: in the user's editor if one
+    /// is set (which the event loop runs, since it owns the terminal),
+    /// otherwise on the notes screen.
+    fn open_notes(&mut self) -> io::Result<()> {
+        let Some(slot) = self.slot(self.selected) else { return Ok(()) };
+        if self.editor().is_some() {
+            self.external = Some((slot, None));
+            return Ok(());
+        }
+        // Read the notes file again, in case something else changed it.
+        self.store.reload_notes(slot.day, slot.index)?;
+        self.notes_before = Some(self.state());
+        let mut editor = NotesEditor::new(&self.store.items(slot.day)[slot.index].notes);
+        editor.register = self.notes_register.clone();
+        self.mode = Mode::Notes(Box::new(editor));
+        Ok(())
+    }
+
+    /// After editing notes started from the viewer, shows them there again.
+    fn back_to_viewer(&mut self) {
+        if std::mem::take(&mut self.view_after_edit) && matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::View(Viewer::default());
+        }
     }
 
     /// Keys while typing a `:` command on the list. `:42` goes to item 42 and
@@ -726,6 +765,7 @@ impl App {
         let command = self.editor().unwrap_or_default().to_string();
         self.store.notes_edited(slot.day, slot.index)?;
         self.record(before);
+        self.back_to_viewer();
         self.message = match result {
             Ok(status) if status.success() => None,
             // What sh (127) and cmd (9009) give for a command they can't find.
@@ -2968,5 +3008,88 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.start_external_edit().unwrap().unwrap().0, "hx");
+    }
+
+    #[test]
+    fn v_views_the_notes_and_esc_goes_back() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call Sam"]);
+        app.store.set_notes(today(), 1, "# Trip".into()).unwrap();
+        type_str(&mut app, "jv");
+        assert!(matches!(app.mode, Mode::View(_)));
+        // Keys that change things on the list do nothing here.
+        type_str(&mut app, "xdp");
+        assert!(matches!(app.mode, Mode::View(_)));
+        assert_eq!(items(&app), ["Buy milk", "Call Sam"]);
+        assert!(!app.items()[0].done);
+        for close in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('v')] {
+            press(&mut app, close);
+            assert!(matches!(app.mode, Mode::Normal));
+            assert_eq!(app.selected, 1);
+            type_str(&mut app, "v");
+        }
+    }
+
+    #[test]
+    fn v_on_an_empty_list_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "v");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn v_rereads_the_notes_file() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.store.set_notes(today(), 0, "oat".into()).unwrap();
+        std::fs::write(app.store.notes_dir().join("buy-milk.md"), "soy").unwrap();
+        type_str(&mut app, "v");
+        assert_eq!(app.items()[0].notes, "soy");
+    }
+
+    #[test]
+    fn editing_from_the_viewer_comes_back_to_it() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "vi");
+        let Mode::Notes(editor) = &app.mode else { panic!("the notes screen") };
+        assert!(!editor.insert, "in normal mode, as from the list");
+        type_str(&mut app, "ioat");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::View(_)));
+        assert_eq!(app.items()[0].notes, "oat");
+        // Then back to the list, and the edit is one undo step.
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "u");
+        assert_eq!(app.items()[0].notes, "");
+        // Notes opened from the list still go back to the list.
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn editing_from_the_viewer_in_your_own_editor_comes_back_to_it() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.settings.editor = Some("nvim".into());
+        type_str(&mut app, "ve");
+        let (_, path) = app.start_external_edit().unwrap().unwrap();
+        std::fs::write(&path, "# Shopping").unwrap();
+        app.finish_external_edit(ok()).unwrap();
+        assert!(matches!(app.mode, Mode::View(_)));
+        assert_eq!(app.items()[0].notes, "# Shopping");
+        // From the list, it stays on the list.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Enter);
+        app.start_external_edit().unwrap().unwrap();
+        app.finish_external_edit(ok()).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn help_from_the_viewer_goes_back_to_it() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "v?");
+        assert!(matches!(app.mode, Mode::Help { .. }));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::View(_)));
     }
 }

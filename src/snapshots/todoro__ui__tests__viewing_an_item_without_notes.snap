@@ -1,0 +1,12 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 50, 8).backend()"
+---
+"╭───────────────── 1. Buy milk ──────────────────╮"
+"│ No notes yet. Press i to write some.           │"
+"│                                                │"
+"│                                                │"
+"│                                                │"
+"│                                                │"
+"╰──────── j/k scroll · i edit · esc back ─── All ╯"
+" VIEW   j/k scroll  i edit  esc back  ? help      "

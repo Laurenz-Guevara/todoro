@@ -4,6 +4,7 @@ mod changelog;
 mod cli;
 mod help;
 mod input;
+mod markdown;
 mod notes;
 mod notes_files;
 mod options;
@@ -14,6 +15,7 @@ mod tags;
 #[cfg(test)]
 mod test_util;
 mod ui;
+mod viewer;
 mod workspaces;
 
 use std::io;

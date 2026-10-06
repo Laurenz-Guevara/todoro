@@ -74,7 +74,8 @@ todoro --help
 | `yy` | Copy the selected item |
 | `p` / `P` | Paste the copied (or last deleted) item below / above the cursor |
 | `V` | Select several items |
-| `Enter` | Open the selected item's notes, in your own editor if you've set one |
+| `Enter` | Edit the selected item's notes, in your own editor if you've set one |
+| `v` | View the selected item's notes, formatted |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `c` | Open the calendar |
 | `s` / `S` | Fuzzy search every day's items / items and their notes |
@@ -137,6 +138,17 @@ With `A`, `Enter` adds the item and starts a new one below it, so you can type a
 `Enter` on an item opens its notes: free text that isn't shown on the main list. The notes screen has its own small vim-style editor, with line numbers, and saves as you type.
 
 To use your own editor instead, open the options (`o`) and set the notes editor to its command, like `nvim`, `hx` or `code --wait`. `Enter` then opens the item's Markdown file in it, and todoro picks up what you saved when it closes. Leave the command empty to go back to todoro's editor.
+
+`v` on an item shows its notes formatted, for reading: headings, lists and task lists (`- [ ]` and `- [x]`), quotes, code, tables, links and **bold** or *italic* text.
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Scroll down / up |
+| `Ctrl+D` / `Ctrl+U` | Half a page down / up |
+| `Space` / `Ctrl+B` | A page down / up |
+| `gg` / `G` | Top / bottom |
+| `i` / `e` / `Enter` | Edit the notes, then come back to the formatted view |
+| `Esc` / `q` / `v` | Back to the list |
 
 In normal mode:
 

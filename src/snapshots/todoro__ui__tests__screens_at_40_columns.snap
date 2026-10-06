@@ -32,9 +32,9 @@ adding
 
 notes
 "╭─ 2. Write the quarterly report for… ─╮"
-"│  1 Ask for Q3 numbers                │"
-"│                                      │"
-"│                                      │"
+"│  1 ## Q3                             │"
+"│  2 - Ask for Q3 numbers              │"
+"│  3 - [ ] Book a room                 │"
 "│                                      │"
 "│                                      │"
 "│                                      │"
@@ -57,6 +57,20 @@ help
 "│ │   j / k                          │ │"
 "╰─╰───── ↑/↓ scroll · esc close ─────╯─╯"
 " HELP   ↑/↓ scroll  esc close           "
+
+viewing notes
+"╭─ 2. Write the quarterly report for… ─╮"
+"│ Q3                                   │"
+"│ ──                                   │"
+"│                                      │"
+"│ • Ask for Q3 numbers                 │"
+"│ ☐ Book a room                        │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰───────── i edit · esc back ───── All ╯"
+" VIEW   j/k scroll  i edit  ? help      "
 
 empty day
 "╭────── Tuesday, October 6 2026 ───────╮"

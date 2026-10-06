@@ -33,7 +33,8 @@ pub const SECTIONS: &[Section] = &[
             ("d", "Delete the selected item"),
             ("yy", "Copy the selected item"),
             ("p / P", "Paste below / above (also after deleting)"),
-            ("Enter", "Open the selected item's notes (in your own editor, if set in the options)"),
+            ("Enter", "Edit the selected item's notes (in your own editor, if set in the options)"),
+            ("v", "View the selected item's notes, formatted"),
             ("c", "Open the calendar"),
             ("s", "Search every day's items"),
             ("S", "Search items and their notes"),
@@ -91,6 +92,17 @@ pub const SECTIONS: &[Section] = &[
     Section {
         title: "Notes, insert mode",
         bindings: &[("Enter", "Start a new line"), ("Esc", "Back to normal mode")],
+    },
+    Section {
+        title: "Viewing notes (v)",
+        bindings: &[
+            ("j / k", "Scroll down / up"),
+            ("Ctrl+D / Ctrl+U", "Half a page down / up"),
+            ("Space / Ctrl+B", "A page down / up"),
+            ("gg / G", "Top / bottom"),
+            ("i / e / Enter", "Edit the notes, then come back here"),
+            ("Esc / q / v", "Back to the list"),
+        ],
     },
     Section {
         title: "Selecting several (V)",
@@ -286,11 +298,13 @@ mod tests {
         assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x"]);
         assert_eq!(found("?"), ["List: ?", "Notes: ?", "Calendar: ?"]);
         assert_eq!(found("$"), ["Notes: 0 / $"]);
+        assert!(found("v").contains(&"List: v".to_string()));
+        assert!(found("v").contains(&"Viewing notes (v): Esc / q / v".to_string()));
     }
 
     #[test]
     fn single_key_search_is_case_sensitive() {
-        assert_eq!(found("G"), ["List: gg / G", "Notes: gg / G"]);
+        assert_eq!(found("G"), ["List: gg / G", "Notes: gg / G", "Viewing notes (v): gg / G"]);
         assert_eq!(found("O"), ["Notes: o / O"]);
         assert!(found("g").contains(&"Notes: gg / G".to_string()));
         assert!(!found("A").contains(&"List: a".to_string()));
@@ -311,6 +325,8 @@ mod tests {
                 "Notes: Ctrl+→ / Ctrl+←",
                 "Notes: Ctrl+Home / End",
                 "Notes: u / Ctrl+R",
+                "Viewing notes (v): Ctrl+D / Ctrl+U",
+                "Viewing notes (v): Space / Ctrl+B",
                 "Calendar: u / Ctrl+R",
                 "Anywhere: Ctrl+C",
             ]

@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 16).backend()"
+---
+"╭────────────────── 1. Plan the offsite ───────────────────╮"
+"│ 2. Second                                                │"
+"│                                                          │"
+"│ ▌ Keep it short.                                         │"
+"│                                                          │"
+"│ ▏ let total = sum(q3);                                   │"
+"│                                                          │"
+"│ Who │ When                                               │"
+"│ ────┼─────                                               │"
+"│ Sam │ Mon                                                │"
+"│                                                          │"
+"│ ──────────────────────────────────────────────────────── │"
+"│                                                          │"
+"│ The end.                                                 │"
+"╰───────────── j/k scroll · i edit · esc back ──────── Bot ╯"
+" VIEW   j/k scroll  i edit  esc back  ? help                "

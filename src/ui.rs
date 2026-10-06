@@ -22,6 +22,8 @@ use crate::search::Search;
 use crate::setup::Setup;
 use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
+use crate::viewer::Viewer;
+use crate::markdown;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [main, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
@@ -33,6 +35,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     };
     match screen {
         Mode::Notes(editor) => draw_notes(frame, app, editor, main),
+        Mode::View(viewer) => draw_view(frame, app, viewer, main),
         Mode::Calendar(calendar) => draw_calendar(frame, app, calendar, main),
         _ => draw_list(frame, app, main),
     }
@@ -298,6 +301,40 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     }
 }
 
+/// The selected item's notes as formatted Markdown, scrolled as far as the
+/// viewer says, with where you are in the corner as in vim.
+fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
+    let room = (area.width as usize).saturating_sub(4);
+    let item = app.items()[app.selected];
+    let title = format!("{}. {}", app.selected + 1, item.text);
+    let title = format!(" {} ", truncate(&title, room.saturating_sub(2)));
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .title(Line::from(title.bold()).centered())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+
+    let lines = if item.notes.trim().is_empty() {
+        vec![Line::from("No notes yet. Press i to write some.").dark_gray()]
+    } else {
+        markdown::render(&item.notes, inner.width as usize)
+    };
+    let height = inner.height as usize;
+    viewer.height.set(height);
+    viewer.total.set(lines.len());
+    let max = lines.len().saturating_sub(height);
+    let scroll = viewer.scroll.min(max);
+
+    let position = format!(" {} ", scroll_position(scroll, max));
+    let hint_room = (area.width as usize).saturating_sub(2 + 2 * (position.width() + 1));
+    let hint = fit_first(&[" j/k scroll · i edit · esc back ", " i edit · esc back ", " esc back "], hint_room);
+    let block = block
+        .title_bottom(Line::from(hint).centered().dim())
+        .title_bottom(Line::from(position).right_aligned().dim());
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
+}
+
 /// Paints whole lines of the notes in `style`: lines selected with `V`, or
 /// just-copied lines flashing. The text area can't style lines like this, so
 /// their screen rows are found from the gutter: a numbered row starts a line,
@@ -410,6 +447,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
+        Mode::View(_) => ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("i edit", 3), ("esc back", 1), ("? help", 4)]),
         Mode::Tags(_) => ("TAGS", Color::Cyan, &[("j/k move", 1), ("↵ show items", 2), ("esc close", 3)]),
         Mode::Workspaces(picker) if picker.adding.is_some() || picker.deleting.is_some() => {
             ("WORKSPACES", Color::Cyan, &[("enter confirm", 2), ("esc back", 1)])
@@ -1897,7 +1935,7 @@ mod tests {
     /// The list, notes, help and insert screens of a small app at `width`.
     fn narrow_screens(width: u16) -> String {
         let (mut app, _dir) = app_with(&["Buy milk", "Write the quarterly report for the team"]);
-        app.store.set_notes(app.day, 1, "Ask for Q3 numbers".into()).unwrap();
+        app.store.set_notes(app.day, 1, "## Q3\n- Ask for Q3 numbers\n- [ ] Book a room".into()).unwrap();
         let mut out = String::new();
         let mut shot = |app: &App, name: &str| {
             out.push_str(&format!("{name}\n{}\n", render_sized(app, width, 12).backend()));
@@ -1913,9 +1951,39 @@ mod tests {
         shot(&app, "help");
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "v");
+        shot(&app, "viewing notes");
+        press(&mut app, KeyCode::Esc);
         type_str(&mut app, "l");
         shot(&app, "empty day");
         out
+    }
+
+    const RICH_NOTES: &str = "# Plan\n\nSee the **draft** and the `budget.xlsx` sheet, then *ask* [Sam](https://example.com).\n\n## To do\n\n- [x] Book a room\n- [ ] Send the agenda\n  - with the numbers\n1. First\n2. Second\n\n> Keep it short.\n\n```\nlet total = sum(q3);\n```\n\n| Who | When |\n|---|---|\n| Sam | Mon |\n\n---\n\nThe end.";
+
+    #[test]
+    fn viewing_notes() {
+        let (mut app, _dir) = app_with(&["Plan the offsite"]);
+        app.store.set_notes(app.day, 0, RICH_NOTES.into()).unwrap();
+        type_str(&mut app, "v");
+        assert_snapshot!(render_sized(&app, 60, 40).backend());
+    }
+
+    #[test]
+    fn viewing_notes_scrolled() {
+        let (mut app, _dir) = app_with(&["Plan the offsite"]);
+        app.store.set_notes(app.day, 0, RICH_NOTES.into()).unwrap();
+        type_str(&mut app, "v");
+        render_sized(&app, 60, 16);
+        type_str(&mut app, "G");
+        assert_snapshot!(render_sized(&app, 60, 16).backend());
+    }
+
+    #[test]
+    fn viewing_an_item_without_notes() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "v");
+        assert_snapshot!(render_sized(&app, 50, 8).backend());
     }
 
     #[test]
