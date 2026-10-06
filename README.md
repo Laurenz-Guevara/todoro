@@ -87,7 +87,7 @@ todoro --help
 
 Undo covers everything you change from the list, including moving items between days and a whole visit to an item's notes, and takes you back to where the change was made.
 
-Pinned items are marked with `⚲` and items that have notes with `≡`. A triaged item's number is coloured by its priority: red for High, yellow for Medium and green for Low. If colours are hard to tell apart, turn on semantic icons in the options (`o`) to also show `∧` High, `–` Medium and `∨` Low.
+Pinned items are marked with `⚲` and items that have notes with `≡`. A triaged item's number is coloured by its priority, including while it's selected: red for High, yellow for Medium and green for Low. If colours are hard to tell apart, turn on semantic icons in the options (`o`) to also show `∧` High, `–` Medium and `∨` Low.
 
 ### Selecting several items
 
