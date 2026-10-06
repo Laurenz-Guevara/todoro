@@ -64,6 +64,7 @@ pub const SECTIONS: &[Section] = &[
         bindings: &[
             ("h j k l", "Move"),
             ("w / b / e", "Next word / previous word / end of word"),
+            ("Ctrl+→ / Ctrl+←", "Next / previous word, also while typing"),
             ("0 / $", "Start / end of the line"),
             ("_ / ^", "First non-blank character of the line"),
             ("gg / G", "First / last line"),
@@ -301,7 +302,10 @@ mod tests {
 
     #[test]
     fn longer_search_matches_key_names_ignoring_case() {
-        assert_eq!(found("ctrl"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R", "Calendar: u / Ctrl+R", "Anywhere: Ctrl+C"]);
+        assert_eq!(
+            found("ctrl"),
+            ["List: u / Ctrl+R", "Notes: Ctrl+→ / Ctrl+←", "Notes: u / Ctrl+R", "Calendar: u / Ctrl+R", "Anywhere: Ctrl+C"]
+        );
         assert!(found("esc").contains(&"Delete popup: c / Esc".to_string()));
         assert!(found("dd").contains(&"Notes: dd".to_string()));
     }

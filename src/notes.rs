@@ -263,6 +263,9 @@ impl NotesEditor {
             let times = self.count.take().unwrap_or(1);
             return match key.code {
                 KeyCode::Esc => Action::Close,
+                // Ctrl+arrows jump words, like b and w (and as they do while typing).
+                KeyCode::Left if ctrl => self.repeat(times, CursorMove::WordBack),
+                KeyCode::Right if ctrl => self.repeat(times, CursorMove::WordForward),
                 KeyCode::Left => self.repeat(times, CursorMove::Back),
                 KeyCode::Right => self.repeat(times, CursorMove::Forward),
                 KeyCode::Up => self.repeat(times, CursorMove::Up),
@@ -1373,6 +1376,49 @@ mod tests {
         let mut ed = editor("abc");
         send(&mut ed, "lv");
         assert!(ed.textarea.selection_range().is_some());
+    }
+
+    fn ctrl_arrow(ed: &mut NotesEditor, code: KeyCode) {
+        ed.handle_key(KeyEvent::new(code, KeyModifiers::CONTROL));
+    }
+
+    #[test]
+    fn ctrl_arrows_jump_words_like_w_and_b() {
+        let mut ed = editor("one two three\nfour");
+        ctrl_arrow(&mut ed, KeyCode::Right);
+        assert_eq!(cursor(&ed), (0, 4));
+        ctrl_arrow(&mut ed, KeyCode::Right);
+        assert_eq!(cursor(&ed), (0, 8));
+        ctrl_arrow(&mut ed, KeyCode::Left);
+        assert_eq!(cursor(&ed), (0, 4));
+        // A count works too, and words continue onto the next line, as with w.
+        send(&mut ed, "2");
+        ctrl_arrow(&mut ed, KeyCode::Right);
+        assert_eq!(cursor(&ed), (1, 0));
+    }
+
+    #[test]
+    fn ctrl_arrows_jump_words_while_typing() {
+        let mut ed = editor("");
+        send(&mut ed, "ione two three");
+        ctrl_arrow(&mut ed, KeyCode::Left);
+        send(&mut ed, ">");
+        ctrl_arrow(&mut ed, KeyCode::Left);
+        ctrl_arrow(&mut ed, KeyCode::Left);
+        send(&mut ed, "<");
+        assert_eq!(ed.textarea.lines(), ["one <two >three"]);
+        ctrl_arrow(&mut ed, KeyCode::Right);
+        send(&mut ed, "!<esc>");
+        assert_eq!(ed.notes(), "one <two !>three");
+    }
+
+    #[test]
+    fn ctrl_arrows_extend_a_selection() {
+        let mut ed = editor("one two three");
+        send(&mut ed, "v");
+        ctrl_arrow(&mut ed, KeyCode::Right);
+        send(&mut ed, "y");
+        assert_eq!(register(&ed), ("one t", false));
     }
 
     #[test]

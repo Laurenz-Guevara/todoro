@@ -142,6 +142,7 @@ In normal mode:
 |---|---|
 | `h` `j` `k` `l` | Move |
 | `w` / `b` / `e` | Next word / previous word / end of word |
+| `Ctrl+→` / `Ctrl+←` | Next / previous word, in normal mode and while typing |
 | `0` / `$` | Start / end of the line |
 | `_` / `^` | First non-blank character of the line |
 | `gg` / `G` | First / last line |
