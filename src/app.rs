@@ -14,6 +14,7 @@ use crate::options::{self, Options, Settings, TOGGLES};
 use crate::search::{self, Search};
 use crate::tags::{self, TagPicker};
 use crate::store::{Item, Priority, Snapshot, Store};
+use crate::workspaces::Workspaces;
 
 /// How many changes `u` can undo.
 const UNDO_LIMIT: usize = 200;
@@ -72,6 +73,10 @@ pub struct App {
     pub settings: Settings,
     /// Where to save settings when they change, if anywhere.
     pub settings_path: Option<PathBuf>,
+    /// The todoro folder and the open workspace's name, unless todos come
+    /// from a single file (`TODORO_FILE`, or tests).
+    pub workspaces: Option<Workspaces>,
+    pub workspace: Option<String>,
     undo: Vec<State>,
     redo: Vec<State>,
     /// The state when the notes screen was opened. Everything typed there is
@@ -102,6 +107,8 @@ impl App {
             quit: false,
             settings: Settings::default(),
             settings_path: None,
+            workspaces: None,
+            workspace: None,
             undo: Vec::new(),
             redo: Vec::new(),
             notes_before: None,

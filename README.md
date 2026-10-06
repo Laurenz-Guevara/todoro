@@ -216,19 +216,26 @@ Press `d` to delete the item, or `c` (or `Esc`) to cancel.
 
 `Ctrl+C` quits from any mode.
 
-## Data
+## Your todos folder
 
-Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes": ..., "done": true, "pinned": true, "priority": "high" }`:
+The first time you start todoro, it asks where to keep your todos (suggesting `~/todoro`). Everything goes in that folder: each workspace is a folder inside it, holding its own `todos.json` with all its items and notes.
 
-| OS | Location |
-|---|---|
-| Linux | `~/.local/share/todoro/todos.json` |
-| macOS | `~/Library/Application Support/todoro/todos.json` |
-| Windows | `%APPDATA%\todoro\todos.json` |
+```
+~/todoro/
+└── Personal/todos.json
+```
 
-Options are saved separately, in `settings.json` in your config folder (`~/.config/todoro/` on Linux, `~/Library/Application Support/todoro/` on macOS, `%APPDATA%\todoro\` on Windows), or wherever `TODORO_SETTINGS` points.
+todoro never backs anything up for you. Because it's one plain folder, that's easy to do yourself: copy it, put it in a folder you back up or sync, or commit it to git (ignore `*.json.tmp`, a file that briefly appears while saving). To restore, put the folder back; if you choose a folder that already has workspaces in it, todoro uses them.
 
-To use a different todo file, set `TODORO_FILE`:
+If you used todoro before it had this folder, your existing todos move into your first workspace when you set it up.
+
+Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes": ..., "done": true, "pinned": true, "priority": "high" }`.
+
+If a folder is synced between machines, don't have todoro open on two of them at once: the last one to save wins.
+
+Settings (options, the folder and workspace you use) are kept separately, in `settings.json` in your config folder (`~/.config/todoro/` on Linux, `~/Library/Application Support/todoro/` on macOS, `%APPDATA%\todoro\` on Windows), or wherever `TODORO_SETTINGS` points, since they belong to each machine.
+
+To use a single file instead of the folder and workspaces (for scripts or testing), set `TODORO_FILE`:
 
 ```sh
 TODORO_FILE=~/work-todos.json todoro

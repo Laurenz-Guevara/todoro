@@ -92,18 +92,6 @@ pub struct Store {
 }
 
 impl Store {
-    /// Loads from `$TODORO_FILE`, or `<data dir>/todoro/todos.json` by default.
-    pub fn load() -> io::Result<Self> {
-        let path = match std::env::var_os("TODORO_FILE") {
-            Some(p) => PathBuf::from(p),
-            None => dirs::data_dir()
-                .ok_or_else(|| io::Error::other("could not determine data directory"))?
-                .join("todoro")
-                .join("todos.json"),
-        };
-        Self::open(path)
-    }
-
     /// Loads from `path`. A missing file is an empty store; it is created on first save.
     pub fn open(path: PathBuf) -> io::Result<Self> {
         let mut days: BTreeMap<String, Vec<Item>> = match fs::read_to_string(&path) {

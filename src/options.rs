@@ -19,6 +19,12 @@ pub struct Settings {
     /// new" appears once after each update. Not an option in the popup.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_seen_version: Option<String>,
+    /// The todoro folder, chosen on first run, holding every workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<std::path::PathBuf>,
+    /// The workspace open last, to open again next time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
 }
 
 /// One toggle in the options popup.
@@ -119,7 +125,7 @@ mod tests {
 
     #[test]
     fn everything_is_off_by_default() {
-        assert_eq!(Settings::default(), Settings { semantic_icons: false, no_colour: false, last_seen_version: None });
+        assert_eq!(Settings::default(), Settings { semantic_icons: false, no_colour: false, last_seen_version: None, ..Settings::default() });
         for toggle in TOGGLES {
             assert!(!(toggle.get)(&Settings::default()));
         }
@@ -129,17 +135,17 @@ mod tests {
     fn toggles_set_their_own_setting() {
         let mut settings = Settings::default();
         (TOGGLES[0].set)(&mut settings, true);
-        assert_eq!(settings, Settings { semantic_icons: true, no_colour: false, last_seen_version: None });
+        assert_eq!(settings, Settings { semantic_icons: true, no_colour: false, last_seen_version: None, ..Settings::default() });
         (TOGGLES[1].set)(&mut settings, true);
         (TOGGLES[0].set)(&mut settings, false);
-        assert_eq!(settings, Settings { semantic_icons: false, no_colour: true, last_seen_version: None });
+        assert_eq!(settings, Settings { semantic_icons: false, no_colour: true, last_seen_version: None, ..Settings::default() });
     }
 
     #[test]
     fn saved_settings_load_back() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("settings.json");
-        let settings = Settings { semantic_icons: true, no_colour: false, last_seen_version: None };
+        let settings = Settings { semantic_icons: true, no_colour: false, last_seen_version: None, ..Settings::default() };
         settings.save(&path).unwrap();
         assert_eq!(Settings::load(Some(&path), true), settings);
         assert!(!path.with_extension("json.tmp").exists());
@@ -155,7 +161,7 @@ mod tests {
         assert_eq!(Settings::load(Some(&path), false), Settings::default());
         // Unknown or missing fields are fine, for older and newer versions.
         fs::write(&path, r#"{ "semantic_icons": true, "something_new": 1 }"#).unwrap();
-        assert_eq!(Settings::load(Some(&path), false), Settings { semantic_icons: true, no_colour: false, last_seen_version: None });
+        assert_eq!(Settings::load(Some(&path), false), Settings { semantic_icons: true, no_colour: false, last_seen_version: None, ..Settings::default() });
     }
 
     #[test]

@@ -22,6 +22,8 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/options.rs`: `Settings` (saved to `settings.json`), the `TOGGLES` shown in the `o` popup, and the popup's keys
 - `src/tags.rs`: finding `#tags` in items' text (`find_tags`), counting them (`all_tags`) and the `#` popup's keys
 - `src/changelog.rs`: the release notes, built in from `CHANGELOG.md` with `include_str!`, and the popup showing them (`N`, and "what's new" on the first start after an update, tracked by `Settings::last_seen_version`)
+- `src/workspaces.rs`: the todoro folder the user chooses on first run and the workspaces in it (one folder each, with its own `todos.json`), plus first-run setup and moving pre-folder todos in
+- `src/setup.rs`: the first-run screen's state and keys
 - `src/help.rs`: the `?` popup's keybinding table (`SECTIONS`) and search
 - `src/ui.rs`: all rendering (list, notes screen, status bar, delete and help popups)
 - `src/store.rs`: JSON persistence, keyed by `YYYY-MM-DD`
@@ -95,7 +97,12 @@ Never update snapshots just to make a failing test pass without reading the diff
 
 ## Data and manual testing
 
-Todos are stored in `~/.local/share/todoro/todos.json` by default, and settings in `~/.config/todoro/settings.json`. Set `TODORO_FILE` and `TODORO_SETTINGS` to use other files, and always set both when running the app to test it, so the user's real todos and settings are never touched. Unit tests leave `App::settings_path` as `None`, so they never save settings.
+Todos live in the todoro folder the user chose (`Settings::data_dir`), one folder per workspace, each with a `todos.json`. Settings are in `~/.config/todoro/settings.json`. Unit tests leave `App::settings_path` as `None`, so they never save settings, and use temporary folders.
+
+When running the app to test it, never touch the user's real todos or settings:
+- Always set `TODORO_SETTINGS` to a scratch file. With `TODORO_FILE` also set to a scratch file, todoro uses just that file and skips the folder and workspaces.
+- To test setup or workspaces, leave `TODORO_FILE` unset and give the scratch settings a `data_dir` in a scratch folder (or let setup create one there).
+- Setup moves the user's pre-folder todos from `~/.local/share/todoro/todos.json` into the new workspace. On Linux, set `XDG_DATA_HOME` to a scratch folder when testing setup, or it will move the user's real file.
 
 To drive the real TUI, use a separate tmux server (`tmux -L todoro-test ...`) and target sessions with an exact match (`-t '=name:'`). The user runs their own tmux, and a plain `-t name` can prefix-match their windows and send keystrokes into them.
 

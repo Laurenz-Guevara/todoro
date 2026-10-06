@@ -19,6 +19,7 @@ use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
 use crate::options::{Options, TOGGLES};
 use crate::search::Search;
+use crate::setup::Setup;
 use crate::tags::{self, TagPicker};
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -85,10 +86,19 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         &[" h ← prev day · k ↑ up · j ↓ down · next day → l ", " h ← day · k ↑ · j ↓ · day → l ", " h/l day · j/k move "],
         (area.width as usize).saturating_sub(2),
     );
-    let block = Block::bordered()
+    let title = Line::from(title);
+    let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(Line::from(title).centered())
+        .title(title.clone().centered())
         .title_bottom(Line::from(hint).centered().dim());
+    // The workspace's name in the top-left corner, if it fits beside the date.
+    if let Some(name) = &app.workspace {
+        let name = format!(" {name} ");
+        let beside = (area.width as usize).saturating_sub(title.width()) / 2;
+        if name.width() + 2 <= beside {
+            block = block.title(Line::from(name.cyan().bold()).left_aligned());
+        }
+    }
 
     // The rows to show, with the item being typed in place of (or inserted
     // among) the saved ones, so the numbering below it is already right.
@@ -1187,6 +1197,72 @@ fn inline_code(text: &str) -> (String, Vec<Range<usize>>) {
     (plain, marks)
 }
 
+/// The first-run screen: choose the todoro folder and name the first workspace.
+pub fn draw_setup(frame: &mut Frame, setup: &Setup) {
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(64);
+    let text_width = (width as usize).saturating_sub(4).max(1);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let intro = "Choose a folder for your todos. Everything goes in it: each workspace is a folder inside, \
+                 with its todos and notes. todoro never backs it up for you, so put it somewhere you back up, \
+                 or copy it yourself.";
+    lines.extend(wrap(intro, text_width, usize::MAX).into_iter().map(Line::from));
+    if setup.moving.is_some() {
+        lines.push(Line::default());
+        let moving = "Your existing todos will move into this first workspace.";
+        lines.extend(wrap(moving, text_width, usize::MAX).into_iter().map(|line| Line::from(line).yellow()));
+    }
+    let mut fields = Vec::new();
+    for (label, input, focused) in [
+        ("Folder", &setup.folder, !setup.on_name),
+        ("First workspace", &setup.name, setup.on_name),
+    ] {
+        lines.push(Line::default());
+        lines.push(Line::from(label.bold()));
+        // Scroll a long entry so the cursor stays in view.
+        let field = text_width.saturating_sub(2).max(1);
+        let before_cursor = input.text[..input.cursor].width();
+        let skip = before_cursor.saturating_sub(field.saturating_sub(1));
+        let shown: String = input.text.chars().scan(0, |at, c| {
+            let start = *at;
+            *at += c.width().unwrap_or(0);
+            Some((start, c))
+        }).filter(|(start, _)| *start >= skip).map(|(_, c)| c).collect();
+        let marker = if focused { "› ".cyan().bold() } else { "  ".into() };
+        let text = if focused { Span::from(truncate(&shown, field)) } else { Span::from(truncate(&shown, field)).dim() };
+        fields.push((lines.len(), focused, before_cursor - skip));
+        lines.push(Line::from(vec![marker, text]));
+    }
+    if let Some(error) = &setup.error {
+        lines.push(Line::default());
+        lines.extend(wrap(error, text_width, usize::MAX).into_iter().map(|line| Line::from(line).red()));
+    }
+
+    let height = (lines.len() as u16 + 2).min(screen.height);
+    let area = centered(screen, width, height);
+    let room = (width as usize).saturating_sub(2);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Cyan))
+        .title(fit_first(&[" Welcome to todoro ", " todoro "], room).bold())
+        .title_bottom(
+            Line::from(fit_first(&[" tab switch · enter continue · esc quit ", " enter continue ", " enter "], room))
+                .centered()
+                .dim(),
+        )
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, screen);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    if let Some(&(row, _, col)) = fields.iter().find(|(_, focused, _)| *focused) {
+        let y = inner.y + row as u16;
+        if y < inner.bottom() {
+            frame.set_cursor_position(Position::new(inner.x + 2 + col as u16, y));
+        }
+    }
+}
+
 fn draw_help(frame: &mut Frame, help: &Help) {
     let screen = frame.area();
     let area = centered(screen, screen.width.saturating_sub(4).min(72), screen.height.saturating_sub(2));
@@ -1271,6 +1347,8 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyCode;
     use ratatui::Terminal;
+
+    use std::path::PathBuf;
 
     use super::*;
     use crate::test_util::{app_with, press, type_str};
@@ -2219,6 +2297,42 @@ mod tests {
         assert_eq!(painted, [2, 3]);
         assert_eq!(buffer[(50, 2)].bg, VISUAL_BG);
         assert!(terminal.backend().to_string().contains("V-LINE"));
+    }
+
+    fn render_setup(setup: &Setup, width: u16, height: u16) -> Terminal<TestBackend> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw_setup(frame, setup)).unwrap();
+        terminal
+    }
+
+    #[test]
+    fn setup_screen() {
+        let mut setup = Setup::new(Some(PathBuf::from("/home/sam/todoro")), None);
+        setup.handle_key(ratatui::crossterm::event::KeyEvent::new(KeyCode::Tab, ratatui::crossterm::event::KeyModifiers::NONE));
+        let mut terminal = render_setup(&setup, 70, 20);
+        assert_snapshot!(terminal.backend());
+        // The cursor is at the end of the workspace name being typed.
+        let cursor = terminal.get_cursor_position().unwrap();
+        let row: String = (0..70).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
+        assert!(row.contains("› Personal"), "{row}");
+    }
+
+    #[test]
+    fn setup_screen_when_moving_old_todos_and_after_a_mistake() {
+        let mut setup = Setup::new(Some(PathBuf::from("/home/sam/todoro")), Some(PathBuf::from("/old/todos.json")));
+        setup.error = Some("A workspace name can't have / \\ : * ? \" < > or |".into());
+        assert_snapshot!(render_setup(&setup, 40, 24).backend());
+    }
+
+    #[test]
+    fn the_workspace_name_shows_when_it_fits() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.workspace = Some("Work".into());
+        let wide = render_sized(&app, 70, 6).backend().to_string();
+        assert!(wide.lines().next().unwrap().contains(" Work "), "{wide}");
+        // Beside a long date on a narrow screen there's no room, so it's left out.
+        let narrow = render_sized(&app, 30, 6).backend().to_string();
+        assert!(!narrow.lines().next().unwrap().contains("Work"), "{narrow}");
     }
 
     #[test]

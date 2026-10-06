@@ -1,0 +1,24 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"   ╭ Welcome to todoro ───────────────────────────────────────────╮   "
+"   │ Choose a folder for your todos. Everything goes in it: each  │   "
+"   │ workspace is a folder inside, with its todos and notes.      │   "
+"   │ todoro never backs it up for you, so put it somewhere you    │   "
+"   │ back up, or copy it yourself.                                │   "
+"   │                                                              │   "
+"   │ Folder                                                       │   "
+"   │   /home/sam/todoro                                           │   "
+"   │                                                              │   "
+"   │ First workspace                                              │   "
+"   │ › Personal                                                   │   "
+"   ╰─────────── tab switch · enter continue · esc quit ───────────╯   "
+"                                                                      "
+"                                                                      "
+"                                                                      "
+"                                                                      "
