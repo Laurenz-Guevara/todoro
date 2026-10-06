@@ -28,6 +28,10 @@ pub struct Settings {
     /// The workspace open last, to open again next time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<String>,
+    /// A command to open notes files with, like `nvim`, instead of todoro's
+    /// own notes editor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor: Option<String>,
 }
 
 /// One toggle in the options popup.
@@ -92,14 +96,22 @@ impl Settings {
 #[derive(Default)]
 pub struct Options {
     pub selected: usize,
+    /// The notes editor's command, or empty for todoro's own. It's the row
+    /// after the toggles (`EDITOR_ROW`).
+    pub editor: String,
     /// The todoro folder as shown, if there is one to change (not with
-    /// `TODORO_FILE`). It's the row after the toggles.
+    /// `TODORO_FILE`). It's the row after the editor (`FOLDER_ROW`).
     pub folder: Option<String>,
-    /// A new folder being typed.
+    /// A new value being typed for the selected row: a command or a folder.
     pub editing: Option<LineInput>,
     /// The result of the last change: what happened, and whether it worked.
+    /// It shows under the selected row.
     pub message: Option<(String, bool)>,
 }
+
+/// The rows after the toggles.
+pub const EDITOR_ROW: usize = TOGGLES.len();
+pub const FOLDER_ROW: usize = TOGGLES.len() + 1;
 
 /// What the app should do after the options popup handles a key.
 #[derive(Debug, PartialEq)]
@@ -110,17 +122,30 @@ pub enum Action {
     Toggle(usize),
     /// Move every workspace into this folder.
     MoveFolder(PathBuf),
+    /// Open notes with this command, or todoro's own editor for `None`.
+    SetEditor(Option<String>),
 }
 
 impl Options {
-    pub fn new(folder: Option<String>) -> Self {
-        Self { folder, ..Self::default() }
+    pub fn new(editor: Option<&str>, folder: Option<String>) -> Self {
+        Self { editor: editor.unwrap_or_default().to_string(), folder, ..Self::default() }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
         if let Some(input) = &mut self.editing {
             match key.code {
                 KeyCode::Esc => self.editing = None,
+                KeyCode::Enter if self.selected == EDITOR_ROW => {
+                    let command = input.text.trim();
+                    let command = (!command.is_empty()).then(|| command.to_string());
+                    self.editor = command.clone().unwrap_or_default();
+                    self.editing = None;
+                    self.message = Some(match &command {
+                        Some(command) => (format!("Notes open in {command}"), true),
+                        None => ("Notes open in todoro's editor".into(), true),
+                    });
+                    return Action::SetEditor(command);
+                }
                 KeyCode::Enter if input.text.trim().is_empty() => {
                     self.message = Some(("Type the folder to move your workspaces to".into(), false));
                 }
@@ -132,12 +157,21 @@ impl Options {
             }
             return Action::Stay;
         }
-        let rows = TOGGLES.len() + usize::from(self.folder.is_some());
-        let on_folder = self.selected == TOGGLES.len();
+        let rows = EDITOR_ROW + 1 + usize::from(self.folder.is_some());
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.selected = (self.selected + 1).min(rows - 1),
-            KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(1),
-            KeyCode::Char(' ') | KeyCode::Enter if on_folder => {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.selected = (self.selected + 1).min(rows - 1);
+                self.message = None;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                self.message = None;
+            }
+            KeyCode::Char(' ') | KeyCode::Enter if self.selected == EDITOR_ROW => {
+                self.editing = Some(LineInput::new(&self.editor));
+                self.message = None;
+            }
+            KeyCode::Char(' ') | KeyCode::Enter if self.selected == FOLDER_ROW => {
                 self.editing = Some(LineInput::new(self.folder.as_deref().unwrap_or_default()));
                 self.message = None;
             }
@@ -211,11 +245,11 @@ mod tests {
 
     #[test]
     fn the_folder_row_comes_after_the_toggles_and_opens_for_typing() {
-        let mut options = Options::new(Some("~/todoro".into()));
+        let mut options = Options::new(None, Some("~/todoro".into()));
         for _ in 0..5 {
             press(&mut options, KeyCode::Char('j'));
         }
-        assert_eq!(options.selected, TOGGLES.len());
+        assert_eq!(options.selected, FOLDER_ROW);
         press(&mut options, KeyCode::Enter);
         assert_eq!(options.editing.as_ref().unwrap().text, "~/todoro");
         // Keys are typed, not run.
@@ -231,11 +265,50 @@ mod tests {
 
     #[test]
     fn without_a_folder_there_is_no_folder_row() {
-        let mut options = Options::new(None);
+        let mut options = Options::new(None, None);
         for _ in 0..5 {
             press(&mut options, KeyCode::Char('j'));
         }
-        assert_eq!(options.selected, TOGGLES.len() - 1);
+        assert_eq!(options.selected, EDITOR_ROW);
+    }
+
+    #[test]
+    fn the_editor_row_comes_after_the_toggles_and_takes_a_command() {
+        let mut options = Options::new(None, Some("~/todoro".into()));
+        options.selected = EDITOR_ROW;
+        press(&mut options, KeyCode::Enter);
+        assert_eq!(options.editing.as_ref().unwrap().text, "");
+        // Keys are typed, not run, and spaces around the command go.
+        for c in " nvim -p ".chars() {
+            press(&mut options, KeyCode::Char(c));
+        }
+        assert_eq!(press(&mut options, KeyCode::Enter), Action::SetEditor(Some("nvim -p".into())));
+        assert!(options.editing.is_none());
+        assert_eq!(options.editor, "nvim -p");
+        assert!(options.message.as_ref().unwrap().0.contains("nvim -p"));
+        // Typing again starts from the command; clearing it goes back to
+        // todoro's own editor.
+        press(&mut options, KeyCode::Char(' '));
+        assert_eq!(options.editing.as_ref().unwrap().text, "nvim -p");
+        for _ in 0..10 {
+            press(&mut options, KeyCode::Backspace);
+        }
+        assert_eq!(press(&mut options, KeyCode::Enter), Action::SetEditor(None));
+        assert_eq!(options.editor, "");
+        // Moving away clears the message.
+        press(&mut options, KeyCode::Char('j'));
+        assert!(options.message.is_none());
+    }
+
+    #[test]
+    fn esc_while_typing_a_command_keeps_the_old_one() {
+        let mut options = Options::new(Some("hx"), None);
+        options.selected = EDITOR_ROW;
+        press(&mut options, KeyCode::Enter);
+        press(&mut options, KeyCode::Char('x'));
+        assert_eq!(press(&mut options, KeyCode::Esc), Action::Stay);
+        assert_eq!(options.editor, "hx");
+        assert!(options.editing.is_none());
     }
 
     #[test]
@@ -247,7 +320,7 @@ mod tests {
         for _ in 0..5 {
             press(&mut options, KeyCode::Down);
         }
-        assert_eq!(options.selected, TOGGLES.len() - 1);
+        assert_eq!(options.selected, EDITOR_ROW);
         for _ in 0..5 {
             press(&mut options, KeyCode::Char('k'));
         }

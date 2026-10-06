@@ -58,6 +58,15 @@ impl NotesFiles {
         }
     }
 
+    /// Creates an empty notes file named after `text`, for another editor to
+    /// open, and returns its name. Until it's given some text, the next sync
+    /// deletes it again.
+    pub fn create(&mut self, text: &str, taken: &HashSet<String>) -> io::Result<String> {
+        let file = self.free_name(&slug(text), taken);
+        self.write(&file, "")?;
+        Ok(file)
+    }
+
     /// Loads every item's notes from its file. An item whose file has gone
     /// has no notes any more.
     pub fn load(&mut self, days: &mut BTreeMap<String, Vec<Item>>) -> io::Result<()> {

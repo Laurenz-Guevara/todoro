@@ -97,6 +97,9 @@ pub struct App {
     /// Text last copied or deleted in any item's notes, kept for the next
     /// notes screen as vim keeps its register.
     notes_register: Option<Register>,
+    /// Notes to open in the user's own editor (`Settings::editor`): the item,
+    /// once `Enter` asks for it, then also the state before, while it's open.
+    external: Option<(Slot, Option<State>)>,
 }
 
 impl App {
@@ -122,6 +125,7 @@ impl App {
             message: None,
             register: Vec::new(),
             notes_register: None,
+            external: None,
         }
     }
 
@@ -337,6 +341,12 @@ impl App {
                         self.settings.save(path)?;
                     }
                 }
+                options::Action::SetEditor(command) => {
+                    self.settings.editor = command;
+                    if let Some(path) = &self.settings_path {
+                        self.settings.save(path)?;
+                    }
+                }
                 options::Action::MoveFolder(to) => {
                     let (Some(folder), Some(current)) = (&self.workspaces, &self.workspace) else { return Ok(()) };
                     match folder.move_to(&to) {
@@ -430,7 +440,7 @@ impl App {
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('o') => {
                 let folder = self.workspaces.as_ref().map(|folder| workspaces::display_path(&folder.dir));
-                self.mode = Mode::Options(Options::new(folder));
+                self.mode = Mode::Options(Options::new(self.settings.editor.as_deref(), folder));
             }
             KeyCode::Char('N') => self.mode = Mode::Changelog(ChangelogView::all()),
             KeyCode::Char('W') => {
@@ -492,6 +502,10 @@ impl App {
                     self.store.toggle_pinned(slot.day, slot.index)?;
                     self.clamp_selection();
                 }
+            }
+            KeyCode::Enter if len > 0 && self.editor().is_some() => {
+                // The event loop opens the editor, since it owns the terminal.
+                self.external = slot.map(|slot| (slot, None));
             }
             KeyCode::Enter if len > 0 => {
                 // Read the notes file again, in case something else changed it.
@@ -679,6 +693,49 @@ impl App {
         if let Some(path) = &self.settings_path {
             self.settings.save(path)?;
         }
+        Ok(())
+    }
+
+    /// The command to open notes with instead of the notes screen, if any.
+    fn editor(&self) -> Option<&str> {
+        self.settings.editor.as_deref().map(str::trim).filter(|command| !command.is_empty())
+    }
+
+    /// If `Enter` asked to open notes in the user's editor: the command and
+    /// the notes file to open with it. An item without notes gets an empty
+    /// file. Call `finish_external_edit` once the editor has closed.
+    pub fn start_external_edit(&mut self) -> io::Result<Option<(String, PathBuf)>> {
+        // Only a request not started yet; one that's open waits for its finish.
+        let Some((slot, None)) = self.external else { return Ok(None) };
+        let Some(command) = self.editor().map(String::from) else {
+            self.external = None;
+            return Ok(None);
+        };
+        // Read the file first, so undo goes back to what was in it.
+        self.store.reload_notes(slot.day, slot.index)?;
+        let before = self.state();
+        let Some(path) = self.store.notes_path(slot.day, slot.index)? else { return Ok(None) };
+        self.external = Some((slot, Some(before)));
+        Ok(Some((command, path)))
+    }
+
+    /// Takes in what the user's editor saved, as one change to undo, and
+    /// says if the editor couldn't run.
+    pub fn finish_external_edit(&mut self, result: io::Result<std::process::ExitStatus>) -> io::Result<()> {
+        let Some((slot, Some(before))) = self.external.take() else { return Ok(()) };
+        let command = self.editor().unwrap_or_default().to_string();
+        self.store.notes_edited(slot.day, slot.index)?;
+        self.record(before);
+        self.message = match result {
+            Ok(status) if status.success() => None,
+            // What sh (127) and cmd (9009) give for a command they can't find.
+            Ok(status) if matches!(status.code(), Some(127 | 9009)) => {
+                Some(format!("Couldn't find {command}. Change the editor in the options (o)."))
+            }
+            Ok(_) => Some(format!("{command} closed with an error")),
+            Err(error) => Some(format!("Couldn't open {command}: {error}. Change the editor in the options (o).")),
+        };
+        self.report_conflicts();
         Ok(())
     }
 
@@ -2815,5 +2872,101 @@ mod tests {
         type_str(&mut app, "a");
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap();
         assert!(app.quit);
+    }
+
+    fn ok() -> io::Result<std::process::ExitStatus> {
+        Ok(std::process::ExitStatus::default())
+    }
+
+    #[test]
+    fn with_an_editor_set_enter_opens_the_notes_file_in_it() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call Sam"]);
+        app.settings.editor = Some("nvim".into());
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal), "not the notes screen");
+        let (command, path) = app.start_external_edit().unwrap().unwrap();
+        assert_eq!(command, "nvim");
+        assert_eq!(path, app.store.notes_dir().join("call-sam.md"));
+        // Asked for once only.
+        assert!(app.start_external_edit().unwrap().is_none());
+        std::fs::write(&path, "about the trip\n").unwrap();
+        app.finish_external_edit(ok()).unwrap();
+        assert_eq!(app.items()[1].notes, "about the trip\n");
+        assert!(app.message.is_none());
+        // The whole visit is one undo step.
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.items()[1].notes, "");
+        assert!(!path.exists());
+        ctrl(&mut app, 'r');
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "about the trip\n");
+    }
+
+    #[test]
+    fn closing_the_editor_without_changes_records_nothing() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.settings.editor = Some("nvim".into());
+        press(&mut app, KeyCode::Enter);
+        let (_, path) = app.start_external_edit().unwrap().unwrap();
+        app.finish_external_edit(ok()).unwrap();
+        assert!(!path.exists(), "the empty file is tidied away");
+        assert_eq!(app.items()[0].notes_file, None);
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.items()[0].text, "Buy milk", "nothing to undo");
+    }
+
+    #[test]
+    fn an_editor_that_wont_start_says_so() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.settings.editor = Some("nope".into());
+        press(&mut app, KeyCode::Enter);
+        app.start_external_edit().unwrap().unwrap();
+        app.finish_external_edit(Err(io::Error::new(io::ErrorKind::NotFound, "not found"))).unwrap();
+        let message = app.message.as_ref().unwrap();
+        assert!(message.contains("Couldn't open nope") && message.contains("options"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_editor_the_shell_cant_find_says_so() {
+        use std::os::unix::process::ExitStatusExt;
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.settings.editor = Some("nope".into());
+        for (code, says) in [(127, "Couldn't find nope"), (1, "nope closed with an error")] {
+            press(&mut app, KeyCode::Enter);
+            app.start_external_edit().unwrap().unwrap();
+            app.finish_external_edit(Ok(std::process::ExitStatus::from_raw(code << 8))).unwrap();
+            let message = app.message.as_ref().unwrap();
+            assert!(message.contains(says), "{message}");
+        }
+    }
+
+    #[test]
+    fn without_an_editor_enter_opens_the_notes_screen() {
+        for editor in [None, Some("  ".to_string())] {
+            let (mut app, _dir) = app_with(&["Buy milk"]);
+            app.settings.editor = editor;
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(app.mode, Mode::Notes(_)));
+            assert!(app.start_external_edit().unwrap().is_none());
+        }
+        // Nor on an empty list.
+        let (mut app, _dir) = app_with(&[]);
+        app.settings.editor = Some("nvim".into());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.start_external_edit().unwrap().is_none());
+    }
+
+    #[test]
+    fn the_editor_is_set_from_the_options() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "ojj");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "hx");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.editor.as_deref(), Some("hx"));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.start_external_edit().unwrap().unwrap().0, "hx");
     }
 }

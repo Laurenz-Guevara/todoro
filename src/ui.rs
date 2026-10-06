@@ -17,7 +17,7 @@ use crate::changelog::{self as changes, ChangelogView};
 use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
-use crate::options::{Options, TOGGLES};
+use crate::options::{EDITOR_ROW, FOLDER_ROW, Options, TOGGLES};
 use crate::search::Search;
 use crate::setup::Setup;
 use crate::workspaces::Picker;
@@ -1082,34 +1082,48 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
         }
     }
 
-    // Where the folder is, and a way to move it. Where the cursor goes while
-    // typing a new one: (line, column).
+    // The rows with a value to type: the notes editor, and the folder with a
+    // way to move it. Where the cursor goes while typing: (line, column).
     let mut cursor = None;
+    let editor = if options.editor.is_empty() { "Built-in" } else { options.editor.as_str() };
+    let mut text_rows = vec![(
+        EDITOR_ROW,
+        "Notes",
+        "Notes editor: ",
+        editor,
+        "A command to open notes files with, like nvim. Leave it empty for todoro's own editor.",
+        "Command:",
+    )];
     if let Some(folder) = &options.folder {
+        let about = "Where every workspace is kept. Enter to move them all to another folder.";
+        text_rows.push((FOLDER_ROW, "Data", "Todoro folder: ", folder.as_str(), about, "Move to:"));
+    }
+    for (index, section, label, value, about, prompt) in text_rows {
         let text_width = inner_width.saturating_sub(2).max(1);
         lines.push(Line::default());
-        lines.push(Line::from("Data".bold()));
+        lines.push(Line::from(section.bold()));
         let start = lines.len();
-        let mut row = Line::from(vec!["Todoro folder: ".into(), truncate(folder, text_width.saturating_sub(15)).cyan()]);
-        if options.selected == TOGGLES.len() {
+        let room = text_width.saturating_sub(label.width());
+        let mut row = Line::from(vec![label.into(), truncate(value, room).cyan()]);
+        let selected = options.selected == index;
+        if selected {
             row = row.bg(SELECTED_BG);
         }
         lines.push(row);
-        let about = "Where every workspace is kept. Enter to move them all to another folder.";
         lines.extend(wrap(about, text_width, usize::MAX).into_iter().map(|part| Line::from(format!("  {part}")).dim()));
-        if let Some(input) = &options.editing {
-            lines.push(Line::from("  Move to:"));
+        if selected && let Some(input) = &options.editing {
+            lines.push(Line::from(format!("  {prompt}")));
             let shown = truncate(&input.text, text_width.saturating_sub(2));
             cursor = Some((lines.len(), 4 + input.text[..input.cursor].width()));
             lines.push(Line::from(vec!["  › ".cyan().bold(), shown.into()]));
         }
-        if let Some((message, ok)) = &options.message {
+        if selected && let Some((message, ok)) = &options.message {
             let style = if *ok { Style::new().fg(Color::Green) } else { Style::new().fg(Color::Red) };
             for part in wrap(message, text_width, usize::MAX) {
                 lines.push(Line::from(Span::styled(format!("  {part}"), style)));
             }
         }
-        if options.selected == TOGGLES.len() {
+        if selected {
             selected_lines = start..lines.len();
         }
     }
@@ -1598,7 +1612,8 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         type_str(&mut app, "?");
         render_sized(&app, 80, 24);
-        for _ in 0..100 {
+        // More than there are lines, so it stops at the end.
+        for _ in 0..1000 {
             press(&mut app, KeyCode::Down);
         }
         assert_snapshot!(render_sized(&app, 80, 24).backend());
@@ -2473,9 +2488,30 @@ mod tests {
         let Mode::Options(options) = &mut app.mode else { panic!("the options") };
         // A fixed path, so the snapshot doesn't depend on where the test runs.
         options.folder = Some("~/todoro".into());
-        type_str(&mut app, "jj");
+        type_str(&mut app, "jjj");
         press(&mut app, KeyCode::Enter);
-        assert_snapshot!(render_sized(&app, 70, 24).backend());
+        assert_snapshot!(render_sized(&app, 70, 28).backend());
+    }
+
+    #[test]
+    fn options_typing_a_notes_editor() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "ojj");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "nvim");
+        let mut terminal = render_sized(&app, 70, 22);
+        assert_snapshot!(terminal.backend());
+        let cursor = terminal.get_cursor_position().unwrap();
+        let row: String = (0..70).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
+        assert!(row.contains("› nvim"), "{row}");
+    }
+
+    #[test]
+    fn options_with_a_notes_editor_set() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.settings.editor = Some("nvim".into());
+        type_str(&mut app, "ojj");
+        assert_snapshot!(render_sized(&app, 70, 18).backend());
     }
 
     #[test]

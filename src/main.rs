@@ -17,12 +17,14 @@ mod ui;
 mod workspaces;
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
 use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind};
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{self, EnterAlternateScreen};
 
 use crate::app::App;
 use crate::options::Settings;
@@ -148,8 +150,63 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
                 _ => {}
             }
         }
+        if let Some((command, path)) = app.start_external_edit()? {
+            let result = edit_in(terminal, &command, &path);
+            app.finish_external_edit(result)?;
+        }
         app.tick(Instant::now());
         app.set_today(Local::now().date_naive())?;
     }
     Ok(())
+}
+
+/// Hands the terminal to the user's editor to edit `path`, and takes it back
+/// once the editor closes.
+fn edit_in(terminal: &mut ratatui::DefaultTerminal, command: &str, path: &Path) -> io::Result<ExitStatus> {
+    let _ = execute!(io::stdout(), DisableBracketedPaste);
+    ratatui::restore();
+    let status = editor_command(command, path).status();
+    terminal::enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    let _ = execute!(io::stdout(), EnableBracketedPaste);
+    terminal.clear()?;
+    status
+}
+
+/// The command as typed with the file after it, run by the shell so quoted
+/// arguments and variables like `$EDITOR` work.
+#[cfg(not(windows))]
+fn editor_command(command: &str, path: &Path) -> Command {
+    let mut run = Command::new("sh");
+    run.arg("-c").arg(format!("{command} \"$1\"")).arg("todoro").arg(path);
+    run
+}
+
+/// The command as typed with the file after it, run by `cmd` so editors
+/// installed as `.cmd` or `.bat` files (like VS Code's `code`) are found.
+#[cfg(windows)]
+fn editor_command(command: &str, path: &Path) -> Command {
+    let mut run = Command::new("cmd");
+    run.arg("/C").args(command.split_whitespace()).arg(path);
+    run
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn the_editor_command_gets_the_file_after_its_own_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a note's file.md");
+        // Quoted arguments work, and a path with spaces and quotes stays whole.
+        let status = editor_command("printf '%s|%s' 'one two'", &path)
+            .stdout(std::fs::File::create(dir.path().join("out")).unwrap())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let out = std::fs::read_to_string(dir.path().join("out")).unwrap();
+        assert_eq!(out, format!("one two|{}", path.display()));
+    }
 }

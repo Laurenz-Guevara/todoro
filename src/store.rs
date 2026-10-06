@@ -152,6 +152,34 @@ impl Store {
         Ok(())
     }
 
+    /// The path of an item's notes file, to open in another editor, after
+    /// reading it again. An item without notes gets an empty file, which is
+    /// deleted again by `notes_edited` if it's still empty.
+    pub fn notes_path(&mut self, day: NaiveDate, index: usize) -> io::Result<Option<PathBuf>> {
+        self.reload_notes(day, index)?;
+        let Some(item) = self.items(day).get(index) else { return Ok(None) };
+        let file = match &item.notes_file {
+            Some(file) => file.clone(),
+            None => {
+                let text = item.text.clone();
+                let taken = self.days.values().flatten().filter_map(|item| item.notes_file.clone()).collect();
+                let file = self.notes.create(&text, &taken)?;
+                if let Some(item) = self.item_mut(day, index) {
+                    item.notes_file = Some(file.clone());
+                }
+                file
+            }
+        };
+        Ok(Some(self.notes.dir.join(file)))
+    }
+
+    /// Takes in what another editor saved in an item's notes file (from
+    /// `notes_path`), and saves.
+    pub fn notes_edited(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
+        self.reload_notes(day, index)?;
+        self.save()
+    }
+
     /// Notes files that saves left alone because they changed outside todoro.
     pub fn take_conflicts(&mut self) -> Vec<Conflict> {
         std::mem::take(&mut self.conflicts)
@@ -876,6 +904,56 @@ mod tests {
         store.reload_notes(today(), 0).unwrap();
         assert_eq!(store.items(today())[0].notes, "");
         assert_eq!(store.items(today())[0].notes_file, None);
+    }
+
+    #[test]
+    fn another_editor_edits_the_notes_file_in_place() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Buy milk".into()).unwrap();
+        store.set_notes(today(), 0, "oat".into()).unwrap();
+        let file = store.notes_path(today(), 0).unwrap().unwrap();
+        assert_eq!(file, store.notes_dir().join("buy-milk.md"));
+        fs::write(&file, "oat\nsoy").unwrap();
+        store.notes_edited(today(), 0).unwrap();
+        assert_eq!(store.items(today())[0].notes, "oat\nsoy");
+        // It's todoro's own version now, so nothing conflicts on later saves.
+        store.insert(today(), 1, "more".into()).unwrap();
+        assert!(store.take_conflicts().is_empty());
+        assert_eq!(fs::read_to_string(&file).unwrap(), "oat\nsoy");
+        assert_eq!(store.notes_path(today(), 5).unwrap(), None);
+    }
+
+    #[test]
+    fn an_item_without_notes_gets_a_file_for_another_editor() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Call Sam".into()).unwrap();
+        let file = store.notes_path(today(), 0).unwrap().unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "");
+        fs::write(&file, "about the trip").unwrap();
+        store.notes_edited(today(), 0).unwrap();
+        assert_eq!(store.items(today())[0].notes, "about the trip");
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json, serde_json::json!({ "2026-10-05": [{ "text": "Call Sam", "notes_file": "call-sam.md" }] }));
+    }
+
+    #[test]
+    fn a_notes_file_left_empty_by_another_editor_goes() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Call Sam".into()).unwrap();
+        let file = store.notes_path(today(), 0).unwrap().unwrap();
+        store.notes_edited(today(), 0).unwrap();
+        assert!(!file.exists());
+        assert_eq!(store.items(today())[0].notes_file, None);
+        // Notes emptied in the other editor go too.
+        store.set_notes(today(), 0, "x".into()).unwrap();
+        let file = store.notes_path(today(), 0).unwrap().unwrap();
+        fs::write(&file, "").unwrap();
+        store.notes_edited(today(), 0).unwrap();
+        assert!(!file.exists());
+        assert!(!fs::read_to_string(&path).unwrap().contains("notes_file"));
     }
 
     #[test]

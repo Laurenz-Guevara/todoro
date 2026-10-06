@@ -74,12 +74,12 @@ todoro --help
 | `yy` | Copy the selected item |
 | `p` / `P` | Paste the copied (or last deleted) item below / above the cursor |
 | `V` | Select several items |
-| `Enter` | Open the selected item's notes |
+| `Enter` | Open the selected item's notes, in your own editor if you've set one |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `c` | Open the calendar |
 | `s` / `S` | Fuzzy search every day's items / items and their notes |
 | `#` | List your tags, to show every item with one |
-| `o` | Options, including accessibility |
+| `o` | Options: accessibility, your own notes editor, the todoro folder |
 | `N` | What's new: the notes for every release |
 | `W` | Workspaces: switch, create or delete |
 | `?` | Show all keybindings |
@@ -135,6 +135,8 @@ With `A`, `Enter` adds the item and starts a new one below it, so you can type a
 ### Notes
 
 `Enter` on an item opens its notes: free text that isn't shown on the main list. The notes screen has its own small vim-style editor, with line numbers, and saves as you type.
+
+To use your own editor instead, open the options (`o`) and set the notes editor to its command, like `nvim`, `hx` or `code --wait`. `Enter` then opens the item's Markdown file in it, and todoro picks up what you saved when it closes. Leave the command empty to go back to todoro's editor.
 
 In normal mode:
 
@@ -208,6 +210,10 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 - **Semantic priority icons:** show `∧` High, `–` Medium and `∨` Low beside triaged items, as well as the coloured number, for anyone who can't tell the colours apart.
 - **No colours:** draw everything in your terminal's own colours. Highlights such as the selected item use reversed text instead. This starts on if you set the standard [`NO_COLOR`](https://no-color.org) environment variable, until you change it here.
+
+**Notes**
+
+- **Notes editor:** a command to open notes with instead of todoro's own editor, like `nvim`. `Enter` types it; an empty one goes back to todoro's editor. The command runs with the notes file after it, through `sh` (or `cmd` on Windows), so arguments and `$EDITOR` work. Editors that open a window and return straight away need their wait flag, like `code --wait`.
 
 ### Workspaces
 
