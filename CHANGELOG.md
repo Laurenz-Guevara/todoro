@@ -2,6 +2,25 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [0.5.0] - 2026-10-06
+
+### Breaking
+
+- Notes are now plain Markdown files, one per item, in a `notes` folder inside your workspace, named after the item (like `buy-milk.md`). You can read, edit, sync or back them up with any tool, or open the folder in an app like Obsidian. Notes you already have move into files the first time you start this version, and older versions of todoro can't see them after that.
+
+### Features
+
+Notes:
+
+- Use your own editor for notes. In the options (`o`), set the notes editor to a command like `nvim`, `hx` or `code --wait`, and `Enter` opens the item's notes file in it. todoro picks up what you saved when it closes, and `u` undoes the whole edit. Leave it empty to keep todoro's editor.
+- If a notes file changes outside todoro while you have changes of your own, todoro never overwrites it. It keeps the other version and saves yours beside it as `<name> (conflict).md`, and tells you.
+- `Ctrl+→` goes to the end of a word and `Ctrl+←` to its start, both in normal mode and while typing.
+- `Home` and `End` go to the start and end of the line, and `Ctrl+Home` and `Ctrl+End` to the start and end of the notes, also while typing.
+
+### Fixes
+
+- Triaging the selected item shows its new colour straight away, instead of only once the cursor moves off it.
+
 ## [0.4.0] - 2026-10-06
 
 ### Breaking
