@@ -204,7 +204,7 @@ Write `#words` in an item to tag it, like "Call #work about the #budget". Tags a
 There are two fuzzy searches, like finding files and searching inside them in vim:
 
 - `Space` `Space` finds items by their text, on every day. Before you type, it lists every item, closest day first, so you can browse them.
-- `s` searches inside every item's notes, line by line, and shows each item with its best matching line under it. The items' own text isn't searched.
+- `s` searches inside every item's notes, line by line, and shows each item with its best matching line under it. The items' own text isn't searched. `Enter` opens the notes to edit, with the cursor on that line (or opens the file in your own editor, if you've set one).
 
 Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words match separately, capitals only match capitals, and plain letters match accented ones. The best matches come first, with the closest days first among equals, and the matched letters are highlighted.
 

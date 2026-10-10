@@ -414,6 +414,12 @@ impl NotesEditor {
         }
     }
 
+    /// Starts on line `line`, counting from 1, as `:42` would go there: for
+    /// opening notes where a search found something.
+    pub fn start_on_line(&mut self, line: usize) {
+        self.go_to_line(line);
+    }
+
     /// Moves to line `line`, counting from 1 (or the last line), on its first
     /// non-blank character as in vim.
     fn go_to_line(&mut self, line: usize) -> Action {

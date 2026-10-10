@@ -149,7 +149,7 @@ pub const SECTIONS: &[Section] = &[
         title: "Search",
         bindings: &[
             ("↑ / ↓", "Select a result"),
-            ("Enter", "Go to the selected item"),
+            ("Enter", "Go to the item (from s: edit its notes, on the line found)"),
             ("Esc", "Stop typing, to move with j / k (again to close)"),
             ("j / k, gg / G", "After Esc: select a result"),
             ("i / a / /", "After Esc: type again"),

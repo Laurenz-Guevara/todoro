@@ -21,7 +21,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/viewer.rs`: the notes viewer's state and keys (`Viewer`), returning an `Action` for the app
 - `src/calendar.rs`: the calendar's state and keys (`Calendar`, `Zoom`), returning an `Action` for the app to carry out; also choosing a deadline (`Calendar::picking`)
 - `src/deadline.rs`: `Deadline` (a day and an optional time), how it's shown (`describe`, `format_time`), typed times (`parse_time`) and how far an item rolls on (`roll_to`)
-- `src/search.rs`: fuzzy search over every day, using `nucleo-matcher`: finding items by their text (`Kind::Items`, `Space Space`; everything with nothing typed) or searching inside their notes (`Kind::Notes`, `s`; each item's best line)
+- `src/search.rs`: fuzzy search over every day, using `nucleo-matcher`: finding items by their text (`Kind::Items`, `Space Space`; everything with nothing typed) or searching inside their notes (`Kind::Notes`, `s`; each item's best line, `Hit::note_line`, where `Enter` opens the notes to edit with `NotesEditor::start_on_line`)
 - `src/options.rs`: `Settings` (saved to `settings.json`), the `TOGGLES` shown in the `o` popup, and the popup's keys
 - `src/tags.rs`: finding `#tags` in items' text (`find_tags`), counting them (`all_tags`) and the `#` popup's keys
 - `src/changelog.rs`: the release notes, built in from `CHANGELOG.md` with `include_str!`, and the popup showing them (`N`, and "what's new" on the first start after an update, tracked by `Settings::last_seen_version`)

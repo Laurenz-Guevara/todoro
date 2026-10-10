@@ -55,6 +55,8 @@ pub struct Hit {
     /// The line of the notes that matched best, and which of its characters,
     /// when searching notes.
     pub note: Option<(String, Vec<usize>)>,
+    /// Which line of the notes that is, counting from 0.
+    pub note_line: Option<usize>,
 }
 
 /// What the app should do after the search handles a key.
@@ -62,8 +64,9 @@ pub struct Hit {
 pub enum Action {
     Stay,
     Close,
-    /// Go to this item on the list.
-    Open { day: NaiveDate, index: usize },
+    /// Go to this item on the list, and from a search of notes, open them
+    /// to edit on `line` (counting from 0).
+    Open { day: NaiveDate, index: usize, line: Option<usize> },
 }
 
 impl Search {
@@ -98,7 +101,7 @@ impl Search {
         match key.code {
             KeyCode::Enter => {
                 return match hits.get(self.selected) {
-                    Some(hit) => Action::Open { day: hit.day, index: hit.index },
+                    Some(hit) => Action::Open { day: hit.day, index: hit.index, line: hit.note_line },
                     None => Action::Stay,
                 };
             }
@@ -199,22 +202,24 @@ pub fn find(store: &Store, query: &str, kind: Kind, tag: Option<&str>, today: Na
             if tag.is_some_and(|tag| !has_tag(&item.text, tag)) {
                 continue;
             }
-            let hit = |score, text_matches, note| Hit { day, index, score, text_matches, note };
+            let hit = |score, text_matches, note, note_line| Hit { day, index, score, text_matches, note, note_line };
             match kind {
-                Kind::Items if empty => hits.push(hit(0, Vec::new(), None)),
+                Kind::Items if empty => hits.push(hit(0, Vec::new(), None, None)),
                 Kind::Items => {
                     if let Some((score, indices)) = matches(&item.text) {
-                        hits.push(hit(score, indices, None));
+                        hits.push(hit(score, indices, None, None));
                     }
                 }
                 Kind::Notes => {
+                    // The best line, and the first of equally good ones.
                     let best = item
                         .notes
                         .lines()
-                        .filter_map(|line| matches(line).map(|(score, indices)| (score, line, indices)))
-                        .max_by_key(|(score, ..)| *score);
-                    if let Some((score, line, indices)) = best {
-                        hits.push(hit(score, Vec::new(), Some((line.to_string(), indices))));
+                        .enumerate()
+                        .filter_map(|(n, line)| matches(line).map(|(score, indices)| (score, n, line, indices)))
+                        .max_by_key(|(score, n, ..)| (*score, std::cmp::Reverse(*n)));
+                    if let Some((score, n, line, indices)) = best {
+                        hits.push(hit(score, Vec::new(), Some((line.to_string(), indices)), Some(n)));
                     }
                 }
             }
@@ -339,6 +344,14 @@ mod tests {
         assert_eq!(line, "Charts from the dashboard");
         assert_eq!(indices, &(16..25).collect::<Vec<_>>());
         assert!(hits[0].text_matches.is_empty());
+        assert_eq!(hits[0].note_line, Some(1), "the second line");
+        // Enter opens the notes there.
+        let mut search = Search::new(Kind::Notes);
+        search.input = LineInput::new("dashboard");
+        assert_eq!(
+            search.handle_key(key(KeyCode::Enter), &hits),
+            Action::Open { day: today(), index: 1, line: Some(1) }
+        );
         // The item's own text doesn't count.
         assert!(find(&store, "quarterly", Kind::Notes, None, today()).is_empty());
         assert!(find(&store, "milk", Kind::Notes, None, today()).is_empty());
@@ -400,7 +413,7 @@ mod tests {
         let mut search = Search::new(Kind::Items);
         search.input = LineInput::new("dentist");
         let hits = search.find(&store, today());
-        assert_eq!(search.handle_key(key(KeyCode::Enter), &hits), Action::Open { day: day(10), index: 0 });
+        assert_eq!(search.handle_key(key(KeyCode::Enter), &hits), Action::Open { day: day(10), index: 0, line: None });
         assert_eq!(search.handle_key(key(KeyCode::Enter), &[]), Action::Stay);
         // Esc stops typing, then closes.
         assert_eq!(search.handle_key(key(KeyCode::Esc), &hits), Action::Stay);
@@ -440,7 +453,7 @@ mod tests {
         // Enter goes to the selected one.
         search.handle_key(key(KeyCode::Char('j')), &hits);
         let hit = &hits[1];
-        assert_eq!(search.handle_key(key(KeyCode::Enter), &hits), Action::Open { day: hit.day, index: hit.index });
+        assert_eq!(search.handle_key(key(KeyCode::Enter), &hits), Action::Open { day: hit.day, index: hit.index, line: None });
     }
 
     #[test]

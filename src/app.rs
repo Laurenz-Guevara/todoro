@@ -424,10 +424,17 @@ impl App {
                 match search.handle_key(key, &hits) {
                     search::Action::Stay => {}
                     search::Action::Close => self.mode = Mode::Normal,
-                    search::Action::Open { day, index } => {
+                    search::Action::Open { day, index, line } => {
                         self.mode = Mode::Normal;
                         self.show_day(day);
                         self.selected = self.slots().iter().position(|slot| *slot == Slot { day, index }).unwrap_or(0);
+                        // Found in its notes: open them to edit, on that line.
+                        if let Some(line) = line {
+                            self.open_notes()?;
+                            if let Mode::Notes(editor) = &mut self.mode {
+                                editor.start_on_line(line + 1);
+                            }
+                        }
                     }
                 }
             }
@@ -2096,7 +2103,7 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "spassport");
         press(&mut app, KeyCode::Enter);
-        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(app.mode, Mode::Notes(_)), "editing its notes");
         assert_eq!(app.selected, 1);
     }
 
@@ -3594,5 +3601,50 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         clear_from_options(&mut app, options::Clear::Items, "delete");
         assert!(items(&app).is_empty());
+    }
+
+    #[test]
+    fn enter_in_a_notes_search_opens_them_on_the_line_found() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Trip"]);
+        let later = today() + chrono::Duration::days(3);
+        app.store.insert(later, 0, "Plan".into()).unwrap();
+        app.store.set_notes(later, 0, "# Plan\n\nbook the train\nask Sam about dates".into()).unwrap();
+        type_str(&mut app, "sdates");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.day, later);
+        let Mode::Notes(editor) = &app.mode else { panic!("editing the notes") };
+        assert_eq!(editor.textarea.cursor(), (3, 0), "on the line that matched");
+        assert!(!editor.insert, "in normal mode, ready to move or edit");
+        // Edits save to that item, and closing goes back to its day's list.
+        type_str(&mut app, "A!");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].notes, "# Plan\n\nbook the train\nask Sam about dates!");
+        // As one undo step.
+        type_str(&mut app, "u");
+        assert_eq!(app.items()[0].notes, "# Plan\n\nbook the train\nask Sam about dates");
+    }
+
+    #[test]
+    fn enter_in_a_notes_search_opens_them_in_your_own_editor() {
+        let (mut app, _dir) = app_with(&["Trip"]);
+        app.store.set_notes(today(), 0, "ask Sam".into()).unwrap();
+        app.settings.editor = Some("nvim".into());
+        type_str(&mut app, "ssam");
+        press(&mut app, KeyCode::Enter);
+        let (command, path) = app.start_external_edit().unwrap().unwrap();
+        assert_eq!(command, "nvim");
+        assert!(path.ends_with("trip.md"));
+    }
+
+    #[test]
+    fn enter_when_finding_items_just_goes_to_the_item() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Trip"]);
+        app.store.set_notes(today(), 1, "ask Sam".into()).unwrap();
+        type_str(&mut app, "  trip");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.selected, 1);
     }
 }
