@@ -85,7 +85,9 @@ impl Renderer {
             Event::InlineMath(math) | Event::DisplayMath(math) => self.text(&math, self.style().patch(CODE)),
             Event::Html(html) | Event::InlineHtml(html) => self.text(&html, self.style().patch(DIM)),
             Event::FootnoteReference(name) => self.text(&format!("[{name}]"), self.style().patch(DIM)),
-            Event::SoftBreak => self.text(" ", self.style()),
+            // Notes are typed a line at a time, so their lines stay lines, as
+            // Obsidian shows them, rather than joining into one paragraph.
+            Event::SoftBreak => self.text("\n", self.style()),
             Event::HardBreak => self.text("\n", self.style()),
             Event::Rule => {
                 self.flush();
@@ -503,8 +505,8 @@ mod tests {
     #[test]
     fn paragraphs_wrap_at_spaces_with_a_blank_line_between() {
         assert_eq!(plain("one two three four\n\nfive", 9), ["one two", "three", "four", "", "five"]);
-        // A single line break inside a paragraph is a space.
-        assert_eq!(plain("one\ntwo", 20), ["one two"]);
+        // A single line break stays a line break, as typed.
+        assert_eq!(plain("one\ntwo", 20), ["one", "two"]);
         // A hard break (two spaces) starts a new line.
         assert_eq!(plain("one  \ntwo", 20), ["one", "two"]);
     }
