@@ -6,11 +6,13 @@ use std::path::PathBuf;
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
+use crate::deadline::Deadline;
 use crate::notes_files::{Conflict, NotesFiles};
 
 /// One todo entry. `notes` is longer free text shown only on the notes screen,
 /// kept in its own Markdown file named by `notes_file`. A `pinned` item moves
-/// forward to today until it is completed; others stay on their day.
+/// forward to today until it is completed, and one with a `deadline` until
+/// its deadline day; others stay on their day.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(from = "RawItem", into = "RawItem")]
 pub struct Item {
@@ -21,6 +23,24 @@ pub struct Item {
     pub done: bool,
     pub pinned: bool,
     pub priority: Option<Priority>,
+    /// When it's due. Setting one unpins the item: the deadline decides how
+    /// far it moves on.
+    pub deadline: Option<Deadline>,
+}
+
+impl Item {
+    /// The day this item, stored on an earlier day, moves on to by `today`:
+    /// today if it's pinned, or up to its deadline day. `None` if it stays
+    /// where it is (completed, or neither pinned nor due).
+    pub fn roll_to(&self, today: NaiveDate) -> Option<NaiveDate> {
+        if self.done {
+            return None;
+        }
+        match self.deadline {
+            Some(deadline) => Some(deadline.roll_to(today)),
+            None => self.pinned.then_some(today),
+        }
+    }
 }
 
 /// How urgent an item is, set by triaging it with `t`.
@@ -65,6 +85,9 @@ enum RawItem {
         pinned: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         priority: Option<Priority>,
+        /// `2026-10-12` or `2026-10-12 13:00`; anything else is ignored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline: Option<String>,
     },
 }
 
@@ -72,8 +95,9 @@ impl From<RawItem> for Item {
     fn from(raw: RawItem) -> Self {
         match raw {
             RawItem::Text(text) => Item { text, ..Item::default() },
-            RawItem::Full { text, notes, notes_file, done, pinned, priority } => {
-                Item { text, notes, notes_file, done, pinned, priority }
+            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline } => {
+                let deadline = deadline.as_deref().and_then(Deadline::from_stored);
+                Item { text, notes, notes_file, done, pinned, priority, deadline }
             }
         }
     }
@@ -81,11 +105,13 @@ impl From<RawItem> for Item {
 
 impl From<Item> for RawItem {
     fn from(item: Item) -> Self {
-        if item.notes_file.is_none() && !item.done && !item.pinned && item.priority.is_none() {
+        if item.notes_file.is_none() && !item.done && !item.pinned && item.priority.is_none() && item.deadline.is_none()
+        {
             RawItem::Text(item.text)
         } else {
-            let Item { text, notes, notes_file, done, pinned, priority } = item;
-            RawItem::Full { text, notes, notes_file, done, pinned, priority }
+            let Item { text, notes, notes_file, done, pinned, priority, deadline } = item;
+            let deadline = deadline.map(Deadline::to_stored);
+            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline }
         }
     }
 }
@@ -190,29 +216,39 @@ impl Store {
     /// forward until completed. Everything else stays on its day.
     pub fn roll_over(&mut self, today: NaiveDate) -> io::Result<()> {
         let today_key = key(today);
-        let mut carried = Vec::new();
+        // Where each moving item goes: today, or its deadline day if that's
+        // passed. Oldest first, so they keep their order.
+        let mut moving: BTreeMap<NaiveDate, Vec<Item>> = BTreeMap::new();
         self.days.retain(|day, items| {
-            if *day < today_key {
-                carried.extend(items.extract_if(.., |item| item.pinned && !item.done));
+            if *day < today_key
+                && let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d")
+            {
+                let moves = |item: &mut Item| item.roll_to(today).is_some_and(|to| to > date);
+                for item in items.extract_if(.., moves) {
+                    let to = item.roll_to(today).expect("only moving items are taken");
+                    moving.entry(to).or_default().push(item);
+                }
             }
             !items.is_empty()
         });
-        if carried.is_empty() {
+        if moving.is_empty() {
             return Ok(());
         }
-        let items = self.days.entry(today_key).or_default();
-        items.splice(0..0, carried);
+        for (day, carried) in moving {
+            self.days.entry(key(day)).or_default().splice(0..0, carried);
+        }
         self.save()
     }
 
-    /// Where the pinned, open items from days before `day` are, as `(day,
-    /// index)`, oldest day first. These are what `roll_over` would move to `day`.
-    pub fn pinned_before(&self, day: NaiveDate) -> Vec<(NaiveDate, usize)> {
+    /// Where the open items from days before `day` that show on it are, as
+    /// `(day, index)`, oldest day first: pinned ones, and ones due on `day` or
+    /// later. These are what `roll_over` would move to `day`.
+    pub fn carried_to(&self, day: NaiveDate) -> Vec<(NaiveDate, usize)> {
         self.days
             .range(..key(day))
             .filter_map(|(k, items)| Some((NaiveDate::parse_from_str(k, "%Y-%m-%d").ok()?, items)))
             .flat_map(|(date, items)| {
-                items.iter().enumerate().filter(|(_, item)| item.pinned && !item.done).map(move |(i, _)| (date, i))
+                items.iter().enumerate().filter(|(_, item)| item.roll_to(day) == Some(day)).map(move |(i, _)| (date, i))
             })
             .collect()
     }
@@ -286,6 +322,18 @@ impl Store {
         item.done = !item.done;
         let boundary = items.iter().take_while(|item| !item.done).count();
         items.insert(boundary, item);
+        self.save()
+    }
+
+    /// Sets or clears an item's deadline. Setting one unpins it, since the
+    /// deadline decides how far it moves on.
+    pub fn set_deadline(&mut self, day: NaiveDate, index: usize, deadline: Option<Deadline>) -> io::Result<()> {
+        if let Some(item) = self.item_mut(day, index) {
+            item.deadline = deadline;
+            if deadline.is_some() {
+                item.pinned = false;
+            }
+        }
         self.save()
     }
 
@@ -688,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_before_lists_what_roll_over_would_move() {
+    fn carried_to_lists_what_roll_over_would_move() {
         let (_dir, path) = temp_path();
         let mut store = Store::open(path).unwrap();
         insert_pinned(&mut store, day(-1), "older");
@@ -697,9 +745,9 @@ mod tests {
         insert_pinned(&mut store, today(), "done");
         store.toggle_done(today(), 2).unwrap();
         insert_pinned(&mut store, day(2), "later");
-        assert_eq!(store.pinned_before(day(2)), [(day(-1), 0), (today(), 1)]);
-        assert_eq!(store.pinned_before(day(3)), [(day(-1), 0), (today(), 1), (day(2), 0)]);
-        assert!(store.pinned_before(day(-1)).is_empty());
+        assert_eq!(store.carried_to(day(2)), [(day(-1), 0), (today(), 1)]);
+        assert_eq!(store.carried_to(day(3)), [(day(-1), 0), (today(), 1), (day(2), 0)]);
+        assert!(store.carried_to(day(-1)).is_empty());
     }
 
     #[test]
@@ -798,6 +846,95 @@ mod tests {
         assert_eq!(priorities, [Some(Priority::High), Some(Priority::Low), None]);
     }
 
+    fn due(days: i64, time: Option<(u32, u32)>) -> Deadline {
+        let time = time.map(|(h, m)| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap());
+        Deadline { date: day(days), time }
+    }
+
+    #[test]
+    fn deadlines_are_saved_and_loaded() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Report".into()).unwrap();
+        store.insert(today(), 1, "Call".into()).unwrap();
+        store.set_deadline(today(), 0, Some(due(4, Some((17, 30))))).unwrap();
+        store.set_deadline(today(), 1, Some(due(1, None))).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "2026-10-05": [
+                { "text": "Report", "deadline": "2026-10-09 17:30" },
+                { "text": "Call", "deadline": "2026-10-06" },
+            ] })
+        );
+        let reopened = Store::open(path.clone()).unwrap();
+        assert_eq!(reopened.items(today())[0].deadline, Some(due(4, Some((17, 30)))));
+        // Removing it makes the item plain text again.
+        store.set_deadline(today(), 1, None).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["2026-10-05"][1], "Call");
+    }
+
+    #[test]
+    fn a_deadline_that_cant_be_read_is_dropped_not_an_error() {
+        let (_dir, path) = temp_path();
+        fs::write(&path, r#"{ "2026-10-05": [{ "text": "Report", "deadline": "someday" }] }"#).unwrap();
+        let store = Store::open(path).unwrap();
+        assert_eq!(store.items(today())[0].text, "Report");
+        assert_eq!(store.items(today())[0].deadline, None);
+    }
+
+    #[test]
+    fn setting_a_deadline_unpins_and_removing_it_leaves_it_unpinned() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "Report".into()).unwrap();
+        store.toggle_pinned(today(), 0).unwrap();
+        store.set_deadline(today(), 0, Some(due(2, None))).unwrap();
+        assert!(!store.items(today())[0].pinned);
+        store.set_deadline(today(), 0, None).unwrap();
+        assert!(!store.items(today())[0].pinned);
+    }
+
+    #[test]
+    fn items_with_a_deadline_show_on_later_days_up_to_it() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "Report".into()).unwrap();
+        store.set_deadline(today(), 0, Some(due(2, Some((9, 0))))).unwrap();
+        assert_eq!(store.carried_to(day(1)), [(today(), 0)]);
+        assert_eq!(store.carried_to(day(2)), [(today(), 0)], "on its deadline day");
+        assert!(store.carried_to(day(3)).is_empty(), "not after it");
+        // Once done, it stays on its day.
+        store.toggle_done(today(), 0).unwrap();
+        assert!(store.carried_to(day(1)).is_empty());
+    }
+
+    #[test]
+    fn roll_over_moves_items_with_a_deadline_to_today_or_their_deadline_day() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        // Due later: moves to today, like a pinned item.
+        store.insert(day(-3), 0, "due later".into()).unwrap();
+        store.set_deadline(day(-3), 0, Some(due(2, None))).unwrap();
+        // Due yesterday: moves only as far as yesterday, and stays there.
+        store.insert(day(-3), 1, "due yesterday".into()).unwrap();
+        store.set_deadline(day(-3), 1, Some(due(-1, Some((17, 0))))).unwrap();
+        // Due before the day it's on: stays put.
+        store.insert(day(-2), 0, "due before".into()).unwrap();
+        store.set_deadline(day(-2), 0, Some(due(-5, None))).unwrap();
+        store.insert(day(-3), 2, "plain".into()).unwrap();
+        store.roll_over(today()).unwrap();
+        assert_eq!(texts(&store, today()), ["due later"]);
+        assert_eq!(texts(&store, day(-1)), ["due yesterday"]);
+        assert_eq!(texts(&store, day(-2)), ["due before"]);
+        assert_eq!(texts(&store, day(-3)), ["plain"]);
+        // Nothing more moves on later days.
+        store.roll_over(day(1)).unwrap();
+        assert_eq!(texts(&store, day(-1)), ["due yesterday"]);
+        assert_eq!(texts(&store, day(1)), ["due later"]);
+    }
+
     #[test]
     fn insert_items_adds_open_copies_among_the_open_items() {
         let (_dir, path) = temp_path();
@@ -812,6 +949,7 @@ mod tests {
             done: true,
             pinned: true,
             priority: Some(Priority::High),
+            deadline: Some(Deadline { date: today(), time: None }),
         };
         assert_eq!(store.insert_items(today(), 9, vec![copy.clone(), copy.clone()]).unwrap(), 1);
         assert_eq!(texts(&store, today()), ["a", "copy", "copy", "b"]);

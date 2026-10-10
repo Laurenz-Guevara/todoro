@@ -22,6 +22,7 @@ use crate::search::Search;
 use crate::setup::Setup;
 use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
+use crate::deadline::Deadline;
 use crate::viewer::Viewer;
 use crate::markdown;
 
@@ -45,6 +46,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::ConfirmDelete { rows } => draw_confirm(frame, app, rows),
         Mode::Help { help, .. } => draw_help(frame, help),
         Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, calendar),
+        Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.time.is_some()) => {
+            draw_deadline_time(frame, app, calendar)
+        }
         Mode::Search(search) => draw_search(frame, app, search),
         Mode::Options(options) => draw_options(frame, app, options),
         Mode::Changelog(view) => draw_changelog(frame, view),
@@ -114,6 +118,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             text: &item.text,
             priority: item.priority,
             pinned: item.pinned,
+            deadline: item.deadline,
             has_notes: !item.notes.is_empty(),
             done: item.done,
             typing: false,
@@ -125,7 +130,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         if *editing {
             rows[*index] = Row { text, typing: true, ..rows[*index] };
         } else {
-            rows.insert(*index, Row { text, priority: None, pinned: false, has_notes: false, done: false, typing: true });
+            let row = Row { text, priority: None, pinned: false, deadline: None, has_notes: false, done: false, typing: true };
+            rows.insert(*index, row);
         }
         selected = Some(*index);
     }
@@ -166,9 +172,26 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             (format!("{:>width$}. ", i + 1), number_style, Style::new())
         };
 
+        // A deadline takes the pin's place, with when it's due.
+        let deadline = row.deadline.map(|deadline| {
+            let text = format!("{DEADLINE_MARKER}{}", deadline.describe(app.today, app.settings.twelve_hour));
+            let style = if row.done {
+                Style::new().fg(Color::DarkGray)
+            } else if deadline.is_overdue(app.today, app.now) {
+                Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
+            } else if deadline.date == app.today {
+                Style::new().fg(Color::Yellow)
+            } else {
+                Style::new().fg(Color::Cyan)
+            };
+            Span::styled(text, style)
+        });
+        let pinned = row.pinned && deadline.is_none();
+
         // Wrap long text under itself, leaving room for the markers at the end.
-        let markers = [(row.pinned, PINNED_MARKER), (row.has_notes, NOTES_MARKER)];
-        let markers_width: usize = markers.iter().filter(|(shown, _)| *shown).map(|(_, m)| m.width()).sum();
+        let markers = [(pinned, PINNED_MARKER.width()), (row.has_notes, NOTES_MARKER.width())];
+        let markers_width: usize = markers.iter().filter(|(shown, _)| *shown).map(|(_, width)| width).sum::<usize>()
+            + deadline.as_ref().map_or(0, Span::width);
         let text_width = (inner.width as usize).saturating_sub(prefix_width + markers_width).max(1);
         let ranges = wrap_ranges(row.text, text_width);
         if let (true, Mode::Insert { input, .. }) = (row.typing, &app.mode) {
@@ -201,8 +224,11 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
         let last = lines.last_mut().expect("wrap_ranges returns at least one line");
-        if row.pinned {
+        if pinned {
             last.push_span(PINNED_MARKER.fg(Color::Cyan));
+        }
+        if let Some(deadline) = deadline {
+            last.push_span(deadline);
         }
         if row.has_notes {
             last.push_span(NOTES_MARKER.dim());
@@ -249,6 +275,7 @@ struct Row<'a> {
     text: &'a str,
     priority: Option<Priority>,
     pinned: bool,
+    deadline: Option<Deadline>,
     has_notes: bool,
     done: bool,
     /// The item being added or edited.
@@ -278,6 +305,9 @@ const NOTES_MARKER: &str = " ≡";
 
 /// Shown after a pinned item, which moves forward to today until completed.
 const PINNED_MARKER: &str = " ⚲";
+
+/// Shown in the pin's place on an item with a deadline, before when it's due.
+const DEADLINE_MARKER: &str = " ◷ ";
 
 fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     let room = (area.width as usize).saturating_sub(4);
@@ -463,6 +493,19 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
         }
+        Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.time.is_some()) => {
+            ("DEADLINE", Color::Yellow, &[("enter save", 2), ("(empty: no time)", 0), ("esc back", 1)])
+        }
+        Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.had) => (
+            "DEADLINE",
+            Color::Yellow,
+            &[("↵ choose day", 3), ("d remove", 2), ("y/m/w view", 0), ("esc cancel", 1), ("? help", 4)],
+        ),
+        Mode::Calendar(calendar) if calendar.picking.is_some() => (
+            "DEADLINE",
+            Color::Yellow,
+            &[("↵ choose day", 3), ("y/m/w view", 0), ("esc cancel", 1), ("? help", 4)],
+        ),
         Mode::Calendar(_) => (
             "CALENDAR",
             Color::Cyan,
@@ -716,10 +759,31 @@ fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) 
         ),
         Zoom::Year => (vec![cursor.format("%Y").to_string()], &[" h/l day · j/k week · H/L month ", " H/L month "]),
     };
+    // Choosing a deadline says what for, and shows its own keys.
+    let (titles, hints, colour): (Vec<String>, &[&str], Color) = match &calendar.picking {
+        Some(picking) => {
+            // The view's own title, like "2026" or "October 2026".
+            let period = titles.last().cloned().unwrap_or_default();
+            let titles = vec![
+                format!("Deadline for {} · {}", picking.item, titles[0]),
+                format!("Deadline for {}", truncate(&picking.item, room.saturating_sub(13).max(2))),
+                format!("Deadline · {period}"),
+                "Deadline".into(),
+                period,
+            ];
+            let hints: &[&str] = if picking.had {
+                &[" ↵ choose day · d remove deadline · esc cancel ", " ↵ choose · d remove · esc ", " ↵ choose · esc "]
+            } else {
+                &[" ↵ choose day · esc cancel ", " ↵ choose · esc ", " ↵ choose "]
+            };
+            (titles, hints, Color::Yellow)
+        }
+        None => (titles, hints, Color::Cyan),
+    };
     let title = titles.iter().find(|title| title.width() <= room).cloned().unwrap_or_else(|| truncate(&titles[0], room));
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(Color::Cyan))
+        .border_style(Style::new().fg(colour))
         .title(Line::from(format!(" {title} ").bold()).centered())
         .title_bottom(Line::from(fit_first(hints, area.width.saturating_sub(2) as usize)).centered().dim());
     let inner = block.inner(area);
@@ -943,6 +1007,42 @@ fn draw_adding(frame: &mut Frame, calendar: &Calendar) {
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
     frame.set_cursor_position(Position::new(inner.x + col as u16, inner.y + line as u16));
+}
+
+/// The time for a deadline, typed once its day is chosen.
+fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
+    let Some(picking) = &calendar.picking else { return };
+    let Some(input) = &picking.time else { return };
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(50);
+    let room = (width as usize).saturating_sub(4);
+    let example = if app.settings.twelve_hour { "like 1pm or 13:00" } else { "like 13:00 or 1pm" };
+    let help = format!("A time, {example}. Leave it empty for the whole day.");
+    let mut lines = vec![Line::from(vec!["› ".yellow().bold(), truncate(&input.text, room.saturating_sub(2)).into()])];
+    lines.extend(wrap(&help, room, usize::MAX).into_iter().map(|part| Line::from(part).dim()));
+    if let Some(error) = &picking.error {
+        lines.extend(wrap(error, room, usize::MAX).into_iter().map(|part| Line::from(part).red()));
+    }
+    let area = centered(screen, width, lines.len() as u16 + 2);
+
+    let titles = [
+        calendar.cursor.format(" Due %A %-d %B %Y ").to_string(),
+        calendar.cursor.format(" Due %a %-d %b %Y ").to_string(),
+        calendar.cursor.format(" %a %-d %b ").to_string(),
+    ];
+    let title = titles.iter().find(|title| title.width() <= room + 2).cloned().unwrap_or_default();
+    let hint = fit_first(&[" enter save · esc pick another day ", " enter save · esc back ", " enter "], room + 2);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Yellow))
+        .title(title.bold())
+        .title_bottom(Line::from(hint).centered().dim())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let col = 2 + input.text[..input.cursor].width() as u16;
+    frame.set_cursor_position(Position::new(inner.x + col.min(inner.width.saturating_sub(1)), inner.y));
 }
 
 fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
@@ -1520,7 +1620,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::test_util::{app_with, press, type_str};
+    use crate::test_util::{app_with, press, today, type_str};
 
     fn render(app: &App) -> Terminal<TestBackend> {
         render_sized(app, 60, 10)
@@ -1954,6 +2054,13 @@ mod tests {
         type_str(&mut app, "v");
         shot(&app, "viewing notes");
         press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "@");
+        shot(&app, "choosing a deadline");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "17:30");
+        shot(&app, "a deadline's time");
+        press(&mut app, KeyCode::Enter);
+        shot(&app, "with a deadline");
         type_str(&mut app, "l");
         shot(&app, "empty day");
         out
@@ -1984,6 +2091,65 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         type_str(&mut app, "v");
         assert_snapshot!(render_sized(&app, 50, 8).backend());
+    }
+
+    /// A list with deadlines: today at 12:00, one due earlier today, one
+    /// later, one tomorrow, one later in the year, one done and one pinned.
+    fn deadlines_app(twelve_hour: bool) -> (App, tempfile::TempDir) {
+        use crate::deadline::Deadline;
+        let (mut app, dir) = app_with(&["Overdue", "Due later today", "Tomorrow", "Next month", "Pinned", "Finished"]);
+        app.now = chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        app.settings.twelve_hour = twelve_hour;
+        let at = |days: u64, time: Option<(u32, u32)>| Deadline {
+            date: today() + chrono::Days::new(days),
+            time: time.map(|(h, m)| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap()),
+        };
+        for (i, deadline) in [at(0, Some((9, 0))), at(0, Some((19, 25))), at(1, None), at(31, Some((23, 0)))].into_iter().enumerate() {
+            app.store.set_deadline(today(), i, Some(deadline)).unwrap();
+        }
+        app.store.toggle_pinned(today(), 4).unwrap();
+        app.store.set_deadline(today(), 5, Some(at(2, None))).unwrap();
+        app.store.toggle_done(today(), 5).unwrap();
+        (app, dir)
+    }
+
+    #[test]
+    fn deadlines_on_the_list() {
+        let (app, _dir) = deadlines_app(false);
+        let terminal = render_sized(&app, 50, 12);
+        assert_snapshot!(terminal.backend());
+        // Overdue is red and bold, so it still stands out without colour.
+        let buffer = terminal.backend().buffer();
+        let overdue = (0..50).map(|x| &buffer[(x, 1)]).find(|cell| cell.symbol() == "◷").unwrap();
+        assert_eq!(overdue.fg, Color::Red);
+        assert!(overdue.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn deadlines_on_the_twelve_hour_clock() {
+        let (app, _dir) = deadlines_app(true);
+        assert_snapshot!(render_sized(&app, 50, 12).backend());
+    }
+
+    #[test]
+    fn choosing_a_deadline() {
+        let (mut app, _dir) = deadlines_app(false);
+        type_str(&mut app, "@");
+        assert_snapshot!(render_sized(&app, 80, 24).backend());
+    }
+
+    #[test]
+    fn typing_a_deadlines_time() {
+        let (mut app, _dir) = deadlines_app(false);
+        type_str(&mut app, "jjj@j");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "25:00");
+        press(&mut app, KeyCode::Enter);
+        let mut terminal = render_sized(&app, 60, 16);
+        assert_snapshot!(terminal.backend());
+        let cursor = terminal.get_cursor_position().unwrap();
+        let row: String = (0..60).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
+        assert!(row.contains("› 25:00"), "{row}");
     }
 
     #[test]

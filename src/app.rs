@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::io;
 use std::path::PathBuf;
 
-use chrono::{Days, NaiveDate};
+use chrono::{Days, NaiveDate, NaiveTime};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::calendar::{self, Calendar};
@@ -68,6 +68,9 @@ pub struct Slot {
 pub struct App {
     pub store: Store,
     pub today: NaiveDate,
+    /// The time of day, to show deadlines passed today. The event loop sets
+    /// it before drawing; tests can set any.
+    pub now: NaiveTime,
     pub day: NaiveDate,
     pub selected: usize,
     /// The first list row on screen. The UI updates it while drawing so the
@@ -112,6 +115,7 @@ impl App {
         Self {
             store,
             today,
+            now: NaiveTime::MIN,
             day: today,
             selected: 0,
             list_offset: Cell::new(0),
@@ -141,7 +145,7 @@ impl App {
     /// but one can land on a past day mid-session, e.g. moved there with `<`.
     pub fn slots(&self) -> Vec<Slot> {
         let mut slots: Vec<Slot> = if self.day >= self.today {
-            self.store.pinned_before(self.day).into_iter().map(|(day, index)| Slot { day, index }).collect()
+            self.store.carried_to(self.day).into_iter().map(|(day, index)| Slot { day, index }).collect()
         } else {
             Vec::new()
         };
@@ -317,6 +321,16 @@ impl App {
                 calendar::Action::Add(day, text) => {
                     let index = self.store.open_count(day);
                     self.add_item(day, index, text)?;
+                }
+                calendar::Action::SetDeadline { day, index, deadline } => {
+                    self.mode = Mode::Normal;
+                    self.store.set_deadline(day, index, deadline)?;
+                    // Stay on the item, wherever it shows now. A deadline
+                    // before the day on screen means it no longer shows here.
+                    if let Some(row) = self.slots().iter().position(|slot| slot.day == day && slot.index == index) {
+                        self.selected = row;
+                    }
+                    self.clamp_selection();
                 }
                 calendar::Action::Help => self.open_help(),
             },
@@ -516,13 +530,19 @@ impl App {
                     self.store.cycle_priority(slot.day, slot.index)?;
                 }
             }
-            // Pin: "mark" the item to carry forward.
+            // Pin: "mark" the item to carry forward. One with a deadline
+            // already moves on until then.
             KeyCode::Char('m') => {
                 if let Some(slot) = slot {
-                    self.store.toggle_pinned(slot.day, slot.index)?;
-                    self.clamp_selection();
+                    if self.store.items(slot.day)[slot.index].deadline.is_some() {
+                        self.message = Some("This has a deadline, so it moves on until then. @ then d removes it.".into());
+                    } else {
+                        self.store.toggle_pinned(slot.day, slot.index)?;
+                        self.clamp_selection();
+                    }
                 }
             }
+            KeyCode::Char('@') => self.open_deadline(),
             KeyCode::Enter if len > 0 => self.open_notes()?,
             KeyCode::Char('v') if len > 0 => {
                 // Read the notes file again, in case something else changed it.
@@ -554,6 +574,21 @@ impl App {
         Ok(())
     }
 
+    /// Opens the year calendar to choose the selected item's deadline.
+    fn open_deadline(&mut self) {
+        let Some(slot) = self.slot(self.selected) else { return };
+        let item = &self.store.items(slot.day)[slot.index];
+        let calendar = Calendar::for_deadline(
+            (slot.day, slot.index),
+            &item.text,
+            item.deadline,
+            self.day,
+            self.today,
+            self.settings.twelve_hour,
+        );
+        self.mode = Mode::Calendar(Box::new(calendar));
+    }
+
     /// Adds a new item, pinned if the options say new items start pinned.
     fn add_item(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
         let item = Item { text, pinned: self.settings.pin_new_items, ..Item::default() };
@@ -581,6 +616,7 @@ impl App {
                 self.command = None;
                 match command.as_str() {
                     "q" | "q!" | "wq" | "wq!" | "x" | "x!" => self.quit = true,
+                    "deadline" => self.open_deadline(),
                     line => {
                         if let Ok(n) = line.parse::<usize>() {
                             let len = self.slots().len();
@@ -643,11 +679,16 @@ impl App {
                     self.store.set_done_many(day, &indices, done)?;
                 }
             }
-            // Pin them all, or unpin them all if they're all pinned.
+            // Pin them all, or unpin them all if they're all pinned. Ones
+            // with a deadline move on until then, so they're left alone.
             KeyCode::Char('m') => {
-                let pinned = items.iter().any(|item| !item.pinned);
+                let pinned = items.iter().any(|item| !item.pinned && item.deadline.is_none());
                 for (day, indices) in groups {
-                    self.store.update_many(day, &indices, |item| item.pinned = pinned)?;
+                    self.store.update_many(day, &indices, |item| {
+                        if item.deadline.is_none() {
+                            item.pinned = pinned;
+                        }
+                    })?;
                 }
             }
             // The next priority after the first item's, for them all.
@@ -806,7 +847,8 @@ impl App {
             Mode::Insert { input, .. } => input.paste(text),
             Mode::Search(search) => search.paste(text),
             Mode::Calendar(calendar) => {
-                if let Some(input) = &mut calendar.adding {
+                let time = calendar.picking.as_mut().and_then(|picking| picking.time.as_mut());
+                if let Some(input) = calendar.adding.as_mut().or(time) {
                     input.paste(text);
                 }
             }
@@ -3156,5 +3198,160 @@ mod tests {
         type_str(&mut app, "yyp");
         assert_eq!(items(&app), ["plain", "plain"]);
         assert!(!app.items()[1].pinned);
+    }
+
+    fn deadline(days: u64, time: Option<(u32, u32)>) -> crate::deadline::Deadline {
+        let time = time.map(|(h, m)| NaiveTime::from_hms_opt(h, m, 0).unwrap());
+        crate::deadline::Deadline { date: today() + Days::new(days), time }
+    }
+
+    #[test]
+    fn at_sets_a_deadline_by_day_then_time() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Report"]);
+        type_str(&mut app, "j@");
+        let Mode::Calendar(calendar) = &app.mode else { panic!("the calendar") };
+        assert!(calendar.picking.is_some());
+        type_str(&mut app, "ll");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "1730");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[1].deadline, Some(deadline(2, Some((17, 30)))));
+        assert_eq!(app.selected, 1);
+        // One undo step takes it off.
+        type_str(&mut app, "u");
+        assert_eq!(app.items()[1].deadline, None);
+    }
+
+    #[test]
+    fn enter_twice_sets_just_the_day() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        type_str(&mut app, "@j");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[0].deadline, Some(deadline(7, None)));
+    }
+
+    #[test]
+    fn colon_deadline_does_the_same_as_at() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        type_str(&mut app, ":deadline");
+        press(&mut app, KeyCode::Enter);
+        let Mode::Calendar(calendar) = &app.mode else { panic!("the calendar") };
+        assert!(calendar.picking.is_some());
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9am");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[0].deadline, Some(deadline(0, Some((9, 0)))));
+    }
+
+    #[test]
+    fn at_on_an_empty_list_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "@");
+        assert!(matches!(app.mode, Mode::Normal));
+        type_str(&mut app, ":deadline");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn esc_cancels_choosing_a_deadline() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        type_str(&mut app, "@l");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].deadline, None);
+        // Nothing changed, so nothing to undo.
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Report"]);
+    }
+
+    #[test]
+    fn backing_out_of_changing_a_deadline_keeps_the_old_one() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        let old = deadline(4, Some((17, 30)));
+        app.store.set_deadline(today(), 0, Some(old)).unwrap();
+        // A new day and a new time typed, then Esc back to the days and Esc again.
+        type_str(&mut app, "@ll");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9am");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].deadline, Some(old));
+        // Opening it again starts from the old deadline, with its time.
+        type_str(&mut app, "@");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[0].deadline, Some(old));
+        // Cancelling with q or c works the same.
+        for key in ["q", "c"] {
+            type_str(&mut app, &format!("@jj{key}"));
+            assert_eq!(app.items()[0].deadline, Some(old), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_deadline_replaces_the_pin_and_m_says_so() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        type_str(&mut app, "m@");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.items()[0].pinned);
+        type_str(&mut app, "m");
+        assert!(!app.items()[0].pinned);
+        assert!(app.message.as_ref().unwrap().contains("deadline"));
+        // @ then d removes it, and m pins again.
+        type_str(&mut app, "@d");
+        assert_eq!(app.items()[0].deadline, None);
+        type_str(&mut app, "m");
+        assert!(app.items()[0].pinned);
+    }
+
+    #[test]
+    fn pinning_several_leaves_ones_with_a_deadline_alone() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        app.store.set_deadline(today(), 0, Some(deadline(1, None))).unwrap();
+        type_str(&mut app, "Vjm");
+        assert!(!app.items()[0].pinned);
+        assert!(app.items()[1].pinned);
+        assert!(app.items()[0].deadline.is_some());
+    }
+
+    #[test]
+    fn items_with_a_deadline_show_on_later_days_until_it() {
+        let (mut app, _dir) = app_with(&["Report", "Other"]);
+        app.store.set_deadline(today(), 0, Some(deadline(2, None))).unwrap();
+        type_str(&mut app, "l");
+        assert_eq!(items(&app), ["Report"]);
+        type_str(&mut app, "l");
+        assert_eq!(items(&app), ["Report"], "on its deadline day");
+        type_str(&mut app, "l");
+        assert!(items(&app).is_empty(), "gone after it");
+    }
+
+    #[test]
+    fn moving_a_deadline_earlier_than_the_day_on_screen_leaves_it() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        app.store.set_deadline(today(), 0, Some(deadline(3, None))).unwrap();
+        type_str(&mut app, "ll");
+        assert_eq!(items(&app), ["Report"]);
+        // Now due tomorrow, so it no longer shows two days on.
+        type_str(&mut app, "@hh");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(items(&app).is_empty());
+        assert_eq!(app.store.items(today())[0].deadline, Some(deadline(1, None)));
+    }
+
+    #[test]
+    fn pasting_a_time_goes_into_the_time() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        type_str(&mut app, "@");
+        press(&mut app, KeyCode::Enter);
+        app.handle_paste("14:15").unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[0].deadline, Some(deadline(0, Some((14, 15)))));
     }
 }

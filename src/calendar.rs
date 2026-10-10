@@ -3,6 +3,7 @@
 use chrono::{Datelike, Days, Months, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
+use crate::deadline::{self, Deadline};
 use crate::input::LineInput;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -19,6 +20,29 @@ pub struct Calendar {
     pub today: NaiveDate,
     /// The item being typed for the selected date, if any.
     pub adding: Option<LineInput>,
+    /// Choosing a deadline for an item (`@`), rather than browsing.
+    pub picking: Option<Picking>,
+}
+
+/// Choosing a deadline: the day with the calendar, then a time.
+pub struct Picking {
+    /// Where the item is stored.
+    pub day: NaiveDate,
+    pub index: usize,
+    /// Its text, for the title.
+    pub item: String,
+    /// Whether it has a deadline already, which `d` removes.
+    pub had: bool,
+    /// The time being typed once a day is chosen. It starts with the
+    /// deadline's time, if it had one.
+    pub time: Option<LineInput>,
+    /// Shown as typed, to start the time with.
+    pub start_time: String,
+    /// Whether the time is still the one it started with, untouched, so
+    /// typing replaces it rather than adding to it.
+    pub fresh: bool,
+    /// Why the time typed isn't one.
+    pub error: Option<String>,
 }
 
 /// What the app should do after the calendar handles a key.
@@ -31,15 +55,87 @@ pub enum Action {
     Open(NaiveDate),
     /// Add an item to the end of this day's open items.
     Add(NaiveDate, String),
+    /// Set (or with `None`, remove) the deadline of the item stored at
+    /// `day`, `index`.
+    SetDeadline { day: NaiveDate, index: usize, deadline: Option<Deadline> },
     Help,
 }
 
 impl Calendar {
     pub fn new(cursor: NaiveDate, today: NaiveDate) -> Self {
-        Self { zoom: Zoom::Month, cursor, today, adding: None }
+        Self { zoom: Zoom::Month, cursor, today, adding: None, picking: None }
+    }
+
+    /// The year view, to choose a deadline for the item stored at `day`,
+    /// `index`: starting on its deadline if it has one, otherwise on `cursor`.
+    pub fn for_deadline(
+        (day, index): (NaiveDate, usize),
+        item: &str,
+        current: Option<Deadline>,
+        cursor: NaiveDate,
+        today: NaiveDate,
+        twelve_hour: bool,
+    ) -> Self {
+        let start_time = current.and_then(|deadline| deadline.time).map(|time| deadline::format_time(time, twelve_hour));
+        let picking = Picking {
+            day,
+            index,
+            item: item.to_string(),
+            had: current.is_some(),
+            time: None,
+            start_time: start_time.unwrap_or_default(),
+            fresh: false,
+            error: None,
+        };
+        let cursor = current.map_or(cursor, |deadline| deadline.date);
+        Self { zoom: Zoom::Year, cursor, today, adding: None, picking: Some(picking) }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if let Some(picking) = &mut self.picking {
+            if let Some(input) = &mut picking.time {
+                match key.code {
+                    // Back to choosing the day.
+                    KeyCode::Esc => {
+                        picking.time = None;
+                        picking.error = None;
+                    }
+                    KeyCode::Enter if input.text.trim().is_empty() => {
+                        let deadline = Deadline { date: self.cursor, time: None };
+                        return Action::SetDeadline { day: picking.day, index: picking.index, deadline: Some(deadline) };
+                    }
+                    KeyCode::Enter => match deadline::parse_time(&input.text) {
+                        Some(time) => {
+                            let deadline = Deadline { date: self.cursor, time: Some(time) };
+                            return Action::SetDeadline { day: picking.day, index: picking.index, deadline: Some(deadline) };
+                        }
+                        None => picking.error = Some("Type a time like 13:00, 1300, 1pm or 11:30am".into()),
+                    },
+                    code => {
+                        if picking.fresh && matches!(code, KeyCode::Char(_)) {
+                            *input = LineInput::default();
+                        }
+                        input.handle_key(code);
+                        picking.error = None;
+                    }
+                }
+                picking.fresh = false;
+                return Action::Stay;
+            }
+            match key.code {
+                KeyCode::Enter => {
+                    picking.time = Some(LineInput::new(&picking.start_time));
+                    picking.fresh = !picking.start_time.is_empty();
+                    return Action::Stay;
+                }
+                KeyCode::Char('d') if picking.had => {
+                    return Action::SetDeadline { day: picking.day, index: picking.index, deadline: None };
+                }
+                // Adding items is for browsing, not choosing a deadline.
+                KeyCode::Char('a' | 'd') => return Action::Stay,
+                _ => {}
+            }
+        }
         if let Some(input) = &mut self.adding {
             if input.handle_key(key.code) {
                 let text = input.text.trim().to_string();
@@ -267,5 +363,121 @@ mod tests {
         assert_eq!(month_weeks(date(2027, 2, 1)).len(), 4);
         // August 2026 starts on a Saturday and needs six rows.
         assert_eq!(month_weeks(date(2026, 8, 1)).len(), 6);
+    }
+
+    fn time(h: u32, m: u32) -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    /// Choosing a deadline for the item stored first on 2026-10-05.
+    fn picker(current: Option<Deadline>) -> Calendar {
+        Calendar::for_deadline((date(2026, 10, 5), 0), "Report", current, date(2026, 10, 5), date(2026, 10, 5), false)
+    }
+
+    fn set(deadline: Option<Deadline>) -> Action {
+        Action::SetDeadline { day: date(2026, 10, 5), index: 0, deadline }
+    }
+
+    #[test]
+    fn choosing_a_deadline_starts_in_the_year_view() {
+        let cal = picker(None);
+        assert_eq!(cal.zoom, Zoom::Year);
+        assert_eq!(cal.cursor, date(2026, 10, 5));
+        // On the deadline it has, if any.
+        let cal = picker(Some(Deadline { date: date(2026, 12, 1), time: None }));
+        assert_eq!(cal.cursor, date(2026, 12, 1));
+    }
+
+    #[test]
+    fn enter_twice_sets_a_deadline_with_no_time() {
+        let mut cal = picker(None);
+        assert_eq!(send(&mut cal, "lll<cr>"), Action::Stay);
+        assert!(cal.picking.as_ref().unwrap().time.is_some(), "asks for a time");
+        assert_eq!(send(&mut cal, "<cr>"), set(Some(Deadline { date: date(2026, 10, 8), time: None })));
+    }
+
+    #[test]
+    fn a_typed_time_goes_with_the_day() {
+        for (typed, expected) in [("13:00", time(13, 0)), ("1300", time(13, 0)), ("12pm", time(12, 0)), ("11AM", time(11, 0))] {
+            let mut cal = picker(None);
+            send(&mut cal, "j<cr>");
+            assert_eq!(
+                send(&mut cal, &format!("{typed}<cr>")),
+                set(Some(Deadline { date: date(2026, 10, 12), time: Some(expected) })),
+                "{typed}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_time_that_isnt_one_says_so_and_waits() {
+        let mut cal = picker(None);
+        send(&mut cal, "<cr>");
+        assert_eq!(send(&mut cal, "25:00<cr>"), Action::Stay);
+        assert!(cal.picking.as_ref().unwrap().error.is_some());
+        // Typing clears the message; a good time then saves.
+        for _ in 0..5 {
+            cal.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+            assert!(cal.picking.as_ref().unwrap().error.is_none());
+        }
+        assert_eq!(send(&mut cal, "9<cr>"), set(Some(Deadline { date: date(2026, 10, 5), time: Some(time(9, 0)) })));
+    }
+
+    #[test]
+    fn esc_while_typing_a_time_goes_back_to_choosing_the_day() {
+        let mut cal = picker(None);
+        send(&mut cal, "<cr>13<esc>");
+        assert!(cal.picking.as_ref().unwrap().time.is_none());
+        assert_eq!(send(&mut cal, "l<cr><cr>"), set(Some(Deadline { date: date(2026, 10, 6), time: None })));
+        // And Esc while choosing the day cancels.
+        assert_eq!(send(&mut picker(None), "<esc>"), Action::Close);
+    }
+
+    #[test]
+    fn changing_a_deadline_starts_with_its_time_and_d_removes_it() {
+        let current = Deadline { date: date(2026, 10, 9), time: Some(time(17, 30)) };
+        let mut cal = picker(Some(current));
+        send(&mut cal, "<cr>");
+        assert_eq!(cal.picking.as_ref().unwrap().time.as_ref().unwrap().text, "17:30");
+        // Enter keeps it.
+        assert_eq!(send(&mut cal, "<cr>"), set(Some(current)));
+        assert_eq!(send(&mut picker(Some(current)), "d"), set(None));
+        // Typing replaces it rather than adding to it.
+        let mut cal = picker(Some(current));
+        assert_eq!(send(&mut cal, "<cr>9<cr>"), set(Some(Deadline { time: Some(time(9, 0)), ..current })));
+        // But it can be edited: Backspace takes off the last character.
+        let mut cal = picker(Some(current));
+        send(&mut cal, "<cr>");
+        cal.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(send(&mut cal, "5<cr>"), set(Some(Deadline { time: Some(time(17, 35)), ..current })));
+        // And emptied, for no time.
+        let mut cal = picker(Some(current));
+        send(&mut cal, "<cr>");
+        for _ in 0..5 {
+            cal.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        assert_eq!(send(&mut cal, "<cr>"), set(Some(Deadline { time: None, ..current })));
+    }
+
+    #[test]
+    fn choosing_a_deadline_doesnt_add_items_or_open_days() {
+        let mut cal = picker(None);
+        assert_eq!(send(&mut cal, "a"), Action::Stay);
+        assert!(cal.adding.is_none());
+        // d does nothing without a deadline to remove.
+        assert_eq!(send(&mut cal, "d"), Action::Stay);
+        // The usual moves and views still work.
+        send(&mut cal, "Lm");
+        assert_eq!(cal.cursor, date(2026, 11, 5));
+        assert_eq!(cal.zoom, Zoom::Month);
+    }
+
+    #[test]
+    fn times_show_on_the_chosen_clock_when_changing_one() {
+        let current = Deadline { date: date(2026, 10, 9), time: Some(time(23, 0)) };
+        let mut cal = Calendar::for_deadline((date(2026, 10, 5), 0), "Report", Some(current), date(2026, 10, 5), date(2026, 10, 5), true);
+        send(&mut cal, "<cr>");
+        assert_eq!(cal.picking.as_ref().unwrap().time.as_ref().unwrap().text, "11PM");
+        assert_eq!(send(&mut cal, "<cr>"), set(Some(current)));
     }
 }

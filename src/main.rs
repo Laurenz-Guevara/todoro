@@ -1,6 +1,7 @@
 mod app;
 mod calendar;
 mod changelog;
+mod deadline;
 mod cli;
 mod help;
 mod input;
@@ -141,6 +142,7 @@ fn open_workspace(
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
     while !app.quit {
+        app.now = Local::now().time();
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Wake up now and then even without a key, to notice midnight, or
         // sooner when something on screen (a copy's flash) is due to change.

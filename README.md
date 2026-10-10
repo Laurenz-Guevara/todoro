@@ -69,6 +69,7 @@ todoro --help
 | `e` | Edit the selected item |
 | `x` | Mark the selected item done, or not done again |
 | `m` | Pin or unpin the selected item, so it moves to the next day until done |
+| `@` / `:deadline` | Set a deadline on the selected item |
 | `!` | Triage the selected item: High, Medium, Low, then no priority again |
 | `d` | Delete the selected item (asks to confirm) |
 | `yy` | Copy the selected item |
@@ -119,6 +120,14 @@ If todoro is open at midnight, this happens then too, and the list moves on to t
 Completed items always stay on the day you completed them, so you can go back with `h` to see what you did.
 
 If most of what you add should follow you until it's done, turn on **Pin new items** in the options (`o`). New items then start pinned, and `m` unpins the ones that belong to their day.
+
+### Deadlines
+
+`@` (or `:deadline`) gives the selected item a deadline. It opens the year calendar: move to the day (`h`/`j`/`k`/`l`, `H`/`L` for months, `t` for today) and press `Enter`. Then type a time, like `13:00`, `1300`, `1pm` or `11:30am`, and press `Enter`; or press `Enter` straight away for the whole day. `Esc` goes back to choosing the day, and `d` removes a deadline.
+
+An item with a deadline shows `◷` and when it's due where the pin would be, like `◷ 19:25` (today), `◷ tomorrow` or `◷ Fri 9AM`. It's yellow on the day it's due, and red once it's passed.
+
+A deadline works like a pin that stops: the item moves on to today and shows on the days ahead, up to its deadline day, and not after. If you don't finish it in time, it stays on its deadline day, in red, rather than following you. Setting a deadline unpins an item, since the deadline decides how far it moves on; to pin it again, remove the deadline first.
 
 ### Insert mode
 
@@ -228,6 +237,7 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 **Items**
 
 - **Pin new items:** new items, from the list or the calendar, start pinned, so they move on to today until they're done. Off by default. Pasted items keep their own pin.
+- **12-hour clock:** show deadline times like `11PM` instead of `23:00`. Off by default. You can type times either way.
 
 **Notes**
 

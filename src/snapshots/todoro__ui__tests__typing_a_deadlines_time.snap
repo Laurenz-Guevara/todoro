@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭───────────── Deadline for Next month · 2026 ─────────────╮"
+"│              November              December              │"
+"│        Mo Tu We Th Fr Sa Su  Mo Tu We Th Fr Sa Su        │"
+"│                           1      1  2  3  4  5  6        │"
+"│         2  3  4  5  6  7  8   7  8  9 10 11 12 13        │"
+"│    ╭ Due Thursday 12 November 2026 ─────────────────╮    │"
+"│    │ › 25:00                                        │    │"
+"│    │ A time, like 13:00 or 1pm. Leave it empty for  │    │"
+"│    │ the whole day.                                 │    │"
+"│    │ Type a time like 13:00, 1300, 1pm or 11:30am   │    │"
+"│    ╰────── enter save · esc pick another day ───────╯    │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰───── ↵ choose day · d remove deadline · esc cancel ──────╯"
+" DEADLINE   enter save  (empty: no time)  esc back          "

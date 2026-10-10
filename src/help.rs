@@ -28,6 +28,7 @@ pub const SECTIONS: &[Section] = &[
             ("e", "Edit the selected item"),
             ("x", "Mark the selected item done / not done"),
             ("m", "Pin / unpin: move to today until done"),
+            ("@ / :deadline", "Set a deadline: a day, then a time or none"),
             ("V", "Select several items"),
             ("!", "Triage: High, Medium, Low, then none"),
             ("d", "Delete the selected item"),
@@ -149,6 +150,16 @@ pub const SECTIONS: &[Section] = &[
             ("↑ / ↓", "Select a result"),
             ("Enter", "Go to the selected item"),
             ("Esc", "Close the search"),
+        ],
+    },
+    Section {
+        title: "Setting a deadline (@)",
+        bindings: &[
+            ("h j k l / H L", "Move to the day, as in the calendar"),
+            ("Enter", "Choose the day, then type a time (13:00, 1300, 1pm)"),
+            ("Enter, Enter", "Just the day, with no time"),
+            ("d", "Remove the deadline"),
+            ("Esc", "Back to choosing the day, or cancel"),
         ],
     },
     Section {

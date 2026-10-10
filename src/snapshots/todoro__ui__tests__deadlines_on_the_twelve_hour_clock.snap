@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 50, 12).backend()"
+---
+"╭──────── Monday, October 5 2026 (today) ────────╮"
+"│1. Overdue ◷ 9AM                                │"
+"│2. Due later today ◷ 7:25PM                     │"
+"│3. Tomorrow ◷ tomorrow                          │"
+"│4. Next month ◷ 5 Nov 11PM                      │"
+"│5. Pinned ⚲                                     │"
+"│── Completed (1) ───────────────────────────────│"
+"│✓  Finished ◷ Wed                               │"
+"│                                                │"
+"│                                                │"
+"╰──────── h ← day · k ↑ · j ↓ · day → l ─────────╯"
+" NORMAL   a add  e edit  x done  d delete  ? help "

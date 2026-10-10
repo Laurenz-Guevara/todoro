@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭──────── Monday, October 5 2026 (today) ────────╮"
+"│1. Overdue ◷ 09:00                              │"
+"│2. Due later today ◷ 19:25                      │"
+"│3. Tomorrow ◷ tomorrow                          │"
+"│4. Next month ◷ 5 Nov 23:00                     │"
+"│5. Pinned ⚲                                     │"
+"│── Completed (1) ───────────────────────────────│"
+"│✓  Finished ◷ Wed                               │"
+"│                                                │"
+"│                                                │"
+"╰──────── h ← day · k ↑ · j ↓ · day → l ─────────╯"
+" NORMAL   a add  e edit  x done  d delete  ? help "
