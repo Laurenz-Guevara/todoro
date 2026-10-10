@@ -17,7 +17,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/app.rs`: app state, modes (`Normal`, `Insert`, `ConfirmDelete`, `Notes`, `Help`) and key handling
 - `src/input.rs`: `LineInput`, single-line typing with a movable cursor
 - `src/notes.rs`: the notes editor, a vim key layer over `ratatui-textarea`
-- `src/markdown.rs`: notes' Markdown as wrapped, styled lines for the viewer (`render`, with `pulldown-cmark`)
+- `src/markdown.rs`: notes' Markdown as wrapped, styled lines for the viewer and the search's preview (`render`, with `pulldown-cmark`); a single line break stays a line break, as typed
 - `src/viewer.rs`: the notes viewer's state and keys (`Viewer`), returning an `Action` for the app
 - `src/calendar.rs`: the calendar's state and keys (`Calendar`, `Zoom`), returning an `Action` for the app to carry out; also choosing a deadline (`Calendar::picking`)
 - `src/deadline.rs`: `Deadline` (a day and an optional time), how it's shown (`describe`, `format_time`), typed times (`parse_time`) and how far an item rolls on (`roll_to`)
@@ -45,7 +45,7 @@ Options: `j`/`k` select, `Space`/`Enter` toggle (saved immediately), `Esc`/`q`/`
 
 Viewing notes (`Mode::View`): `j`/`k`, `Ctrl+D`/`Ctrl+U`, `Space`/`Ctrl+B`, `gg`/`G` scroll; `i`/`e`/`Enter` edit (as `Enter` on the list, setting `App::view_after_edit` so closing the notes or the user's editor comes back to the view); `?` help; `Esc`/`q`/`v` back to the list.
 
-Search: every typed character goes into the query; `↑`/`↓`/`Ctrl+N`/`Ctrl+P`/`Ctrl+J`/`Ctrl+K` select, `Enter` goes to the item (its day, with it selected), `Esc` closes.
+Search: while `Search::typing`, every typed character goes into the query; `↑`/`↓`/`Ctrl+N`/`Ctrl+P`/`Ctrl+J`/`Ctrl+K` select, `Enter` goes to the item (its day, with it selected), `Esc` stops typing (or closes with no results). Then, as in vim, `j`/`k`/`gg`/`G` select, `i`/`a`/`/` type again, `Esc`/`q` close. At least `SEARCH_PREVIEW_WIDTH` wide, the results sit beside a preview of the selected item's notes (`draw_search_preview`, with `markdown::render`), which `Ctrl+D`/`Ctrl+U` scroll (`Search::preview_scroll`).
 
 Calendar: `h`/`j`/`k`/`l` follow the layout (month and year: `h`/`l` day, `j`/`k` week; week view: `j`/`k` day, `h`/`l` week), `H`/`L` month, `t` today, `w`/`m`/`y` week/month/year view, `a` add an item to the selected day (typed in a popup with `LineInput`; `Enter`/`Esc` save), `Enter` open that day's list, `u`/`Ctrl+R` undo/redo, `?` help, `Esc`/`q`/`c` back to the list.
 

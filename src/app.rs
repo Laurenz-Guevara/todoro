@@ -2095,6 +2095,9 @@ mod tests {
     fn esc_closes_the_search_where_you_were() {
         let (mut app, _dir) = app_with(&["one", "two"]);
         type_str(&mut app, "jlsone");
+        // The first Esc stops typing; the second closes.
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Search(_)));
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.day, today().succ_opt().unwrap());

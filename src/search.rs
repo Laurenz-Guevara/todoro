@@ -21,6 +21,17 @@ pub struct Search {
     pub selected: usize,
     /// The first result on screen, kept by the UI between frames.
     pub offset: Cell<usize>,
+    /// Whether keys go into the query. `Esc` stops typing, to move through
+    /// the results with `j`/`k` as in vim, and `i` starts again.
+    pub typing: bool,
+    /// The first line of the selected item's notes shown in the preview.
+    pub preview_scroll: usize,
+    /// How many preview lines fit and how many there are, recorded when
+    /// drawn, so scrolling stops at the end. Zero with no preview.
+    pub preview_height: Cell<usize>,
+    pub preview_total: Cell<usize>,
+    /// Whether `g` was pressed, waiting for a second `g`.
+    pending_g: bool,
 }
 
 /// An item that matches the search.
@@ -47,7 +58,18 @@ pub enum Action {
 
 impl Search {
     pub fn new(notes: bool) -> Self {
-        Self { input: LineInput::default(), notes, tag: None, selected: 0, offset: Cell::new(0) }
+        Self {
+            input: LineInput::default(),
+            notes,
+            tag: None,
+            selected: 0,
+            offset: Cell::new(0),
+            typing: true,
+            preview_scroll: 0,
+            preview_height: Cell::new(0),
+            preview_total: Cell::new(0),
+            pending_g: false,
+        }
     }
 
     /// Every item with the tag `name`, narrowed down by typing.
@@ -55,49 +77,88 @@ impl Search {
         Self { tag: Some(name), ..Self::new(false) }
     }
 
-    /// Handles a key, given how many results there are now. Every typed
+    /// Handles a key, given the results there are now. While typing, every
     /// character goes into the query; arrows (or Ctrl+N/P, Ctrl+J/K) move the
-    /// selection.
+    /// selection, and `Esc` stops typing, to move with `j`/`k`.
     pub fn handle_key(&mut self, key: KeyEvent, hits: &[Hit]) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let pending_g = std::mem::take(&mut self.pending_g);
+        let half_page = (self.preview_height.get() / 2).max(1) as isize;
+        // Keys that work the same whether typing or not.
         match key.code {
-            KeyCode::Esc => return Action::Close,
             KeyCode::Enter => {
                 return match hits.get(self.selected) {
                     Some(hit) => Action::Open { day: hit.day, index: hit.index },
                     None => Action::Stay,
                 };
             }
-            KeyCode::Up => self.select_by(-1, hits.len()),
-            KeyCode::Down => self.select_by(1, hits.len()),
-            KeyCode::Char('p' | 'k') if ctrl => self.select_by(-1, hits.len()),
-            KeyCode::Char('n' | 'j') if ctrl => self.select_by(1, hits.len()),
-            KeyCode::Char(_) if ctrl => {}
+            KeyCode::Up => return self.select_by(-1, hits.len()),
+            KeyCode::Down => return self.select_by(1, hits.len()),
+            KeyCode::Char('p' | 'k') if ctrl => return self.select_by(-1, hits.len()),
+            KeyCode::Char('n' | 'j') if ctrl => return self.select_by(1, hits.len()),
+            KeyCode::Char('d') if ctrl => return self.scroll_preview(half_page),
+            KeyCode::Char('u') if ctrl => return self.scroll_preview(-half_page),
+            KeyCode::Char(_) if ctrl => return Action::Stay,
+            _ => {}
+        }
+        if !self.typing {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => return Action::Close,
+                KeyCode::Char('j') => return self.select_by(1, hits.len()),
+                KeyCode::Char('k') => return self.select_by(-1, hits.len()),
+                KeyCode::Char('g') if pending_g => return self.select_by(isize::MIN / 2, hits.len()),
+                KeyCode::Char('g') => self.pending_g = true,
+                KeyCode::Char('G') => return self.select_by(isize::MAX / 2, hits.len()),
+                KeyCode::Char('i' | 'a' | '/') => self.typing = true,
+                _ => {}
+            }
+            return Action::Stay;
+        }
+        match key.code {
+            // With results to move through, stop typing; with none, there's
+            // nothing to do here.
+            KeyCode::Esc if hits.is_empty() => return Action::Close,
+            KeyCode::Esc => self.typing = false,
             code => {
                 let before = self.input.text.clone();
                 self.input.handle_key(code);
                 if self.input.text != before {
                     self.selected = 0;
                     self.offset.set(0);
+                    self.preview_scroll = 0;
                 }
             }
         }
         Action::Stay
     }
 
-    /// Adds pasted text to the query, on one line.
+    /// Adds pasted text to the query, on one line, typing again if not.
     pub fn paste(&mut self, text: &str) {
+        self.typing = true;
         self.input.paste(text);
         self.selected = 0;
         self.offset.set(0);
+        self.preview_scroll = 0;
     }
 
     pub fn find(&self, store: &Store, today: NaiveDate) -> Vec<Hit> {
         find(store, &self.input.text, self.notes, self.tag.as_deref(), today)
     }
 
-    fn select_by(&mut self, delta: isize, len: usize) {
-        self.selected = self.selected.saturating_add_signed(delta).min(len.saturating_sub(1));
+    /// Moves the selection, showing the top of the newly selected item's notes.
+    fn select_by(&mut self, delta: isize, len: usize) -> Action {
+        let selected = self.selected.saturating_add_signed(delta).min(len.saturating_sub(1));
+        if selected != self.selected {
+            self.selected = selected;
+            self.preview_scroll = 0;
+        }
+        Action::Stay
+    }
+
+    fn scroll_preview(&mut self, delta: isize) -> Action {
+        let max = self.preview_total.get().saturating_sub(self.preview_height.get());
+        self.preview_scroll = self.preview_scroll.saturating_add_signed(delta).min(max);
+        Action::Stay
     }
 }
 
@@ -320,6 +381,102 @@ mod tests {
         let hits = search.find(&store, today());
         assert_eq!(search.handle_key(key(KeyCode::Enter), &hits), Action::Open { day: day(10), index: 0 });
         assert_eq!(search.handle_key(key(KeyCode::Enter), &[]), Action::Stay);
+        // Esc stops typing, then closes.
+        assert_eq!(search.handle_key(key(KeyCode::Esc), &hits), Action::Stay);
+        assert!(!search.typing);
         assert_eq!(search.handle_key(key(KeyCode::Esc), &hits), Action::Close);
+    }
+
+    /// A search for "u" (several results), no longer typing.
+    fn moving(store: &Store) -> (Search, Vec<Hit>) {
+        let mut search = Search::new(false);
+        search.input = LineInput::new("u");
+        let hits = search.find(store, today());
+        assert!(hits.len() >= 4, "enough to move through");
+        search.handle_key(key(KeyCode::Esc), &hits);
+        (search, hits)
+    }
+
+    #[test]
+    fn after_esc_j_and_k_move_through_the_results() {
+        let (store, _dir) = store();
+        let (mut search, hits) = moving(&store);
+        // Letters move rather than being typed.
+        search.handle_key(key(KeyCode::Char('j')), &hits);
+        search.handle_key(key(KeyCode::Char('j')), &hits);
+        assert_eq!(search.selected, 2);
+        search.handle_key(key(KeyCode::Char('k')), &hits);
+        assert_eq!(search.selected, 1);
+        assert_eq!(search.input.text, "u");
+        search.handle_key(key(KeyCode::Char('G')), &hits);
+        assert_eq!(search.selected, hits.len() - 1);
+        search.handle_key(key(KeyCode::Char('j')), &hits);
+        assert_eq!(search.selected, hits.len() - 1, "stays on the last");
+        search.handle_key(key(KeyCode::Char('g')), &hits);
+        assert_eq!(search.selected, hits.len() - 1, "one g does nothing");
+        search.handle_key(key(KeyCode::Char('g')), &hits);
+        assert_eq!(search.selected, 0);
+        // Enter goes to the selected one.
+        search.handle_key(key(KeyCode::Char('j')), &hits);
+        let hit = &hits[1];
+        assert_eq!(search.handle_key(key(KeyCode::Enter), &hits), Action::Open { day: hit.day, index: hit.index });
+    }
+
+    #[test]
+    fn i_a_or_slash_type_again_and_q_closes() {
+        let (store, _dir) = store();
+        for start in ['i', 'a', '/'] {
+            let (mut search, hits) = moving(&store);
+            search.handle_key(key(KeyCode::Char(start)), &hits);
+            assert!(search.typing);
+            search.handle_key(key(KeyCode::Char('m')), &hits);
+            assert_eq!(search.input.text, "um");
+        }
+        let (mut search, hits) = moving(&store);
+        assert_eq!(search.handle_key(key(KeyCode::Char('q')), &hits), Action::Close);
+        // While typing, q is just typed.
+        let mut search = Search::new(false);
+        assert_eq!(search.handle_key(key(KeyCode::Char('q')), &[]), Action::Stay);
+        assert_eq!(search.input.text, "q");
+    }
+
+    #[test]
+    fn esc_with_no_results_closes_straight_away() {
+        let mut search = Search::new(false);
+        assert_eq!(search.handle_key(key(KeyCode::Esc), &[]), Action::Close);
+    }
+
+    #[test]
+    fn pasting_types_again() {
+        let (store, _dir) = store();
+        let (mut search, _) = moving(&store);
+        search.paste("lk");
+        assert!(search.typing);
+        assert_eq!(search.input.text, "ulk");
+    }
+
+    #[test]
+    fn ctrl_d_and_u_scroll_the_preview_and_moving_resets_it() {
+        let (store, _dir) = store();
+        let (mut search, hits) = moving(&store);
+        search.preview_height.set(10);
+        search.preview_total.set(30);
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        search.handle_key(ctrl('d'), &hits);
+        assert_eq!(search.preview_scroll, 5);
+        for _ in 0..10 {
+            search.handle_key(ctrl('d'), &hits);
+        }
+        assert_eq!(search.preview_scroll, 20, "stops at the end");
+        search.handle_key(ctrl('u'), &hits);
+        assert_eq!(search.preview_scroll, 15);
+        // A new selection shows the top of its notes.
+        search.handle_key(key(KeyCode::Char('j')), &hits);
+        assert_eq!(search.preview_scroll, 0);
+        // Ctrl+D scrolls while typing too, rather than being typed.
+        search.typing = true;
+        search.handle_key(ctrl('d'), &hits);
+        assert_eq!(search.preview_scroll, 5);
+        assert_eq!(search.input.text, "u");
     }
 }

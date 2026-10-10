@@ -18,7 +18,7 @@ use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
 use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, Options, TOGGLES};
-use crate::search::Search;
+use crate::search::{Hit, Search};
 use crate::setup::Setup;
 use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
@@ -494,7 +494,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Options(_) => {
             ("OPTIONS", Color::Blue, &[("j/k move", 1), ("space toggle", 3), ("/ search", 2), ("esc close", 4)])
         }
-        Mode::Search(_) => ("SEARCH", Color::Yellow, &[("↑/↓ select", 1), ("↵ go to item", 2), ("esc close", 3)]),
+        Mode::Search(search) if search.typing => {
+            ("SEARCH", Color::Yellow, &[("↑/↓ select", 1), ("↵ go to item", 2), ("esc stop typing", 3)])
+        }
+        Mode::Search(_) => {
+            ("SEARCH", Color::Yellow, &[("j/k select", 3), ("↵ go to item", 2), ("i type", 1), ("esc close", 4)])
+        }
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
         }
@@ -1050,9 +1055,15 @@ fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
     frame.set_cursor_position(Position::new(inner.x + col.min(inner.width.saturating_sub(1)), inner.y));
 }
 
+/// The narrowest search that has room for a preview of the selected item.
+const SEARCH_PREVIEW_WIDTH: u16 = 90;
+
 fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let screen = frame.area();
-    let area = centered(screen, screen.width.saturating_sub(4).min(80), screen.height.saturating_sub(2));
+    // Wide enough, it grows to show the selected item's notes beside the results.
+    let preview = screen.width.saturating_sub(4) >= SEARCH_PREVIEW_WIDTH;
+    let width = if preview { screen.width.saturating_sub(4).min(160) } else { screen.width.saturating_sub(4).min(80) };
+    let area = centered(screen, width, screen.height.saturating_sub(2));
     let room = area.width.saturating_sub(2) as usize;
     let tag_title = search.tag.as_ref().map(|tag| truncate(&format!(" #{tag} "), room));
     let title = if let Some(title) = &tag_title {
@@ -1067,17 +1078,34 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
         .border_style(Style::new().fg(Color::Yellow))
         .title(title.bold())
         .title_bottom(
-            Line::from(fit_first(&[" ↑/↓ select · ↵ go to item · esc close ", " ↵ go · esc close ", " esc close "], room))
-                .centered()
-                .dim(),
+            Line::from(if search.typing {
+                fit_first(&[" ↑/↓ select · ↵ go to item · esc stop typing ", " ↵ go · esc stop typing ", " esc "], room)
+            } else {
+                fit_first(
+                    &[" j/k select · ↵ go to item · i type · ctrl+d/u scroll notes · esc close ", " j/k · ↵ go · i type · esc close ", " ↵ go · esc close ", " esc "],
+                    room,
+                )
+            })
+            .centered()
+            .dim(),
         )
         .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
 
-    let [prompt_area, rule, results] =
+    let [prompt_area, rule, body] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let (results, preview_area) = if preview {
+        let [results, divider, preview_area] =
+            Layout::horizontal([Constraint::Percentage(45), Constraint::Length(3), Constraint::Fill(1)]).areas(body);
+        for y in divider.top()..divider.bottom() {
+            frame.render_widget(Line::from("│").dark_gray().centered(), Rect { y, height: 1, ..divider });
+        }
+        (results, Some(preview_area))
+    } else {
+        (body, None)
+    };
     let prompt = "Search: ";
     let query = &search.input.text;
     let shown = if query.is_empty() {
@@ -1094,16 +1122,23 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     };
     frame.render_widget(Line::from(vec![prompt.dim(), shown]), prompt_area);
     frame.render_widget("─".repeat(rule.width as usize).dark_gray(), rule);
-    let typed = (prompt.width() + query[..search.input.cursor].width()) as u16;
-    frame.set_cursor_position(Position::new(prompt_area.x + typed.min(prompt_area.width), prompt_area.y));
+    if search.typing {
+        let typed = (prompt.width() + query[..search.input.cursor].width()) as u16;
+        frame.set_cursor_position(Position::new(prompt_area.x + typed.min(prompt_area.width), prompt_area.y));
+    }
 
     if query.trim().is_empty() && search.tag.is_none() {
+        search.preview_height.set(0);
         return;
     }
     let hits = search.find(&app.store, app.today);
     if hits.is_empty() {
         frame.render_widget(Line::from(format!("No items match \"{query}\"")).dim(), results);
+        search.preview_height.set(0);
         return;
+    }
+    if let (Some(area), Some(hit)) = (preview_area, hits.get(search.selected)) {
+        draw_search_preview(frame, app, search, hit, area);
     }
 
     // The date goes beside each result, or above it when there isn't room.
@@ -1140,6 +1175,40 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let list = List::new(items).highlight_style(Style::new().bg(SELECTED_BG));
     frame.render_stateful_widget(list, results, &mut state);
     search.offset.set(state.offset());
+}
+
+/// The selected result's item beside the results: its text, day and
+/// deadline, then its notes formatted as in the viewer, scrolled with
+/// Ctrl+D/U.
+fn draw_search_preview(frame: &mut Frame, app: &App, search: &Search, hit: &Hit, area: Rect) {
+    let item = &app.store.items(hit.day)[hit.index];
+    let width = area.width as usize;
+    let mut head: Vec<Line> = wrap(&item.text, width, 3).into_iter().map(|part| Line::from(part.bold())).collect();
+    let mut about = vec![if hit.day == app.today { "Today".green() } else { hit.day.format("%a %-d %b %Y").to_string().dark_gray() }];
+    if item.done {
+        about.push(" · done".dark_gray());
+    }
+    if let Some(deadline) = item.deadline {
+        about.push(format!(" · ◷ {}", deadline.describe(app.today, app.settings.twelve_hour)).cyan());
+    } else if item.pinned {
+        about.push(" · ⚲ pinned".cyan());
+    }
+    head.push(Line::from(about));
+    head.push(Line::from("─".repeat(width)).dark_gray());
+    let [head_area, notes_area] =
+        Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(Paragraph::new(head), head_area);
+
+    let notes = if item.notes.trim().is_empty() {
+        vec![Line::from("No notes").dark_gray()]
+    } else {
+        markdown::render(&item.notes, width)
+    };
+    let height = notes_area.height as usize;
+    search.preview_height.set(height);
+    search.preview_total.set(notes.len());
+    let scroll = search.preview_scroll.min(notes.len().saturating_sub(height));
+    frame.render_widget(Paragraph::new(notes).scroll((scroll as u16, 0)), notes_area);
 }
 
 /// `text` as spans no wider than `width`, with the graphemes at `matches` in
@@ -2423,6 +2492,29 @@ mod tests {
         app.store.insert(later, 0, "Dashboard review with the team".into()).unwrap();
         type_str(&mut app, keys);
         (app, dir)
+    }
+
+    #[test]
+    fn search_with_a_preview_of_the_notes() {
+        let (mut app, _dir) = search_app("");
+        app.store
+            .set_notes(app.day, 0, "## Shop\n- [ ] oat milk\n- [x] **bread**\n\n> the big bottle".into())
+            .unwrap();
+        type_str(&mut app, "Sa");
+        assert_snapshot!(render_sized(&app, 120, 20).backend());
+    }
+
+    #[test]
+    fn search_moving_through_results_with_a_preview() {
+        let (mut app, _dir) = search_app("");
+        type_str(&mut app, "Sdash");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "j");
+        let terminal = render_sized(&app, 120, 20);
+        assert_snapshot!(terminal.backend());
+        // Not typing, so there's no cursor in the query.
+        let Mode::Search(search) = &app.mode else { panic!("still searching") };
+        assert!(!search.typing);
     }
 
     #[test]

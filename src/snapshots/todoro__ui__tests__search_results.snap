@@ -14,5 +14,5 @@ expression: terminal.backend()
 "│ │                                                                │ │"
 "│ │                                                                │ │"
 "│ │                                                                │ │"
-"╰─╰──────────── ↑/↓ select · ↵ go to item · esc close ─────────────╯─╯"
-" SEARCH   ↑/↓ select  ↵ go to item  esc close                         "
+"╰─╰───────── ↑/↓ select · ↵ go to item · esc stop typing ──────────╯─╯"
+" SEARCH   ↑/↓ select  ↵ go to item  esc stop typing                   "

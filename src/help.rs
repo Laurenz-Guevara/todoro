@@ -150,7 +150,11 @@ pub const SECTIONS: &[Section] = &[
         bindings: &[
             ("↑ / ↓", "Select a result"),
             ("Enter", "Go to the selected item"),
-            ("Esc", "Close the search"),
+            ("Esc", "Stop typing, to move with j / k (again to close)"),
+            ("j / k, gg / G", "After Esc: select a result"),
+            ("i / a / /", "After Esc: type again"),
+            ("Ctrl+D / Ctrl+U", "Scroll the notes preview"),
+            ("q", "After Esc: close the search"),
         ],
     },
     Section {
@@ -316,7 +320,7 @@ mod tests {
 
     #[test]
     fn single_key_search_is_case_sensitive() {
-        assert_eq!(found("G"), ["List: gg / G", "Notes: gg / G", "Viewing notes (v): gg / G"]);
+        assert_eq!(found("G"), ["List: gg / G", "Notes: gg / G", "Viewing notes (v): gg / G", "Search: j / k, gg / G"]);
         assert_eq!(found("O"), ["Notes: o / O"]);
         assert!(found("g").contains(&"Notes: gg / G".to_string()));
         assert!(!found("A").contains(&"List: a".to_string()));
@@ -339,6 +343,7 @@ mod tests {
                 "Notes: u / Ctrl+R",
                 "Viewing notes (v): Ctrl+D / Ctrl+U",
                 "Viewing notes (v): Space / Ctrl+B",
+                "Search: Ctrl+D / Ctrl+U",
                 "Calendar: u / Ctrl+R",
                 "Anywhere: Ctrl+C",
             ]

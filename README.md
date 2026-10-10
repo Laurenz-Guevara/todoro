@@ -202,7 +202,9 @@ Write `#words` in an item to tag it, like "Call #work about the #budget". Tags a
 
 `s` opens a fuzzy search over the items on every day, and `S` searches their notes too. Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words match separately, capitals only match capitals, and plain letters match accented ones. The best matches come first, with the closest days first among equals, and the matched letters are highlighted. With `S`, the matching line of an item's notes shows under it.
 
-`↑` / `↓` (or `Ctrl+N` / `Ctrl+P`) select a result, `Enter` goes to that item on its day, and `Esc` closes the search.
+`↑` / `↓` (or `Ctrl+N` / `Ctrl+P`) select a result, and `Enter` goes to that item on its day. `Esc` stops typing, as in vim, so you can move through the results with `j` / `k` (`gg` / `G` to the first or last); `i` types again, and `Esc` or `q` closes the search.
+
+On a wide terminal, the results are on the left and the selected item's notes on the right, formatted as with `v`, so you can read them as you move. `Ctrl+D` / `Ctrl+U` scroll them.
 
 ### Calendar
 
