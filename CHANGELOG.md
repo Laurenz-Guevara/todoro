@@ -30,6 +30,10 @@ Notes:
 - `v` shows an item's notes formatted: headings, lists and task lists, quotes, code, tables, links, bold and italic. `i` edits them and comes back.
 - In the options, set your own editor for notes, like `nvim`. With one set, the notes search opens it on the line it found.
 
+Items:
+
+- `E` edits an item with its text cleared, to write it again. Leaving it empty keeps the item as it was.
+
 Options:
 
 - Pin new items: new items start pinned. Off by default.
