@@ -229,6 +229,8 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 `o` opens the options. `j` / `k` select one, `Space` or `Enter` turns it on or off, and `Esc` closes them. They're saved and remembered next time.
 
+`/` searches them: type a word or two, like `clock` or `delete notes`, and only the options that match show, by name, description or section. `↑` / `↓` move among them as you type; `Enter` keeps the matches, so `j` / `k` and `Space` work on just those, and `Esc` clears the search (and then closes the options).
+
 **Accessibility**
 
 - **Semantic priority icons:** show `∧` High, `–` Medium and `∨` Low beside triaged items, as well as the coloured number, for anyone who can't tell the colours apart.

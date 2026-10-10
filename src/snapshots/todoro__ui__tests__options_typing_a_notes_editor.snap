@@ -22,5 +22,5 @@ expression: terminal.backend()
 "│  │   empty for todoro's own editor.                             │  │"
 "│  │   Command:                                                   │  │"
 "│  │   › nvim                                                     │  │"
-"╰──╰──────────── j/k move · space toggle · esc close ─────────────╯──╯"
-" OPTIONS   j/k move  space toggle  esc close                          "
+"╰──╰─────── j/k move · space toggle · / search · esc close ───────╯──╯"
+" OPTIONS   j/k move  space toggle  / search  esc close                "

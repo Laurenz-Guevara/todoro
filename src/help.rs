@@ -123,7 +123,8 @@ pub const SECTIONS: &[Section] = &[
         bindings: &[
             ("j / k", "Select an option"),
             ("Space / Enter", "Turn it on or off"),
-            ("Esc / q / o", "Close"),
+            ("/", "Search the options; Enter keeps the matches"),
+            ("Esc / q / o", "Close (Esc clears a search first)"),
         ],
     },
     Section {

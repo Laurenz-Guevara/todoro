@@ -916,7 +916,8 @@ impl App {
                 }
             }
             Mode::Options(popup) => {
-                if let Some(input) = &mut popup.editing {
+                let search = popup.search.as_mut().filter(|_| popup.searching);
+                if let Some(input) = popup.editing.as_mut().or(search) {
                     input.paste(text);
                 }
             }

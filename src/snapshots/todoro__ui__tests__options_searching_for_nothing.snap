@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 50, 12).backend()"
+---
+"╭──────── Monday, October 5 2026 (today) ────────╮"
+"│1. Buy milk                                     │"
+"│                                                │"
+"│                                                │"
+"│ ╭ Options ───────────────────────────────────╮ │"
+"│ │ Search: zzz                                │ │"
+"│ │ ────────────────────────────────────────── │ │"
+"│ │ No options match "zzz"                     │ │"
+"│ ╰─ type to search · enter keep · esc clear ──╯ │"
+"│                                                │"
+"╰──────── h ← day · k ↑ · j ↓ · day → l ─────────╯"
+" OPTIONS   type to search  enter keep  esc clear  "

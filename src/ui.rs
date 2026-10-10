@@ -17,7 +17,7 @@ use crate::changelog::{self as changes, ChangelogView};
 use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
-use crate::options::{EDITOR_ROW, FOLDER_ROW, Options, TOGGLES};
+use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, Options, TOGGLES};
 use crate::search::Search;
 use crate::setup::Setup;
 use crate::workspaces::Picker;
@@ -488,7 +488,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             &[("↵ open", 3), ("a new", 2), ("d delete", 1), ("esc close", 4)],
         ),
         Mode::Changelog(_) => ("NEWS", Color::Cyan, &[("j/k scroll", 1), ("esc close", 2)]),
-        Mode::Options(_) => ("OPTIONS", Color::Blue, &[("j/k move", 1), ("space toggle", 2), ("esc close", 3)]),
+        Mode::Options(options) if options.searching => {
+            ("OPTIONS", Color::Blue, &[("type to search", 0), ("enter keep", 2), ("esc clear", 1)])
+        }
+        Mode::Options(_) => {
+            ("OPTIONS", Color::Blue, &[("j/k move", 1), ("space toggle", 3), ("/ search", 2), ("esc close", 4)])
+        }
         Mode::Search(_) => ("SEARCH", Color::Yellow, &[("↑/↓ select", 1), ("↵ go to item", 2), ("esc close", 3)]),
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
@@ -1187,12 +1192,34 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
     let width = screen.width.saturating_sub(4).min(64);
     let inner_width = (width as usize).saturating_sub(4);
 
+    // Where the cursor goes while typing: (line, column).
+    let mut cursor = None;
+
+    // The search, if there is one, stays at the top above the rows that
+    // match it, which scroll beneath.
+    let mut head: Vec<Line> = Vec::new();
+    let mut search_cursor = None;
+    if let Some(search) = &options.search {
+        let shown = truncate(&search.text, inner_width.saturating_sub(10));
+        if options.searching {
+            search_cursor = Some(8 + search.text[..search.cursor].width());
+        }
+        head.push(Line::from(vec!["Search: ".dim(), shown.into()]));
+        head.push(Line::from("─".repeat(inner_width)).dark_gray());
+        if options.visible().is_empty() {
+            head.push(Line::from(format!("No options match \"{}\"", search.text)).dim());
+        }
+    }
+    let mut lines: Vec<Line> = Vec::new();
+
     // A heading per section, then each option with its description wrapped
     // underneath.
-    let mut lines: Vec<Line> = Vec::new();
     let mut selected_lines = 0..0;
     let mut section = "";
     for (i, toggle) in TOGGLES.iter().enumerate() {
+        if !options.matches(i) {
+            continue;
+        }
         if toggle.section != section {
             if !lines.is_empty() {
                 lines.push(Line::default());
@@ -1221,24 +1248,20 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
     }
 
     // The rows with a value to type: the notes editor, and the folder with a
-    // way to move it. Where the cursor goes while typing: (line, column).
-    let mut cursor = None;
+    // way to move it.
     let editor = if options.editor.is_empty() { "Built-in" } else { options.editor.as_str() };
-    let mut text_rows = vec![(
-        EDITOR_ROW,
-        "Notes",
-        "Notes editor: ",
-        editor,
-        "A command to open notes files with, like nvim. Leave it empty for todoro's own editor.",
-        "Command:",
-    )];
+    let mut text_rows = vec![(EDITOR_ROW, "Notes", "Notes editor: ", editor, EDITOR_ABOUT, "Command:")];
     if let Some(folder) = &options.folder {
-        let about = "Where every workspace is kept. Enter to move them all to another folder.";
-        text_rows.push((FOLDER_ROW, "Data", "Todoro folder: ", folder.as_str(), about, "Move to:"));
+        text_rows.push((FOLDER_ROW, "Data", "Todoro folder: ", folder.as_str(), FOLDER_ABOUT, "Move to:"));
     }
     for (index, section, label, value, about, prompt) in text_rows {
+        if !options.matches(index) {
+            continue;
+        }
         let text_width = inner_width.saturating_sub(2).max(1);
-        lines.push(Line::default());
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
         lines.push(Line::from(section.bold()));
         let start = lines.len();
         let room = text_width.saturating_sub(label.width());
@@ -1268,11 +1291,19 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
 
     // Last, the ways to delete things, each confirmed by typing a word.
     let text_width = inner_width.saturating_sub(2).max(1);
-    lines.push(Line::default());
-    lines.push(Line::from("Delete".bold().red()));
+    let first = options.first_clear_row();
+    if (first..first + options.clears().len()).any(|row| options.matches(row)) {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from("Delete".bold().red()));
+    }
     let workspace = options.workspace.as_deref();
     for (n, clear) in options.clears().iter().enumerate() {
-        let selected = options.selected == options.first_clear_row() + n;
+        if !options.matches(first + n) {
+            continue;
+        }
+        let selected = options.selected == first + n;
         let start = lines.len();
         for (i, part) in wrap(&clear.label(workspace), text_width, usize::MAX).into_iter().enumerate() {
             let mut row = Line::from(Span::styled(if i == 0 { part } else { format!("  {part}") }, Style::new().fg(Color::Red)));
@@ -1300,7 +1331,7 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
         }
     }
 
-    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let height = ((head.len() + lines.len()) as u16 + 2).min(screen.height.saturating_sub(2));
     let area = centered(screen, width, height);
     let room = (width as usize).saturating_sub(2);
     let block = Block::bordered()
@@ -1308,18 +1339,27 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
         .border_style(Style::new().fg(Color::Blue))
         .title(" Options ".bold())
         .title_bottom(
-            Line::from(fit_first(&[" j/k move · space toggle · esc close ", " space toggle · esc ", " esc "], room))
+            Line::from(if options.searching {
+                fit_first(&[" type to search · enter keep · esc clear ", " enter keep · esc clear ", " esc "], room)
+            } else {
+                fit_first(&[" j/k move · space toggle · / search · esc close ", " space toggle · / search ", " / search · esc ", " esc "], room)
+            })
                 .centered()
                 .dim(),
         )
         .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
+    let [top_area, inner] =
+        Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(block.inner(area));
     // Scroll just enough to keep the selected option in view.
     let visible = inner.height as usize;
     let scroll = selected_lines.end.saturating_sub(visible).min(selected_lines.start);
     frame.render_widget(Clear, area);
-    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll as u16, 0)), area);
-    if let Some((line, col)) = cursor
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(head), top_area);
+    frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
+    if let Some(col) = search_cursor {
+        frame.set_cursor_position(Position::new(top_area.x + (col as u16).min(top_area.width), top_area.y));
+    } else if let Some((line, col)) = cursor
         && line >= scroll
         && inner.y + ((line - scroll) as u16) < inner.bottom()
     {
@@ -2193,6 +2233,25 @@ mod tests {
         let cursor = terminal.get_cursor_position().unwrap();
         let row: String = (0..60).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
         assert!(row.contains("› 25:00"), "{row}");
+    }
+
+    #[test]
+    fn options_searching() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
+        type_str(&mut app, "o/notes");
+        let mut terminal = render_sized(&app, 70, 30);
+        assert_snapshot!(terminal.backend());
+        // The cursor is in the search.
+        let cursor = terminal.get_cursor_position().unwrap();
+        let row: String = (0..70).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
+        assert!(row.contains("Search: notes"), "{row}");
+    }
+
+    #[test]
+    fn options_searching_for_nothing() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "o/zzz");
+        assert_snapshot!(render_sized(&app, 50, 12).backend());
     }
 
     #[test]
