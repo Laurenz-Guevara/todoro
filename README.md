@@ -265,7 +265,7 @@ The last rows delete things for good. Undo can't bring them back, so each one as
 - **Delete all notes in** (the open workspace): every item's notes and the notes files. The items stay.
 - **Delete all notes in every workspace.**
 - **Delete all items and notes in every workspace:** every workspace is emptied, but they all stay.
-- **Reset todoro:** deletes every workspace and your settings, and starts again as if todoro were newly installed: you choose a folder, then see the notes for the last few releases. Only todoro's own folders go; anything else you keep in the todoro folder stays, and so does the folder if it isn't empty.
+- **Reset todoro:** deletes every workspace and your settings, and starts again as if todoro were newly installed: you choose a folder, then see the notes for the last few releases. Only todoro's own folders go (those with a `todos.json`, and empty ones, which show as workspaces too); anything else you keep in the todoro folder stays, and so does the folder if it isn't empty.
 
 Deleting notes removes the `.md` files in each workspace's `notes` folder, conflict copies included, and nothing else there (like an `.obsidian` folder).
 

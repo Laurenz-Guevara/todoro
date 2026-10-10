@@ -3618,16 +3618,29 @@ mod tests {
     }
 
     #[test]
+    fn resetting_deletes_empty_workspace_folders_too() {
+        let (mut app, _dir) = app_with_workspaces(&["Home"]);
+        let folder = app.workspaces.as_ref().unwrap().dir.clone();
+        // An empty folder shows as a workspace, though it has no todos file.
+        std::fs::create_dir_all(folder.join("Work")).unwrap();
+        assert_eq!(app.workspaces.as_ref().unwrap().list().unwrap(), ["Home", "Work"]);
+        clear_from_options(&mut app, options::Clear::Reset, "reset");
+        assert!(app.restart);
+        assert!(!folder.exists(), "nothing was left, so the todoro folder goes too");
+    }
+
+    #[test]
     fn resetting_leaves_other_files_in_the_todoro_folder() {
         let (mut app, _dir) = app_with_workspaces(&["Home"]);
         let folder = app.workspaces.as_ref().unwrap().dir.clone();
         std::fs::write(folder.join("readme.txt"), "mine").unwrap();
         std::fs::create_dir_all(folder.join("photos")).unwrap();
+        std::fs::write(folder.join("photos").join("cat.jpg"), "meow").unwrap();
         clear_from_options(&mut app, options::Clear::Reset, "reset");
         assert!(app.restart);
         assert!(!folder.join("Home").exists());
         assert!(folder.join("readme.txt").exists());
-        assert!(folder.join("photos").exists(), "not a workspace: it has no todos file");
+        assert!(folder.join("photos").join("cat.jpg").exists(), "not a workspace: it has no todos file");
     }
 
     #[test]
