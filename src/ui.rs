@@ -18,7 +18,7 @@ use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
 use crate::notes::NotesEditor;
 use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, Options, TOGGLES};
-use crate::search::{Hit, Search};
+use crate::search::{self, Hit, Search};
 use crate::setup::Setup;
 use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
@@ -1068,10 +1068,10 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let tag_title = search.tag.as_ref().map(|tag| truncate(&format!(" #{tag} "), room));
     let title = if let Some(title) = &tag_title {
         title.as_str()
-    } else if search.notes {
-        fit_first(&[" Search items and notes ", " Items and notes ", " Search "], room)
+    } else if search.kind == search::Kind::Notes {
+        fit_first(&[" Search notes ", " Notes "], room)
     } else {
-        fit_first(&[" Search items ", " Search "], room)
+        fit_first(&[" Find items ", " Items "], room)
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -1111,10 +1111,10 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let shown = if query.is_empty() {
         let hints: &[&str] = if search.tag.is_some() {
             &["type to narrow these down", "narrow down", ""]
-        } else if search.notes {
-            &["type to fuzzy find items and notes on any day", "items and notes, any day", "items and notes"]
+        } else if search.kind == search::Kind::Notes {
+            &["type to search inside every item's notes", "inside every note", "notes"]
         } else {
-            &["type to fuzzy find items on any day", "items on any day", "any day"]
+            &["type to narrow down every item, on any day", "narrow down every item", "any item"]
         };
         fit_first(hints, (prompt_area.width as usize).saturating_sub(prompt.width())).dark_gray()
     } else {
@@ -1127,13 +1127,20 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
         frame.set_cursor_position(Position::new(prompt_area.x + typed.min(prompt_area.width), prompt_area.y));
     }
 
-    if query.trim().is_empty() && search.tag.is_none() {
+    if query.trim().is_empty() && search.kind == search::Kind::Notes {
         search.preview_height.set(0);
         return;
     }
     let hits = search.find(&app.store, app.today);
     if hits.is_empty() {
-        frame.render_widget(Line::from(format!("No items match \"{query}\"")).dim(), results);
+        let message = if query.trim().is_empty() {
+            "No items yet".to_string()
+        } else if search.kind == search::Kind::Notes {
+            format!("No notes match \"{query}\"")
+        } else {
+            format!("No items match \"{query}\"")
+        };
+        frame.render_widget(Line::from(message).dim(), results);
         search.preview_height.set(0);
         return;
     }
@@ -2500,14 +2507,14 @@ mod tests {
         app.store
             .set_notes(app.day, 0, "## Shop\n- [ ] oat milk\n- [x] **bread**\n\n> the big bottle".into())
             .unwrap();
-        type_str(&mut app, "Sa");
+        type_str(&mut app, "sa");
         assert_snapshot!(render_sized(&app, 120, 20).backend());
     }
 
     #[test]
     fn search_moving_through_results_with_a_preview() {
         let (mut app, _dir) = search_app("");
-        type_str(&mut app, "Sdash");
+        type_str(&mut app, "sdash");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "j");
         let terminal = render_sized(&app, 120, 20);
@@ -2519,7 +2526,7 @@ mod tests {
 
     #[test]
     fn search_results() {
-        let (mut app, _dir) = search_app("sbu");
+        let (mut app, _dir) = search_app("  bu");
         press(&mut app, KeyCode::Down);
         let mut terminal = render_sized(&app, 70, 14);
         assert_snapshot!(terminal.backend());
@@ -2529,14 +2536,21 @@ mod tests {
     }
 
     #[test]
-    fn search_including_notes() {
-        let (app, _dir) = search_app("Sdashboard");
+    fn searching_notes() {
+        let (app, _dir) = search_app("sdashboard");
         assert_snapshot!(render_sized(&app, 70, 14).backend());
     }
 
     #[test]
+    fn finding_items_lists_them_all_with_a_preview() {
+        let (mut app, _dir) = search_app("");
+        type_str(&mut app, "  ");
+        assert_snapshot!(render_sized(&app, 120, 16).backend());
+    }
+
+    #[test]
     fn search_empty_and_no_matches() {
-        let (mut app, _dir) = search_app("S");
+        let (mut app, _dir) = search_app("s");
         let empty = render_sized(&app, 70, 8).backend().to_string();
         type_str(&mut app, "zzz");
         let none = render_sized(&app, 70, 8).backend().to_string();
@@ -2545,7 +2559,7 @@ mod tests {
 
     #[test]
     fn search_narrow() {
-        let (app, _dir) = search_app("Sdashboard");
+        let (app, _dir) = search_app("sdashboard");
         assert_snapshot!(render_sized(&app, 30, 14).backend());
     }
 

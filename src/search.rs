@@ -1,4 +1,6 @@
-//! Fuzzy search across every day's items, and optionally their notes.
+//! Fuzzy search across every day: finding items by their text (`Space
+//! Space`, like finding files), or searching inside their notes (`s`, like
+//! grep).
 
 use std::cell::Cell;
 
@@ -11,10 +13,18 @@ use crate::input::LineInput;
 use crate::store::Store;
 use crate::tags::has_tag;
 
+/// What a search looks through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Kind {
+    /// The items' text.
+    Items,
+    /// The items' notes, line by line.
+    Notes,
+}
+
 pub struct Search {
     pub input: LineInput,
-    /// Whether notes are searched too (`S`), not just the items' text (`s`).
-    pub notes: bool,
+    pub kind: Kind,
     /// Only items with this tag (lower case, without the `#`), if any.
     pub tag: Option<String>,
     /// The selected result.
@@ -42,8 +52,8 @@ pub struct Hit {
     pub score: u32,
     /// Which characters of the item's text matched, counted in graphemes.
     pub text_matches: Vec<usize>,
-    /// The line of the notes that matched, and which of its characters, when
-    /// the notes matched better than the text (or the text didn't match).
+    /// The line of the notes that matched best, and which of its characters,
+    /// when searching notes.
     pub note: Option<(String, Vec<usize>)>,
 }
 
@@ -57,10 +67,10 @@ pub enum Action {
 }
 
 impl Search {
-    pub fn new(notes: bool) -> Self {
+    pub fn new(kind: Kind) -> Self {
         Self {
             input: LineInput::default(),
-            notes,
+            kind,
             tag: None,
             selected: 0,
             offset: Cell::new(0),
@@ -74,7 +84,7 @@ impl Search {
 
     /// Every item with the tag `name`, narrowed down by typing.
     pub fn for_tag(name: String) -> Self {
-        Self { tag: Some(name), ..Self::new(false) }
+        Self { tag: Some(name), ..Self::new(Kind::Items) }
     }
 
     /// Handles a key, given the results there are now. While typing, every
@@ -142,7 +152,7 @@ impl Search {
     }
 
     pub fn find(&self, store: &Store, today: NaiveDate) -> Vec<Hit> {
-        find(store, &self.input.text, self.notes, self.tag.as_deref(), today)
+        find(store, &self.input.text, self.kind, self.tag.as_deref(), today)
     }
 
     /// Moves the selection, showing the top of the newly selected item's notes.
@@ -163,12 +173,13 @@ impl Search {
 }
 
 /// Every item matching `query`, best first. Equally good matches are ordered
-/// by how close their day is to `today`. With a `tag`, only items with it
-/// count, and an empty query matches all of them; otherwise an empty query
-/// matches nothing.
-pub fn find(store: &Store, query: &str, notes: bool, tag: Option<&str>, today: NaiveDate) -> Vec<Hit> {
+/// by how close their day is to `today`. Finding items matches their text,
+/// and with nothing typed lists every item (with a `tag`, every item with
+/// it), closest first. Searching notes matches each line of them, keeping
+/// each item's best line, and with nothing typed finds nothing.
+pub fn find(store: &Store, query: &str, kind: Kind, tag: Option<&str>, today: NaiveDate) -> Vec<Hit> {
     let empty = query.trim().is_empty();
-    if empty && tag.is_none() {
+    if empty && kind == Kind::Notes {
         return Vec::new();
     }
     let pattern = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart);
@@ -188,33 +199,25 @@ pub fn find(store: &Store, query: &str, notes: bool, tag: Option<&str>, today: N
             if tag.is_some_and(|tag| !has_tag(&item.text, tag)) {
                 continue;
             }
-            if empty {
-                hits.push(Hit { day, index, score: 0, text_matches: Vec::new(), note: None });
-                continue;
+            let hit = |score, text_matches, note| Hit { day, index, score, text_matches, note };
+            match kind {
+                Kind::Items if empty => hits.push(hit(0, Vec::new(), None)),
+                Kind::Items => {
+                    if let Some((score, indices)) = matches(&item.text) {
+                        hits.push(hit(score, indices, None));
+                    }
+                }
+                Kind::Notes => {
+                    let best = item
+                        .notes
+                        .lines()
+                        .filter_map(|line| matches(line).map(|(score, indices)| (score, line, indices)))
+                        .max_by_key(|(score, ..)| *score);
+                    if let Some((score, line, indices)) = best {
+                        hits.push(hit(score, Vec::new(), Some((line.to_string(), indices))));
+                    }
+                }
             }
-            let text = matches(&item.text);
-            let note = if notes {
-                item.notes
-                    .lines()
-                    .filter_map(|line| matches(line).map(|(score, indices)| (score, line, indices)))
-                    .max_by_key(|(score, ..)| *score)
-            } else {
-                None
-            };
-            let text_score = text.as_ref().map(|(score, _)| *score);
-            let note = note.filter(|(score, ..)| text_score.is_none_or(|text| *score > text));
-            let score = match (&text, &note) {
-                (_, Some((score, ..))) => *score,
-                (Some((score, _)), None) => *score,
-                (None, None) => continue,
-            };
-            hits.push(Hit {
-                day,
-                index,
-                score,
-                text_matches: text.map(|(_, indices)| indices).unwrap_or_default(),
-                note: note.map(|(_, line, indices)| (line.to_string(), indices)),
-            });
         }
     }
     hits.sort_by_key(|hit| (std::cmp::Reverse(hit.score), (hit.day - today).num_days().abs(), hit.day, hit.index));
@@ -255,23 +258,31 @@ mod tests {
         store.insert(day(-3), 1, "Renew #car insurance".into()).unwrap();
         store.insert(day(1), 1, "Book #Car service".into()).unwrap();
         store.insert(day(1), 2, "#carpool rota".into()).unwrap();
-        let hits = find(&store, "", false, Some("car"), today());
+        let hits = find(&store, "", Kind::Items, Some("car"), today());
         assert_eq!(texts(&store, &hits), ["Book #Car service", "Renew #car insurance"]);
         // Typing narrows them down.
-        assert_eq!(texts(&store, &find(&store, "renew", false, Some("car"), today())), ["Renew #car insurance"]);
+        assert_eq!(texts(&store, &find(&store, "renew", Kind::Items, Some("car"), today())), ["Renew #car insurance"]);
     }
 
     #[test]
-    fn an_empty_query_finds_nothing() {
+    fn finding_items_with_nothing_typed_lists_every_item_closest_first() {
         let (store, _dir) = store();
-        assert!(find(&store, "", false, None, today()).is_empty());
-        assert!(find(&store, "   ", false, None, today()).is_empty());
+        let all = texts(&store, &find(&store, "", Kind::Items, None, today()));
+        assert_eq!(all, ["Buy milk", "Write the quarterly report", "Café with Zoë", "Call mum", "Buy stamps", "Dentist at 3pm"]);
+        assert_eq!(find(&store, "   ", Kind::Items, None, today()).len(), all.len());
+    }
+
+    #[test]
+    fn searching_notes_with_nothing_typed_finds_nothing() {
+        let (store, _dir) = store();
+        assert!(find(&store, "", Kind::Notes, None, today()).is_empty());
+        assert!(find(&store, "  ", Kind::Notes, None, today()).is_empty());
     }
 
     #[test]
     fn letters_match_in_order_with_gaps() {
         let (store, _dir) = store();
-        let hits = find(&store, "bmlk", false, None, today());
+        let hits = find(&store, "bmlk", Kind::Items, None, today());
         assert_eq!(texts(&store, &hits), ["Buy milk"]);
         assert_eq!(hits[0].text_matches, [0, 4, 6, 7]);
     }
@@ -279,29 +290,29 @@ mod tests {
     #[test]
     fn it_searches_every_day_including_completed_items() {
         let (store, _dir) = store();
-        assert_eq!(texts(&store, &find(&store, "dentist", false, None, today())), ["Dentist at 3pm"]);
-        assert_eq!(texts(&store, &find(&store, "mum", false, None, today())), ["Call mum"]);
+        assert_eq!(texts(&store, &find(&store, "dentist", Kind::Items, None, today())), ["Dentist at 3pm"]);
+        assert_eq!(texts(&store, &find(&store, "mum", Kind::Items, None, today())), ["Call mum"]);
     }
 
     #[test]
     fn equal_matches_are_ordered_by_closeness_to_today() {
         let (store, _dir) = store();
         // Both "Buy ..." items score the same for "buy".
-        assert_eq!(texts(&store, &find(&store, "buy", false, None, today())), ["Buy milk", "Buy stamps"]);
-        assert_eq!(texts(&store, &find(&store, "buy", false, None, day(-3))), ["Buy stamps", "Buy milk"]);
+        assert_eq!(texts(&store, &find(&store, "buy", Kind::Items, None, today())), ["Buy milk", "Buy stamps"]);
+        assert_eq!(texts(&store, &find(&store, "buy", Kind::Items, None, day(-3))), ["Buy stamps", "Buy milk"]);
     }
 
     #[test]
     fn case_is_ignored_unless_the_query_has_capitals() {
         let (store, _dir) = store();
-        assert_eq!(texts(&store, &find(&store, "dentist", false, None, today())), ["Dentist at 3pm"]);
-        assert!(find(&store, "DENTIST", false, None, today()).is_empty());
+        assert_eq!(texts(&store, &find(&store, "dentist", Kind::Items, None, today())), ["Dentist at 3pm"]);
+        assert!(find(&store, "DENTIST", Kind::Items, None, today()).is_empty());
     }
 
     #[test]
     fn accents_match_plain_letters() {
         let (store, _dir) = store();
-        let hits = find(&store, "cafe zoe", false, None, today());
+        let hits = find(&store, "cafe zoe", Kind::Items, None, today());
         assert_eq!(texts(&store, &hits), ["Café with Zoë"]);
         assert_eq!(hits[0].text_matches, [0, 1, 2, 3, 10, 11, 12]);
     }
@@ -309,27 +320,37 @@ mod tests {
     #[test]
     fn words_match_separately() {
         let (store, _dir) = store();
-        assert_eq!(texts(&store, &find(&store, "3pm dent", false, None, today())), ["Dentist at 3pm"]);
+        assert_eq!(texts(&store, &find(&store, "3pm dent", Kind::Items, None, today())), ["Dentist at 3pm"]);
     }
 
     #[test]
-    fn notes_are_only_searched_when_asked() {
+    fn finding_items_looks_only_at_their_text() {
         let (store, _dir) = store();
-        assert!(find(&store, "dashboard", false, None, today()).is_empty());
-        let hits = find(&store, "dashboard", true, None, today());
+        assert!(find(&store, "dashboard", Kind::Items, None, today()).is_empty());
+        assert!(find(&store, "report", Kind::Items, None, today())[0].note.is_none());
+    }
+
+    #[test]
+    fn searching_notes_looks_only_inside_them() {
+        let (store, _dir) = store();
+        let hits = find(&store, "dashboard", Kind::Notes, None, today());
         assert_eq!(texts(&store, &hits), ["Write the quarterly report"]);
         let (line, indices) = hits[0].note.as_ref().unwrap();
         assert_eq!(line, "Charts from the dashboard");
         assert_eq!(indices, &(16..25).collect::<Vec<_>>());
         assert!(hits[0].text_matches.is_empty());
+        // The item's own text doesn't count.
+        assert!(find(&store, "quarterly", Kind::Notes, None, today()).is_empty());
+        assert!(find(&store, "milk", Kind::Notes, None, today()).is_empty());
     }
 
     #[test]
-    fn a_better_text_match_hides_the_note() {
+    fn searching_notes_keeps_each_items_best_line() {
         let (store, _dir) = store();
-        let hits = find(&store, "report", true, None, today());
-        assert_eq!(texts(&store, &hits), ["Write the quarterly report"]);
-        assert!(hits[0].note.is_none());
+        let hits = find(&store, "the", Kind::Notes, None, today());
+        assert_eq!(hits.len(), 1, "one result per item");
+        let (line, _) = hits[0].note.as_ref().unwrap();
+        assert!(line == "Ask Sam for the Q3 numbers" || line == "Charts from the dashboard");
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -339,7 +360,7 @@ mod tests {
     #[test]
     fn typing_builds_the_query_and_resets_the_selection() {
         let (store, _dir) = store();
-        let mut search = Search::new(false);
+        let mut search = Search::new(Kind::Items);
         for c in "bu".chars() {
             search.handle_key(key(KeyCode::Char(c)), &[]);
         }
@@ -359,7 +380,7 @@ mod tests {
     #[test]
     fn the_selection_stays_within_the_results() {
         let (store, _dir) = store();
-        let mut search = Search::new(false);
+        let mut search = Search::new(Kind::Items);
         search.handle_key(key(KeyCode::Char('u')), &[]);
         let hits = search.find(&store, today());
         assert!(hits.len() >= 2);
@@ -376,7 +397,7 @@ mod tests {
     #[test]
     fn enter_opens_the_selected_result_and_esc_closes() {
         let (store, _dir) = store();
-        let mut search = Search::new(false);
+        let mut search = Search::new(Kind::Items);
         search.input = LineInput::new("dentist");
         let hits = search.find(&store, today());
         assert_eq!(search.handle_key(key(KeyCode::Enter), &hits), Action::Open { day: day(10), index: 0 });
@@ -389,7 +410,7 @@ mod tests {
 
     /// A search for "u" (several results), no longer typing.
     fn moving(store: &Store) -> (Search, Vec<Hit>) {
-        let mut search = Search::new(false);
+        let mut search = Search::new(Kind::Items);
         search.input = LineInput::new("u");
         let hits = search.find(store, today());
         assert!(hits.len() >= 4, "enough to move through");
@@ -435,14 +456,14 @@ mod tests {
         let (mut search, hits) = moving(&store);
         assert_eq!(search.handle_key(key(KeyCode::Char('q')), &hits), Action::Close);
         // While typing, q is just typed.
-        let mut search = Search::new(false);
+        let mut search = Search::new(Kind::Items);
         assert_eq!(search.handle_key(key(KeyCode::Char('q')), &[]), Action::Stay);
         assert_eq!(search.input.text, "q");
     }
 
     #[test]
     fn esc_with_no_results_closes_straight_away() {
-        let mut search = Search::new(false);
+        let mut search = Search::new(Kind::Items);
         assert_eq!(search.handle_key(key(KeyCode::Esc), &[]), Action::Close);
     }
 

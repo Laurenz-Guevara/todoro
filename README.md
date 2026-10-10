@@ -79,7 +79,8 @@ todoro --help
 | `v` | View the selected item's notes, formatted |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `c` | Open the calendar |
-| `s` / `S` | Fuzzy search every day's items / items and their notes |
+| `Space` `Space` | Find items by their text, on any day |
+| `s` | Search inside every item's notes |
 | `#` | List your tags, to show every item with one |
 | `o` | Options: accessibility, your own notes editor, the todoro folder |
 | `N` | What's new: the notes for every release |
@@ -200,7 +201,12 @@ Write `#words` in an item to tag it, like "Call #work about the #budget". Tags a
 
 ### Search
 
-`s` opens a fuzzy search over the items on every day, and `S` searches their notes too. Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words match separately, capitals only match capitals, and plain letters match accented ones. The best matches come first, with the closest days first among equals, and the matched letters are highlighted. With `S`, the matching line of an item's notes shows under it.
+There are two fuzzy searches, like finding files and searching inside them in vim:
+
+- `Space` `Space` finds items by their text, on every day. Before you type, it lists every item, closest day first, so you can browse them.
+- `s` searches inside every item's notes, line by line, and shows each item with its best matching line under it. The items' own text isn't searched.
+
+Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words match separately, capitals only match capitals, and plain letters match accented ones. The best matches come first, with the closest days first among equals, and the matched letters are highlighted.
 
 `↑` / `↓` (or `Ctrl+N` / `Ctrl+P`) select a result, and `Enter` goes to that item on its day. `Esc` stops typing, as in vim, so you can move through the results with `j` / `k` (`gg` / `G` to the first or last); `i` types again, and `Esc` or `q` closes the search.
 

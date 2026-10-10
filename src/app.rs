@@ -464,6 +464,11 @@ impl App {
                 self.selected = row(count.unwrap_or(1));
                 return Ok(());
             }
+            // Space Space finds items, as it finds files in many vim setups.
+            (Some(' '), KeyCode::Char(' ')) => {
+                self.mode = Mode::Search(Box::new(Search::new(search::Kind::Items)));
+                return Ok(());
+            }
             (Some('y'), KeyCode::Char('y')) => {
                 if let Some(slot) = slot {
                     self.register = vec![self.store.items(slot.day)[slot.index].clone()];
@@ -473,7 +478,7 @@ impl App {
             _ => {}
         }
         match code {
-            KeyCode::Char('g' | 'y') => {
+            KeyCode::Char('g' | 'y' | ' ') => {
                 self.pending = Some(code.as_char().expect("a char key"));
                 // Keep the count for the second key, as in 7gg.
                 self.count = count;
@@ -496,8 +501,7 @@ impl App {
                 }
             }
             KeyCode::Char('#') => self.mode = Mode::Tags(TagPicker::default()),
-            KeyCode::Char('s') => self.mode = Mode::Search(Box::new(Search::new(false))),
-            KeyCode::Char('S') => self.mode = Mode::Search(Box::new(Search::new(true))),
+            KeyCode::Char('s') => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Notes))),
             KeyCode::Char('c') => self.mode = Mode::Calendar(Box::new(Calendar::new(self.day, self.today))),
             KeyCode::Char('h') | KeyCode::Left => self.change_day(-1),
             KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
@@ -2049,12 +2053,12 @@ mod tests {
     }
 
     #[test]
-    fn s_finds_an_item_on_another_day_and_enter_goes_to_it() {
+    fn space_space_finds_an_item_on_another_day_and_enter_goes_to_it() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         let later = today() + chrono::Duration::days(9);
         app.store.insert(later, 0, "Pay rent".into()).unwrap();
         app.store.insert(later, 1, "Dentist at 3pm".into()).unwrap();
-        type_str(&mut app, "sdntst");
+        type_str(&mut app, "  dntst");
         assert!(matches!(app.mode, Mode::Search(_)));
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
@@ -2068,7 +2072,7 @@ mod tests {
         let (mut app, _dir) = app_with_future(&["pin a"], &["open", "finished"]);
         let later = today() + chrono::Duration::days(2);
         app.store.toggle_done(later, 1).unwrap();
-        type_str(&mut app, "sfinished");
+        type_str(&mut app, "  finished");
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.day, later);
         // "pin a" is carried in first, then "open", then the completed one.
@@ -2077,24 +2081,53 @@ mod tests {
     }
 
     #[test]
-    fn capital_s_also_searches_notes() {
+    fn s_searches_notes_and_space_space_finds_items() {
         let (mut app, _dir) = app_with(&["one", "two"]);
         app.store.set_notes(today(), 1, "remember the passport".into()).unwrap();
-        type_str(&mut app, "spassport");
+        // Finding items doesn't look in notes, so Enter does nothing.
+        type_str(&mut app, "  passport");
         press(&mut app, KeyCode::Enter);
-        // Plain search doesn't look in notes, so Enter does nothing.
         assert!(matches!(app.mode, Mode::Search(_)));
         press(&mut app, KeyCode::Esc);
-        type_str(&mut app, "Spassport");
+        // And searching notes doesn't look at the items' text.
+        type_str(&mut app, "stwo");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Search(_)));
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "spassport");
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.selected, 1);
     }
 
     #[test]
+    fn space_space_with_nothing_typed_lists_every_item() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "  ");
+        let Mode::Search(search) = &app.mode else { panic!("finding items") };
+        assert_eq!(search.find(&app.store, app.today).len(), 2);
+        // Esc to move, j, Enter goes to the second.
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn one_space_then_another_key_does_that_keys_own_thing() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, " j");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.selected, 1);
+        // S does nothing now.
+        type_str(&mut app, "S");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
     fn esc_closes_the_search_where_you_were() {
         let (mut app, _dir) = app_with(&["one", "two"]);
-        type_str(&mut app, "jlsone");
+        type_str(&mut app, "jl  one");
         // The first Esc stops typing; the second closes.
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Search(_)));
@@ -2807,7 +2840,7 @@ mod tests {
     #[test]
     fn pasting_into_search_and_the_command_line() {
         let (mut app, _dir) = app_with(&["alpha", "beta", "gamma"]);
-        type_str(&mut app, "s");
+        type_str(&mut app, "  ");
         app.handle_paste("gam\n").unwrap();
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.selected, 2);

@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 120, 16).backend()"
+---
+"╭─────────────────────────────────────────── Monday, October 5 2026 (today) ───────────────────────────────────────────╮"
+"│1╭ Find items ──────────────────────────────────────────────────────────────────────────────────────────────────────╮ │"
+"│2│ Search: type to narrow down every item, on any day                                                               │ │"
+"│─│ ──────────────────────────────────────────────────────────────────────────────────────────────────────────────── │─│"
+"│✓│ Today      Buy milk                                │ Buy milk                                                    │ │"
+"│ │ Today      Write the quarterly report for the team │ Today                                                       │ │"
+"│ │ Today      Call mum                                │ ─────────────────────────────────────────────────────────── │ │"
+"│ │ Sun 4 Oct  Buy stamps for the birthday cards       │ No notes                                                    │ │"
+"│ │ Wed 14 Oct Dashboard review with the team          │                                                             │ │"
+"│ │                                                    │                                                             │ │"
+"│ │                                                    │                                                             │ │"
+"│ │                                                    │                                                             │ │"
+"│ │                                                    │                                                             │ │"
+"│ │                                                    │                                                             │ │"
+"╰─╰────────────────────────────────── ↑/↓ select · ↵ go to item · esc stop typing ───────────────────────────────────╯─╯"
+" SEARCH   ↑/↓ select  ↵ go to item  esc stop typing                                                                     "
