@@ -36,10 +36,9 @@ use crate::store::Store;
 use crate::workspaces::Workspaces;
 
 fn main() -> io::Result<()> {
-    let today = Local::now().date_naive();
     let settings_path = Settings::default_path();
-    let mut settings =
-        Settings::load(settings_path.as_ref(), std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()));
+    let no_color = std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty());
+    let mut settings = Settings::load(settings_path.as_ref(), no_color);
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let todoro_file = std::env::var_os("TODORO_FILE").map(PathBuf::from);
@@ -59,19 +58,28 @@ fn main() -> io::Result<()> {
     // Have pasted text arrive in one piece rather than as typed keys. Old
     // Windows consoles can't, and then pasting works as typing, as before.
     let _ = execute!(io::stdout(), EnableBracketedPaste);
-    let result = open(&mut terminal, &mut settings, settings_path.as_ref()).and_then(|opened| {
-        let Some((store, workspace)) = opened else { return Ok(()) };
+    let result = (|| loop {
+        let Some((store, workspace)) = open(&mut terminal, &mut settings, settings_path.as_ref())? else {
+            return Ok(());
+        };
+        let today = Local::now().date_naive();
         let mut app = App::new(store, today);
         app.settings = settings;
-        app.settings_path = settings_path;
+        app.settings_path = settings_path.clone();
         if let Some((workspaces, name)) = workspace {
             app.workspaces = Some(workspaces);
             app.workspace = Some(name);
         }
         app.store.roll_over(today)?;
         app.show_whats_new()?;
-        run(&mut terminal, &mut app)
-    });
+        run(&mut terminal, &mut app)?;
+        if !app.restart {
+            return Ok(());
+        }
+        // Reset: start again as if newly installed, from the settings file
+        // the reset deleted.
+        settings = Settings::load(settings_path.as_ref(), no_color);
+    })();
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
@@ -141,7 +149,7 @@ fn open_workspace(
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()> {
-    while !app.quit {
+    while !app.quit && !app.restart {
         app.now = Local::now().time();
         terminal.draw(|frame| ui::draw(frame, app))?;
         // Wake up now and then even without a key, to notice midnight, or

@@ -1,0 +1,28 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭ Home ──────────── Monday, October 5 2026 (today) ──────────────────╮"
+"│1.╭ Options ─────────────────────────────────────────────────────╮  │"
+"│  │ [ ] 12-hour clock                                            │  │"
+"│  │     Show deadline times like 11PM instead of 23:00. You can  │  │"
+"│  │     type either.                                             │  │"
+"│  │                                                              │  │"
+"│  │ Notes                                                        │  │"
+"│  │ Notes editor: Built-in                                       │  │"
+"│  │   A command to open notes files with, like nvim. Leave it    │  │"
+"│  │   empty for todoro's own editor.                             │  │"
+"│  │                                                              │  │"
+"│  │ Data                                                         │  │"
+"│  │ Todoro folder: ~/todoro                                      │  │"
+"│  │   Where every workspace is kept. Enter to move them all to   │  │"
+"│  │   another folder.                                            │  │"
+"│  │                                                              │  │"
+"│  │ Delete                                                       │  │"
+"│  │ Delete all items and notes in Home                           │  │"
+"│  │   Every day's items, and their notes files. The workspace    │  │"
+"│  │   stays, empty.                                              │  │"
+"│  │   This can't be undone. Type Home to confirm:                │  │"
+"│  │   › Ho                                                       │  │"
+"╰──╰──────────── j/k move · space toggle · esc close ─────────────╯──╯"
+" OPTIONS   j/k move  space toggle  esc close                          "

@@ -206,6 +206,23 @@ impl Store {
         self.save()
     }
 
+    /// Deletes every item's notes, and every notes file, for good.
+    pub fn delete_all_notes(&mut self) -> io::Result<()> {
+        for item in self.days.values_mut().flatten() {
+            item.notes.clear();
+            item.notes_file = None;
+        }
+        self.notes.delete_all()?;
+        self.save()
+    }
+
+    /// Deletes every item and every notes file, for good.
+    pub fn delete_everything(&mut self) -> io::Result<()> {
+        self.days.clear();
+        self.notes.delete_all()?;
+        self.save()
+    }
+
     /// Notes files that saves left alone because they changed outside todoro.
     pub fn take_conflicts(&mut self) -> Vec<Conflict> {
         std::mem::take(&mut self.conflicts)

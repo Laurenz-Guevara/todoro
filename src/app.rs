@@ -78,6 +78,9 @@ pub struct App {
     pub list_offset: Cell<usize>,
     pub mode: Mode,
     pub quit: bool,
+    /// Set by resetting todoro: the event loop stops, and todoro starts
+    /// again from the first-run screen.
+    pub restart: bool,
     pub settings: Settings,
     /// Where to save settings when they change, if anywhere.
     pub settings_path: Option<PathBuf>,
@@ -121,6 +124,7 @@ impl App {
             list_offset: Cell::new(0),
             mode: Mode::Normal,
             quit: false,
+            restart: false,
             settings: Settings::default(),
             settings_path: None,
             workspaces: None,
@@ -375,6 +379,15 @@ impl App {
                         self.settings.save(path)?;
                     }
                 }
+                options::Action::Clear(clear) => {
+                    let result = self.clear(clear);
+                    if let Mode::Options(popup) = &mut self.mode {
+                        popup.message = Some(match result {
+                            Ok(()) => (clear.done(self.workspace.as_deref()), true),
+                            Err(error) => (format!("Couldn't finish: {error}"), false),
+                        });
+                    }
+                }
                 options::Action::SetEditor(command) => {
                     self.settings.editor = command;
                     if let Some(path) = &self.settings_path {
@@ -474,7 +487,7 @@ impl App {
             KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('o') => {
                 let folder = self.workspaces.as_ref().map(|folder| workspaces::display_path(&folder.dir));
-                self.mode = Mode::Options(Options::new(self.settings.editor.as_deref(), folder));
+                self.mode = Mode::Options(Options::new(self.settings.editor.as_deref(), folder, self.workspace.clone()));
             }
             KeyCode::Char('N') => self.mode = Mode::Changelog(ChangelogView::all()),
             KeyCode::Char('W') => {
@@ -571,6 +584,51 @@ impl App {
         let mut editor = NotesEditor::new(&self.store.items(slot.day)[slot.index].notes);
         editor.register = self.notes_register.clone();
         self.mode = Mode::Notes(Box::new(editor));
+        Ok(())
+    }
+
+    /// Deletes what the options asked for, for good. Undo can't bring it
+    /// back, so its history goes too.
+    fn clear(&mut self, clear: options::Clear) -> io::Result<()> {
+        use options::Clear;
+        self.undo.clear();
+        self.redo.clear();
+        self.register.clear();
+        match clear {
+            Clear::Items => self.store.delete_everything()?,
+            Clear::Notes => self.store.delete_all_notes()?,
+            Clear::AllNotes | Clear::AllItems => {
+                let (Some(folder), Some(current)) = (&self.workspaces, &self.workspace) else { return Ok(()) };
+                for name in folder.list()? {
+                    let mut other;
+                    let store = if &name == current {
+                        &mut self.store
+                    } else {
+                        other = Store::open(folder.todos_path(&name))?;
+                        &mut other
+                    };
+                    if clear == Clear::AllNotes {
+                        store.delete_all_notes()?;
+                    } else {
+                        store.delete_everything()?;
+                    }
+                }
+            }
+            Clear::Reset => {
+                if let Some(folder) = &self.workspaces {
+                    folder.delete_all()?;
+                }
+                if let Some(path) = &self.settings_path {
+                    match std::fs::remove_file(path) {
+                        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                        _ => {}
+                    }
+                }
+                self.restart = true;
+            }
+        }
+        self.selected = 0;
+        self.clamp_selection();
         Ok(())
     }
 
@@ -1010,7 +1068,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
-    use crate::test_util::{app_with, press, today, type_str};
+    use crate::test_util::{app_with, app_with_workspaces, press, today, type_str};
 
     fn texts_on(app: &App, day: NaiveDate) -> Vec<&str> {
         app.store.items(day).iter().map(|item| item.text.as_str()).collect()
@@ -2678,11 +2736,16 @@ mod tests {
     }
 
     #[test]
-    fn a_new_user_sees_no_whats_new_but_is_recorded() {
+    fn a_new_user_sees_the_newest_releases_once() {
         let (mut app, _dir) = app_with(&[]);
         app.show_whats_new().unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
+        let Mode::Changelog(view) = &app.mode else { panic!("the release notes") };
+        assert_eq!(view.limit, Some(changelog::FIRST_START_RELEASES));
         assert_eq!(app.settings.last_seen_version.as_deref(), Some(changelog::VERSION));
+        // Not again next time.
+        app.mode = Mode::Normal;
+        app.show_whats_new().unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]
@@ -3353,5 +3416,146 @@ mod tests {
         app.handle_paste("14:15").unwrap();
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.items()[0].deadline, Some(deadline(0, Some((14, 15)))));
+    }
+
+    /// Chooses a deletion in the options and confirms it with `word`.
+    fn clear_from_options(app: &mut App, clear: options::Clear, word: &str) {
+        type_str(app, "o");
+        let Mode::Options(popup) = &mut app.mode else { panic!("the options") };
+        popup.selected = popup.first_clear_row() + popup.clears().iter().position(|&c| c == clear).unwrap();
+        press(app, KeyCode::Enter);
+        type_str(app, word);
+        press(app, KeyCode::Enter);
+    }
+
+    /// Gives each workspace's item some notes, so there are files to delete.
+    fn with_notes(app: &mut App, names: &[&str]) {
+        let folder = app.workspaces.clone().unwrap();
+        for name in names {
+            if Some(name.to_string()) == app.workspace {
+                app.store.set_notes(today(), 0, format!("{name} notes")).unwrap();
+            } else {
+                let mut store = Store::open(folder.todos_path(name)).unwrap();
+                store.set_notes(today(), 0, format!("{name} notes")).unwrap();
+            }
+        }
+    }
+
+    fn notes_files(app: &App, name: &str) -> Vec<String> {
+        let dir = app.workspaces.as_ref().unwrap().dir.join(name).join("notes");
+        let mut files: Vec<String> = std::fs::read_dir(dir)
+            .map(|entries| entries.map(|e| e.unwrap().file_name().to_string_lossy().to_string()).collect())
+            .unwrap_or_default();
+        files.sort();
+        files
+    }
+
+    fn texts_in(app: &App, name: &str) -> Vec<String> {
+        let store = Store::open(app.workspaces.as_ref().unwrap().todos_path(name)).unwrap();
+        store.items(today()).iter().map(|item| item.text.clone()).collect()
+    }
+
+    #[test]
+    fn deleting_the_workspaces_notes_keeps_its_items_and_other_workspaces() {
+        let (mut app, _dir) = app_with_workspaces(&["Home", "Work"]);
+        with_notes(&mut app, &["Home", "Work"]);
+        let notes = app.workspaces.as_ref().unwrap().dir.join("Home").join("notes");
+        // A conflict copy goes too, but not other files there.
+        std::fs::write(notes.join("home-item (conflict).md"), "old").unwrap();
+        std::fs::create_dir_all(notes.join(".obsidian")).unwrap();
+        clear_from_options(&mut app, options::Clear::Notes, "Home");
+        assert_eq!(items(&app), ["Home item"]);
+        assert_eq!(app.items()[0].notes, "");
+        assert_eq!(notes_files(&app, "Home"), [".obsidian"]);
+        assert_eq!(notes_files(&app, "Work"), ["work-item.md"]);
+        let Mode::Options(popup) = &app.mode else { panic!("still in the options") };
+        assert_eq!(popup.message, Some(("Deleted every note in Home".into(), true)));
+    }
+
+    #[test]
+    fn deleting_the_workspaces_items_and_notes_keeps_the_workspace() {
+        let (mut app, _dir) = app_with_workspaces(&["Home", "Work"]);
+        with_notes(&mut app, &["Home", "Work"]);
+        clear_from_options(&mut app, options::Clear::Items, "Home");
+        assert!(items(&app).is_empty());
+        assert!(texts_in(&app, "Home").is_empty());
+        assert!(notes_files(&app, "Home").is_empty());
+        assert_eq!(texts_in(&app, "Work"), ["Work item"]);
+        assert_eq!(app.workspaces.as_ref().unwrap().list().unwrap(), ["Home", "Work"]);
+        // There's no undoing it.
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "u");
+        assert!(items(&app).is_empty());
+    }
+
+    #[test]
+    fn the_wrong_word_deletes_nothing() {
+        let (mut app, _dir) = app_with_workspaces(&["Home"]);
+        clear_from_options(&mut app, options::Clear::Items, "home");
+        assert_eq!(items(&app), ["Home item"]);
+        let Mode::Options(popup) = &app.mode else { panic!("still in the options") };
+        assert!(popup.editing.is_some(), "still waiting for the word");
+    }
+
+    #[test]
+    fn deleting_every_workspaces_notes_keeps_every_item() {
+        let (mut app, _dir) = app_with_workspaces(&["Home", "Work"]);
+        with_notes(&mut app, &["Home", "Work"]);
+        clear_from_options(&mut app, options::Clear::AllNotes, "delete");
+        assert!(notes_files(&app, "Home").is_empty());
+        assert!(notes_files(&app, "Work").is_empty());
+        assert_eq!(app.items()[0].notes, "");
+        assert_eq!(texts_in(&app, "Home"), ["Home item"]);
+        assert_eq!(texts_in(&app, "Work"), ["Work item"]);
+    }
+
+    #[test]
+    fn deleting_every_workspaces_items_keeps_the_workspaces() {
+        let (mut app, _dir) = app_with_workspaces(&["Home", "Work"]);
+        with_notes(&mut app, &["Home", "Work"]);
+        clear_from_options(&mut app, options::Clear::AllItems, "delete");
+        assert!(items(&app).is_empty());
+        assert!(texts_in(&app, "Work").is_empty());
+        assert!(notes_files(&app, "Work").is_empty());
+        assert_eq!(app.workspaces.as_ref().unwrap().list().unwrap(), ["Home", "Work"]);
+    }
+
+    #[test]
+    fn resetting_deletes_every_workspace_and_the_settings_then_restarts() {
+        let (mut app, dir) = app_with_workspaces(&["Home", "Work"]);
+        let settings = dir.path().join("settings.json");
+        app.settings_path = Some(settings.clone());
+        app.settings.twelve_hour = true;
+        app.settings.save(&settings).unwrap();
+        let folder = app.workspaces.as_ref().unwrap().dir.clone();
+        clear_from_options(&mut app, options::Clear::Reset, "reset");
+        assert!(app.restart);
+        assert!(!folder.exists(), "the empty todoro folder goes");
+        assert!(!settings.exists());
+    }
+
+    #[test]
+    fn resetting_leaves_other_files_in_the_todoro_folder() {
+        let (mut app, _dir) = app_with_workspaces(&["Home"]);
+        let folder = app.workspaces.as_ref().unwrap().dir.clone();
+        std::fs::write(folder.join("readme.txt"), "mine").unwrap();
+        std::fs::create_dir_all(folder.join("photos")).unwrap();
+        clear_from_options(&mut app, options::Clear::Reset, "reset");
+        assert!(app.restart);
+        assert!(!folder.join("Home").exists());
+        assert!(folder.join("readme.txt").exists());
+        assert!(folder.join("photos").exists(), "not a workspace: it has no todos file");
+    }
+
+    #[test]
+    fn with_a_single_file_only_its_deletions_are_offered() {
+        let (mut app, _dir) = app_with(&["one"]);
+        app.store.set_notes(today(), 0, "n".into()).unwrap();
+        clear_from_options(&mut app, options::Clear::Notes, "delete");
+        assert_eq!(items(&app), ["one"]);
+        assert_eq!(app.items()[0].notes, "");
+        press(&mut app, KeyCode::Esc);
+        clear_from_options(&mut app, options::Clear::Items, "delete");
+        assert!(items(&app).is_empty());
     }
 }

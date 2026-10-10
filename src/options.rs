@@ -121,7 +121,11 @@ pub struct Options {
     /// The todoro folder as shown, if there is one to change (not with
     /// `TODORO_FILE`). It's the row after the editor (`FOLDER_ROW`).
     pub folder: Option<String>,
-    /// A new value being typed for the selected row: a command or a folder.
+    /// The open workspace's name (not with `TODORO_FILE`), for the rows that
+    /// delete things, which come last.
+    pub workspace: Option<String>,
+    /// A new value being typed for the selected row: a command, a folder,
+    /// or the word confirming a deletion.
     pub editing: Option<LineInput>,
     /// The result of the last change: what happened, and whether it worked.
     /// It shows under the selected row.
@@ -131,6 +135,73 @@ pub struct Options {
 /// The rows after the toggles.
 pub const EDITOR_ROW: usize = TOGGLES.len();
 pub const FOLDER_ROW: usize = TOGGLES.len() + 1;
+
+/// What the last rows of the options delete, for good, in the order shown.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Clear {
+    /// Every item and note in the open workspace (or file).
+    Items,
+    /// Every note in the open workspace (or file), keeping the items.
+    Notes,
+    /// Every note in every workspace.
+    AllNotes,
+    /// Every item and note in every workspace, keeping the workspaces.
+    AllItems,
+    /// Every workspace and the settings, to start again as if newly installed.
+    Reset,
+}
+
+impl Clear {
+    /// What it's called in the options, for the open `workspace` (`None`
+    /// with a single todos file).
+    pub fn label(self, workspace: Option<&str>) -> String {
+        match (self, workspace) {
+            (Clear::Items, Some(name)) => format!("Delete all items and notes in {name}"),
+            (Clear::Items, None) => "Delete all items and notes".into(),
+            (Clear::Notes, Some(name)) => format!("Delete all notes in {name}"),
+            (Clear::Notes, None) => "Delete all notes".into(),
+            (Clear::AllNotes, _) => "Delete all notes in every workspace".into(),
+            (Clear::AllItems, _) => "Delete all items and notes in every workspace".into(),
+            (Clear::Reset, _) => "Reset todoro".into(),
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Clear::Items => "Every day's items, and their notes files. The workspace stays, empty.",
+            Clear::Notes => "Every item's notes, and the notes files. The items stay.",
+            Clear::AllNotes => "Every item's notes in every workspace, and the notes files. The items stay.",
+            Clear::AllItems => "Every workspace is emptied of items and notes. The workspaces stay.",
+            Clear::Reset => {
+                "Deletes every workspace and your settings, then starts again as if newly installed: \
+                 choose a folder, then see what's new. Other files in the todoro folder stay."
+            }
+        }
+    }
+
+    /// What to say once it's done.
+    pub fn done(self, workspace: Option<&str>) -> String {
+        match (self, workspace) {
+            (Clear::Items, Some(name)) => format!("Deleted every item and note in {name}"),
+            (Clear::Items, None) => "Deleted every item and note".into(),
+            (Clear::Notes, Some(name)) => format!("Deleted every note in {name}"),
+            (Clear::Notes, None) => "Deleted every note".into(),
+            (Clear::AllNotes, _) => "Deleted every note in every workspace".into(),
+            (Clear::AllItems, _) => "Deleted every item and note in every workspace".into(),
+            (Clear::Reset, _) => "Reset todoro".into(),
+        }
+    }
+
+    /// What to type to confirm it: the workspace's name for the ones that
+    /// only touch it, so it's clear which.
+    pub fn confirm_word(self, workspace: Option<&str>) -> String {
+        match (self, workspace) {
+            (Clear::Items | Clear::Notes, Some(name)) => name.to_string(),
+            (Clear::Reset, _) => "reset".into(),
+            _ => "delete".into(),
+        }
+    }
+}
 
 /// What the app should do after the options popup handles a key.
 #[derive(Debug, PartialEq)]
@@ -143,17 +214,49 @@ pub enum Action {
     MoveFolder(PathBuf),
     /// Open notes with this command, or todoro's own editor for `None`.
     SetEditor(Option<String>),
+    /// Delete this, confirmed.
+    Clear(Clear),
 }
 
 impl Options {
-    pub fn new(editor: Option<&str>, folder: Option<String>) -> Self {
-        Self { editor: editor.unwrap_or_default().to_string(), folder, ..Self::default() }
+    pub fn new(editor: Option<&str>, folder: Option<String>, workspace: Option<String>) -> Self {
+        Self { editor: editor.unwrap_or_default().to_string(), folder, workspace, ..Self::default() }
+    }
+
+    /// The deletions offered: all of them in a workspace, or just this
+    /// file's with a single todos file.
+    pub fn clears(&self) -> &'static [Clear] {
+        if self.workspace.is_some() {
+            &[Clear::Items, Clear::Notes, Clear::AllNotes, Clear::AllItems, Clear::Reset]
+        } else {
+            &[Clear::Items, Clear::Notes]
+        }
+    }
+
+    /// The row of the first deletion, after the editor and the folder.
+    pub fn first_clear_row(&self) -> usize {
+        EDITOR_ROW + 1 + usize::from(self.folder.is_some())
+    }
+
+    /// The deletion on `row`, if it's one of those rows.
+    pub fn clear_at(&self, row: usize) -> Option<Clear> {
+        self.clears().get(row.checked_sub(self.first_clear_row())?).copied()
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        let clear = self.clear_at(self.selected);
         if let Some(input) = &mut self.editing {
             match key.code {
                 KeyCode::Esc => self.editing = None,
+                KeyCode::Enter if clear.is_some() => {
+                    let clear = clear.expect("checked");
+                    let word = clear.confirm_word(self.workspace.as_deref());
+                    if input.text.trim() == word {
+                        self.editing = None;
+                        return Action::Clear(clear);
+                    }
+                    self.message = Some((format!("Type {word} exactly to confirm"), false));
+                }
                 KeyCode::Enter if self.selected == EDITOR_ROW => {
                     let command = input.text.trim();
                     let command = (!command.is_empty()).then(|| command.to_string());
@@ -176,7 +279,7 @@ impl Options {
             }
             return Action::Stay;
         }
-        let rows = EDITOR_ROW + 1 + usize::from(self.folder.is_some());
+        let rows = self.first_clear_row() + self.clears().len();
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.selected = (self.selected + 1).min(rows - 1);
@@ -188,6 +291,10 @@ impl Options {
             }
             KeyCode::Char(' ') | KeyCode::Enter if self.selected == EDITOR_ROW => {
                 self.editing = Some(LineInput::new(&self.editor));
+                self.message = None;
+            }
+            KeyCode::Char(' ') | KeyCode::Enter if clear.is_some() => {
+                self.editing = Some(LineInput::default());
                 self.message = None;
             }
             KeyCode::Char(' ') | KeyCode::Enter if self.selected == FOLDER_ROW => {
@@ -264,7 +371,7 @@ mod tests {
 
     #[test]
     fn the_folder_row_comes_after_the_toggles_and_opens_for_typing() {
-        let mut options = Options::new(None, Some("~/todoro".into()));
+        let mut options = Options::new(None, Some("~/todoro".into()), None);
         for _ in 0..5 {
             press(&mut options, KeyCode::Char('j'));
         }
@@ -284,16 +391,14 @@ mod tests {
 
     #[test]
     fn without_a_folder_there_is_no_folder_row() {
-        let mut options = Options::new(None, None);
-        for _ in 0..5 {
-            press(&mut options, KeyCode::Char('j'));
-        }
-        assert_eq!(options.selected, EDITOR_ROW);
+        let options = Options::new(None, None, None);
+        // The deletions follow the editor straight away.
+        assert_eq!(options.clear_at(EDITOR_ROW + 1), Some(Clear::Items));
     }
 
     #[test]
     fn the_editor_row_comes_after_the_toggles_and_takes_a_command() {
-        let mut options = Options::new(None, Some("~/todoro".into()));
+        let mut options = Options::new(None, Some("~/todoro".into()), None);
         options.selected = EDITOR_ROW;
         press(&mut options, KeyCode::Enter);
         assert_eq!(options.editing.as_ref().unwrap().text, "");
@@ -321,7 +426,7 @@ mod tests {
 
     #[test]
     fn esc_while_typing_a_command_keeps_the_old_one() {
-        let mut options = Options::new(Some("hx"), None);
+        let mut options = Options::new(Some("hx"), None, None);
         options.selected = EDITOR_ROW;
         press(&mut options, KeyCode::Enter);
         press(&mut options, KeyCode::Char('x'));
@@ -336,11 +441,11 @@ mod tests {
         assert_eq!(press(&mut options, KeyCode::Char(' ')), Action::Toggle(0));
         press(&mut options, KeyCode::Char('j'));
         assert_eq!(press(&mut options, KeyCode::Enter), Action::Toggle(1));
-        for _ in 0..5 {
+        for _ in 0..20 {
             press(&mut options, KeyCode::Down);
         }
-        assert_eq!(options.selected, EDITOR_ROW);
-        for _ in 0..5 {
+        assert_eq!(options.selected, options.first_clear_row() + options.clears().len() - 1, "the last row");
+        for _ in 0..20 {
             press(&mut options, KeyCode::Char('k'));
         }
         assert_eq!(options.selected, 0);
@@ -348,5 +453,85 @@ mod tests {
             assert_eq!(press(&mut options, code), Action::Close);
         }
         assert_eq!(press(&mut options, KeyCode::Char('x')), Action::Stay);
+    }
+
+    /// Options in a workspace called Work, with a todoro folder.
+    fn in_work() -> Options {
+        Options::new(None, Some("~/todoro".into()), Some("Work".into()))
+    }
+
+    #[test]
+    fn the_deletions_come_last_in_order() {
+        let options = in_work();
+        assert_eq!(options.first_clear_row(), FOLDER_ROW + 1);
+        let shown: Vec<Option<Clear>> = (FOLDER_ROW..FOLDER_ROW + 7).map(|row| options.clear_at(row)).collect();
+        assert_eq!(
+            shown,
+            [None, Some(Clear::Items), Some(Clear::Notes), Some(Clear::AllNotes), Some(Clear::AllItems), Some(Clear::Reset), None]
+        );
+        assert_eq!(Clear::Items.label(Some("Work")), "Delete all items and notes in Work");
+        assert_eq!(Clear::Notes.label(Some("Work")), "Delete all notes in Work");
+        // j stops on the last one.
+        let mut options = in_work();
+        for _ in 0..50 {
+            press(&mut options, KeyCode::Char('j'));
+        }
+        assert_eq!(options.clear_at(options.selected), Some(Clear::Reset));
+    }
+
+    #[test]
+    fn with_a_single_file_only_its_own_deletions_are_offered() {
+        let options = Options::new(None, None, None);
+        assert_eq!(options.clears(), [Clear::Items, Clear::Notes]);
+        assert_eq!(options.first_clear_row(), EDITOR_ROW + 1);
+        assert_eq!(Clear::Items.label(None), "Delete all items and notes");
+        assert_eq!(Clear::Items.confirm_word(None), "delete");
+    }
+
+    #[test]
+    fn a_deletion_needs_its_word_typed_to_confirm() {
+        for (clear, word) in [
+            (Clear::Items, "Work"),
+            (Clear::Notes, "Work"),
+            (Clear::AllNotes, "delete"),
+            (Clear::AllItems, "delete"),
+            (Clear::Reset, "reset"),
+        ] {
+            let mut options = in_work();
+            options.selected = options.first_clear_row() + options.clears().iter().position(|&c| c == clear).unwrap();
+            // Enter asks; nothing is deleted yet.
+            assert_eq!(press(&mut options, KeyCode::Enter), Action::Stay);
+            assert!(options.editing.is_some());
+            // The wrong word says so and waits.
+            for c in "nope".chars() {
+                press(&mut options, KeyCode::Char(c));
+            }
+            assert_eq!(press(&mut options, KeyCode::Enter), Action::Stay, "{clear:?}");
+            assert!(!options.message.as_ref().unwrap().1);
+            for _ in 0..4 {
+                press(&mut options, KeyCode::Backspace);
+            }
+            for c in word.chars() {
+                press(&mut options, KeyCode::Char(c));
+            }
+            assert_eq!(press(&mut options, KeyCode::Enter), Action::Clear(clear));
+            assert!(options.editing.is_none());
+        }
+    }
+
+    #[test]
+    fn esc_backs_out_of_a_deletion() {
+        let mut options = in_work();
+        options.selected = options.first_clear_row();
+        press(&mut options, KeyCode::Enter);
+        for c in "Work".chars() {
+            press(&mut options, KeyCode::Char(c));
+        }
+        assert_eq!(press(&mut options, KeyCode::Esc), Action::Stay);
+        assert!(options.editing.is_none());
+        // Keys like q and o are typed while confirming, not run.
+        press(&mut options, KeyCode::Enter);
+        assert_eq!(press(&mut options, KeyCode::Char('q')), Action::Stay);
+        assert_eq!(options.editing.as_ref().unwrap().text, "q");
     }
 }

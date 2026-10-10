@@ -68,6 +68,21 @@ impl Workspaces {
         fs::remove_dir_all(self.dir.join(name))
     }
 
+    /// Deletes every workspace, for a fresh start: each folder here with a
+    /// todos file, then the todoro folder itself if that leaves it empty.
+    /// Anything else in it stays.
+    pub fn delete_all(&self) -> io::Result<()> {
+        for name in self.list()? {
+            if self.todos_path(&name).exists() {
+                fs::remove_dir_all(self.dir.join(name))?;
+            }
+        }
+        if fs::read_dir(&self.dir).is_ok_and(|mut entries| entries.next().is_none()) {
+            fs::remove_dir(&self.dir)?;
+        }
+        Ok(())
+    }
+
     /// Moves every workspace into `to`, which becomes the todoro folder. If
     /// any would clash with a folder already there, nothing is moved.
     pub fn move_to(&self, to: &Path) -> io::Result<Workspaces> {

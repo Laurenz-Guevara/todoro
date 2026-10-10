@@ -1266,6 +1266,40 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
         }
     }
 
+    // Last, the ways to delete things, each confirmed by typing a word.
+    let text_width = inner_width.saturating_sub(2).max(1);
+    lines.push(Line::default());
+    lines.push(Line::from("Delete".bold().red()));
+    let workspace = options.workspace.as_deref();
+    for (n, clear) in options.clears().iter().enumerate() {
+        let selected = options.selected == options.first_clear_row() + n;
+        let start = lines.len();
+        for (i, part) in wrap(&clear.label(workspace), text_width, usize::MAX).into_iter().enumerate() {
+            let mut row = Line::from(Span::styled(if i == 0 { part } else { format!("  {part}") }, Style::new().fg(Color::Red)));
+            if selected {
+                row = row.bg(SELECTED_BG);
+            }
+            lines.push(row);
+        }
+        lines.extend(wrap(clear.description(), text_width, usize::MAX).into_iter().map(|part| Line::from(format!("  {part}")).dim()));
+        if selected && let Some(input) = &options.editing {
+            let ask = format!("This can't be undone. Type {} to confirm:", clear.confirm_word(workspace));
+            lines.extend(wrap(&ask, text_width, usize::MAX).into_iter().map(|part| Line::from(format!("  {part}"))));
+            let shown = truncate(&input.text, text_width.saturating_sub(2));
+            cursor = Some((lines.len(), 4 + input.text[..input.cursor].width()));
+            lines.push(Line::from(vec!["  › ".red().bold(), shown.into()]));
+        }
+        if selected && let Some((message, ok)) = &options.message {
+            let style = if *ok { Style::new().fg(Color::Green) } else { Style::new().fg(Color::Red) };
+            for part in wrap(message, text_width, usize::MAX) {
+                lines.push(Line::from(Span::styled(format!("  {part}"), style)));
+            }
+        }
+        if selected {
+            selected_lines = start..lines.len();
+        }
+    }
+
     let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
     let area = centered(screen, width, height);
     let room = (width as usize).saturating_sub(2);
@@ -1298,8 +1332,11 @@ fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
     let area = centered(screen, screen.width.saturating_sub(4).min(76), screen.height.saturating_sub(2));
     let room = area.width.saturating_sub(2) as usize;
     let whats_new = format!(" What's new in todoro {} ", changes::VERSION);
+    let welcome = format!(" Welcome to todoro {} ", changes::VERSION);
     let title = if view.since.is_some() {
         fit_first(&[whats_new.as_str(), " What's new ", " New "], room)
+    } else if view.limit.is_some() {
+        fit_first(&[welcome.as_str(), " Welcome ", " Hi "], room)
     } else {
         fit_first(&[" Changelog ", " News "], room)
     };
@@ -1318,6 +1355,12 @@ fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
         }
         lines.push(Line::from(release.title.clone().bold().cyan()));
         markdown_lines(release.notes, width, &mut lines);
+    }
+    if view.limit.is_some() {
+        lines.push(Line::default());
+        let lead = if view.more() { "Older releases are on GitHub" } else { "Every release is also on GitHub" };
+        let older = format!("{lead}: {}", changes::RELEASES_URL);
+        lines.extend(wrap(&older, width, usize::MAX).into_iter().map(|part| Line::from(part).dim()));
     }
 
     let height = inner.height as usize;
@@ -2150,6 +2193,59 @@ mod tests {
         let cursor = terminal.get_cursor_position().unwrap();
         let row: String = (0..60).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
         assert!(row.contains("› 25:00"), "{row}");
+    }
+
+    #[test]
+    fn options_confirming_a_deletion() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
+        type_str(&mut app, "o");
+        let Mode::Options(options) = &mut app.mode else { panic!("the options") };
+        options.folder = Some("~/todoro".into());
+        options.selected = options.first_clear_row();
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Ho");
+        let mut terminal = render_sized(&app, 70, 24);
+        assert_snapshot!(terminal.backend());
+        let cursor = terminal.get_cursor_position().unwrap();
+        let row: String = (0..70).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
+        assert!(row.contains("› Ho"), "{row}");
+    }
+
+    #[test]
+    fn options_delete_section() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
+        type_str(&mut app, "o");
+        let Mode::Options(options) = &mut app.mode else { panic!("the options") };
+        options.folder = Some("~/todoro".into());
+        options.selected = options.first_clear_row() + options.clears().len() - 1;
+        assert_snapshot!(render_sized(&app, 70, 40).backend());
+    }
+
+    #[test]
+    fn welcome_shows_the_newest_releases_and_a_link() {
+        let (mut app, _dir) = app_with(&[]);
+        app.mode = Mode::Changelog(ChangelogView::newest(1));
+        let screen = render_sized(&app, 70, 30).backend().to_string();
+        assert!(screen.contains(&format!("Welcome to todoro {}", changes::VERSION)), "{screen}");
+        // At the end, after the newest release, a link to the rest.
+        type_str(&mut app, "G");
+        let screen = render_sized(&app, 70, 30).backend().to_string();
+        let flat: String = screen.lines().map(|line| line.trim_matches(|c| c == '"' || c == '│' || c == ' ')).collect();
+        assert!(flat.contains("Older releases are on GitHub") || changes::releases(changes::CHANGELOG).len() == 1, "{screen}");
+        assert!(flat.contains(changes::RELEASES_URL), "{screen}");
+        // With every release shown, it still says where they are.
+        app.mode = Mode::Changelog(ChangelogView::newest(99));
+        render_sized(&app, 70, 30);
+        type_str(&mut app, "G");
+        let screen = render_sized(&app, 70, 30).backend().to_string();
+        let flat: String = screen.lines().map(|line| line.trim_matches(|c| c == '"' || c == '│' || c == ' ')).collect();
+        assert!(flat.contains("Every release is also on GitHub"), "{screen}");
+        // But not when N shows them all.
+        app.mode = Mode::Changelog(ChangelogView::all());
+        render_sized(&app, 70, 30);
+        type_str(&mut app, "G");
+        let screen = render_sized(&app, 70, 30).backend().to_string();
+        assert!(!screen.contains("on GitHub"), "{screen}");
     }
 
     #[test]

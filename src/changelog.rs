@@ -11,6 +11,12 @@ pub const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 /// This version, from Cargo.toml.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Where every release's notes are, for when only the newest are shown.
+pub const RELEASES_URL: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/releases");
+
+/// How many releases a first start shows.
+pub const FIRST_START_RELEASES: usize = 5;
+
 /// One release's notes.
 #[derive(Debug, PartialEq)]
 pub struct Release<'a> {
@@ -51,6 +57,9 @@ pub fn releases(changelog: &str) -> Vec<Release<'_>> {
 pub struct ChangelogView {
     /// Only releases newer than this, for "what's new"; all of them if `None`.
     pub since: Option<(u32, u32, u32)>,
+    /// At most this many of the newest, on a first start, with a link to the
+    /// rest.
+    pub limit: Option<usize>,
     /// First visible line.
     pub scroll: usize,
     /// How many lines fit and how many there are once wrapped, recorded when
@@ -61,7 +70,17 @@ pub struct ChangelogView {
 
 impl ChangelogView {
     pub fn all() -> Self {
-        Self { since: None, scroll: 0, height: Cell::new(0), total: Cell::new(0) }
+        Self { since: None, limit: None, scroll: 0, height: Cell::new(0), total: Cell::new(0) }
+    }
+
+    /// The newest few releases, for a first start.
+    pub fn newest(count: usize) -> Self {
+        Self { limit: Some(count), ..Self::all() }
+    }
+
+    /// Whether there are older releases than the ones shown, to link to.
+    pub fn more(&self) -> bool {
+        self.limit.is_some_and(|limit| releases(CHANGELOG).len() > limit)
     }
 
     /// What's new since `version`.
@@ -71,7 +90,11 @@ impl ChangelogView {
 
     /// The releases to show.
     pub fn releases(&self) -> Vec<Release<'static>> {
-        releases(CHANGELOG).into_iter().filter(|release| self.since.is_none_or(|since| release.version > since)).collect()
+        releases(CHANGELOG)
+            .into_iter()
+            .filter(|release| self.since.is_none_or(|since| release.version > since))
+            .take(self.limit.unwrap_or(usize::MAX))
+            .collect()
     }
 
     /// Handles a key and returns `true` when the popup should close.
@@ -101,14 +124,15 @@ impl ChangelogView {
 /// What to show when todoro starts: what's new since the last version seen,
 /// if that's older than this one. With no version recorded, someone with
 /// todos already must have updated from before this was tracked, so they see
-/// this release's notes; someone without any is new and sees nothing.
+/// this release's notes; someone without any is new (or has just reset
+/// todoro) and sees the newest few releases.
 pub fn on_start(last_seen: Option<&str>, has_todos: bool) -> Option<ChangelogView> {
     let current = parse_version(VERSION)?;
     match last_seen.and_then(parse_version) {
         Some(seen) if seen < current => Some(ChangelogView::since(seen)),
         Some(_) => None,
         None if has_todos => releases(CHANGELOG).get(1).map(|previous| ChangelogView::since(previous.version)),
-        None => None,
+        None => Some(ChangelogView::newest(FIRST_START_RELEASES)),
     }
 }
 
@@ -163,8 +187,12 @@ mod tests {
         assert_eq!(view.since, Some((0, 1, 0)));
         // A newer version than this one (after a downgrade): nothing.
         assert!(on_start(Some("99.0.0"), true).is_none());
-        // Nothing recorded and no todos: a new user, so nothing.
-        assert!(on_start(None, false).is_none());
+        // Nothing recorded and no todos: a new user (or a reset), so the
+        // newest few releases.
+        let view = on_start(None, false).unwrap();
+        assert_eq!(view.since, None);
+        assert_eq!(view.releases().len(), releases(CHANGELOG).len().min(FIRST_START_RELEASES));
+        assert_eq!(view.releases()[0].version, current);
         // Nothing recorded but some todos: this release's notes.
         let view = on_start(None, true).unwrap();
         assert_eq!(view.releases()[0].version, current);
@@ -187,5 +215,16 @@ mod tests {
         for code in [KeyCode::Char('q'), KeyCode::Char('N')] {
             assert!(view.handle_key(KeyEvent::new(code, KeyModifiers::NONE)));
         }
+    }
+
+    #[test]
+    fn the_newest_few_link_to_the_rest_only_if_there_are_more() {
+        let all = releases(CHANGELOG).len();
+        let view = ChangelogView::newest(2);
+        assert_eq!(view.releases().len(), 2.min(all));
+        assert_eq!(view.more(), all > 2);
+        assert!(!ChangelogView::newest(all).more());
+        assert!(!ChangelogView::all().more());
+        assert!(RELEASES_URL.starts_with("https://github.com/") && RELEASES_URL.ends_with("/releases"));
     }
 }

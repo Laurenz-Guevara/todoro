@@ -243,6 +243,18 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 - **Notes editor:** a command to open notes with instead of todoro's own editor, like `nvim`. `Enter` types it; an empty one goes back to todoro's editor. The command runs with the notes file after it, through `sh` (or `cmd` on Windows), so arguments and `$EDITOR` work. Editors that open a window and return straight away need their wait flag, like `code --wait`.
 
+**Delete**
+
+The last rows delete things for good. Undo can't bring them back, so each one asks you to type a word to confirm: the workspace's name for the first two, `delete` for the next two, and `reset` for the last.
+
+- **Delete all items and notes in** (the open workspace): every day's items and their notes files. The workspace stays, empty.
+- **Delete all notes in** (the open workspace): every item's notes and the notes files. The items stay.
+- **Delete all notes in every workspace.**
+- **Delete all items and notes in every workspace:** every workspace is emptied, but they all stay.
+- **Reset todoro:** deletes every workspace and your settings, and starts again as if todoro were newly installed: you choose a folder, then see the notes for the last few releases. Only todoro's own folders go; anything else you keep in the todoro folder stays, and so does the folder if it isn't empty.
+
+Deleting notes removes the `.md` files in each workspace's `notes` folder, conflict copies included, and nothing else there (like an `.obsidian` folder).
+
 ### Workspaces
 
 Workspaces keep separate sets of todos and notes, as if you had several todoros: say, Personal and Work. The one you're in shows in the top-left corner of the list.
@@ -251,7 +263,7 @@ Workspaces keep separate sets of todos and notes, as if you had several todoros:
 
 ### What's new
 
-The first time you start todoro after updating, it shows what's new in the versions since the one you last used. `N` shows the notes for every release at any time; `j` / `k` scroll (`Space` a page, `g` / `G` to the top or bottom), the corner shows where you are (`Top`, a percentage, `Bot`, or `All` when it all fits), and `Esc` closes them. The notes are built into todoro, so they always match the version you have.
+The first time you start todoro after updating, it shows what's new in the versions since the one you last used. The very first time (or after a reset), it shows the last five releases, with a link to the rest on GitHub. `N` shows the notes for every release at any time; `j` / `k` scroll (`Space` a page, `g` / `G` to the top or bottom), the corner shows where you are (`Top`, a percentage, `Bot`, or `All` when it all fits), and `Esc` closes them. The notes are built into todoro, so they always match the version you have.
 
 ### Help
 

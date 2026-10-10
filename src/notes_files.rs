@@ -67,6 +67,26 @@ impl NotesFiles {
         Ok(file)
     }
 
+    /// Deletes every notes file in the folder, conflict copies too: the
+    /// `.md` files (and any half-written `.md.tmp`), but nothing else, such
+    /// as an editor's settings folder.
+    pub fn delete_all(&mut self) -> io::Result<()> {
+        let entries = match fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if entry.file_type()?.is_file() && (name.ends_with(".md") || name.ends_with(".md.tmp")) {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        self.known.clear();
+        Ok(())
+    }
+
     /// Loads every item's notes from its file. An item whose file has gone
     /// has no notes any more.
     pub fn load(&mut self, days: &mut BTreeMap<String, Vec<Item>>) -> io::Result<()> {
