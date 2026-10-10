@@ -18,6 +18,8 @@ pub struct Settings {
     pub semantic_icons: bool,
     /// Draw everything without colour.
     pub no_colour: bool,
+    /// Start new items pinned, so they move on to today until they're done.
+    pub pin_new_items: bool,
     /// The newest version whose release notes have been shown, so "what's
     /// new" appears once after each update. Not an option in the popup.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -59,6 +61,13 @@ pub const TOGGLES: &[Toggle] = &[
         description: "Draw everything in the terminal's own colours. Highlights use reversed text.",
         get: |s| s.no_colour,
         set: |s, on| s.no_colour = on,
+    },
+    Toggle {
+        section: "Items",
+        label: "Pin new items",
+        description: "New items start pinned, so they move on to today until they're done. m unpins one.",
+        get: |s| s.pin_new_items,
+        set: |s, on| s.pin_new_items = on,
     },
 ];
 

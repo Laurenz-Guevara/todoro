@@ -118,6 +118,8 @@ If todoro is open at midnight, this happens then too, and the list moves on to t
 
 Completed items always stay on the day you completed them, so you can go back with `h` to see what you did.
 
+If most of what you add should follow you until it's done, turn on **Pin new items** in the options (`o`). New items then start pinned, and `m` unpins the ones that belong to their day.
+
 ### Insert mode
 
 Adding or editing an item puts you in insert mode.
@@ -222,6 +224,10 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 - **Semantic priority icons:** show `∧` High, `–` Medium and `∨` Low beside triaged items, as well as the coloured number, for anyone who can't tell the colours apart.
 - **No colours:** draw everything in your terminal's own colours. Highlights such as the selected item use reversed text instead. This starts on if you set the standard [`NO_COLOR`](https://no-color.org) environment variable, until you change it here.
+
+**Items**
+
+- **Pin new items:** new items, from the list or the calendar, start pinned, so they move on to today until they're done. Off by default. Pasted items keep their own pin.
 
 **Notes**
 

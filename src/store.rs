@@ -241,6 +241,9 @@ impl Store {
         self.days.get(&key(day)).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// Inserts a plain new item, for tests. The app adds items through
+    /// `App::add_item`, which may pin them.
+    #[cfg(test)]
     pub fn insert(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
         self.insert_items(day, index, vec![Item { text, ..Item::default() }]).map(|_| ())
     }

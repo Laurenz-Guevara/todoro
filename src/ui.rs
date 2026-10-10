@@ -2556,7 +2556,7 @@ mod tests {
         let Mode::Options(options) = &mut app.mode else { panic!("the options") };
         // A fixed path, so the snapshot doesn't depend on where the test runs.
         options.folder = Some("~/todoro".into());
-        type_str(&mut app, "jjj");
+        type_str(&mut app, &"j".repeat(crate::options::FOLDER_ROW));
         press(&mut app, KeyCode::Enter);
         assert_snapshot!(render_sized(&app, 70, 28).backend());
     }
@@ -2564,7 +2564,8 @@ mod tests {
     #[test]
     fn options_typing_a_notes_editor() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "ojj");
+        type_str(&mut app, "o");
+        type_str(&mut app, &"j".repeat(crate::options::EDITOR_ROW));
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "nvim");
         let mut terminal = render_sized(&app, 70, 22);
@@ -2578,7 +2579,8 @@ mod tests {
     fn options_with_a_notes_editor_set() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         app.settings.editor = Some("nvim".into());
-        type_str(&mut app, "ojj");
+        type_str(&mut app, "o");
+        type_str(&mut app, &"j".repeat(crate::options::EDITOR_ROW));
         assert_snapshot!(render_sized(&app, 70, 18).backend());
     }
 

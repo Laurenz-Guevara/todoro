@@ -248,7 +248,7 @@ impl App {
                             // New items belong to the day on screen, after any carried ones.
                             let carried = self.carried();
                             let index = index.saturating_sub(carried).min(self.store.open_count(self.day));
-                            self.store.insert(self.day, index, text)?;
+                            self.add_item(self.day, index, text)?;
                             self.selected = carried + index;
                             if next {
                                 let index = self.selected + 1;
@@ -316,7 +316,7 @@ impl App {
                 }
                 calendar::Action::Add(day, text) => {
                     let index = self.store.open_count(day);
-                    self.store.insert(day, index, text)?;
+                    self.add_item(day, index, text)?;
                 }
                 calendar::Action::Help => self.open_help(),
             },
@@ -551,6 +551,13 @@ impl App {
         let mut editor = NotesEditor::new(&self.store.items(slot.day)[slot.index].notes);
         editor.register = self.notes_register.clone();
         self.mode = Mode::Notes(Box::new(editor));
+        Ok(())
+    }
+
+    /// Adds a new item, pinned if the options say new items start pinned.
+    fn add_item(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
+        let item = Item { text, pinned: self.settings.pin_new_items, ..Item::default() };
+        self.store.insert_items(day, index, vec![item])?;
         Ok(())
     }
 
@@ -2779,7 +2786,7 @@ mod tests {
         type_str(&mut app, "o");
         let Mode::Options(options) = &app.mode else { panic!("the options") };
         assert!(options.folder.is_some());
-        type_str(&mut app, "jjj");
+        type_str(&mut app, &"j".repeat(crate::options::FOLDER_ROW));
         press(&mut app, KeyCode::Enter);
         for _ in 0..200 {
             press(&mut app, KeyCode::Backspace);
@@ -2804,7 +2811,8 @@ mod tests {
         let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
         let to = dir.path().join("taken");
         std::fs::create_dir_all(to.join("Work")).unwrap();
-        type_str(&mut app, "ojjj");
+        type_str(&mut app, "o");
+        type_str(&mut app, &"j".repeat(crate::options::FOLDER_ROW));
         press(&mut app, KeyCode::Enter);
         for _ in 0..200 {
             press(&mut app, KeyCode::Backspace);
@@ -3000,7 +3008,8 @@ mod tests {
     #[test]
     fn the_editor_is_set_from_the_options() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "ojj");
+        type_str(&mut app, "o");
+        type_str(&mut app, &"j".repeat(crate::options::EDITOR_ROW));
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "hx");
         press(&mut app, KeyCode::Enter);
@@ -3091,5 +3100,61 @@ mod tests {
         assert!(matches!(app.mode, Mode::Help { .. }));
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::View(_)));
+    }
+
+    #[test]
+    fn new_items_are_unpinned_by_default() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "aone");
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.items()[0].pinned);
+    }
+
+    #[test]
+    fn with_pin_new_items_on_new_items_start_pinned() {
+        let (mut app, _dir) = app_with(&["old"]);
+        app.settings.pin_new_items = true;
+        // a, and each of several with A.
+        type_str(&mut app, "anew");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Atwo");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "three");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(items(&app), ["old", "new", "two", "three"]);
+        let pinned: Vec<bool> = app.items().iter().map(|item| item.pinned).collect();
+        assert_eq!(pinned, [false, true, true, true]);
+        // Editing an item leaves its pin alone.
+        type_str(&mut app, "gge!");
+        press(&mut app, KeyCode::Enter);
+        assert!(!app.items()[0].pinned);
+        assert_eq!(items(&app)[0], "old!");
+        // m still unpins one.
+        type_str(&mut app, "jm");
+        assert!(!app.items()[1].pinned);
+        // Undo takes back the unpinning, then the edit.
+        type_str(&mut app, "uu");
+        assert!(app.items()[1].pinned);
+        assert_eq!(items(&app), ["old", "new", "two", "three"]);
+    }
+
+    #[test]
+    fn with_pin_new_items_on_items_added_in_the_calendar_start_pinned() {
+        let (mut app, _dir) = app_with(&[]);
+        app.settings.pin_new_items = true;
+        type_str(&mut app, "clatrip");
+        press(&mut app, KeyCode::Enter);
+        let tomorrow = today().succ_opt().unwrap();
+        assert_eq!(app.store.items(tomorrow)[0].text, "trip");
+        assert!(app.store.items(tomorrow)[0].pinned);
+    }
+
+    #[test]
+    fn pasting_keeps_each_items_own_pin_with_pin_new_items_on() {
+        let (mut app, _dir) = app_with(&["plain"]);
+        app.settings.pin_new_items = true;
+        type_str(&mut app, "yyp");
+        assert_eq!(items(&app), ["plain", "plain"]);
+        assert!(!app.items()[1].pinned);
     }
 }
