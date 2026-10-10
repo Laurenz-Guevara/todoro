@@ -2,6 +2,46 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [0.6.0] - 2026-10-10
+
+### Breaking
+
+- The searches have changed. `Space` `Space` now finds items by their text, and `s` searches inside notes only. `S` is gone.
+- Deadlines are saved in your todos file. An older version of todoro would drop them if it saved the file.
+
+### Features
+
+Deadlines:
+
+- `@` (or `:deadline`) gives an item a deadline. Choose the day on the year calendar, press `Enter`, then type a time like `13:00`, `1300` or `1pm`, or press `Enter` again for the whole day. `d` removes a deadline, and `Esc` backs out without changing anything.
+- An item with a deadline shows `◷` and when it's due in the pin's place, yellow on the day and red once it's passed. It moves on like a pinned item, up to its deadline day and not after.
+- When something is overdue, the top-right corner of the list says so. `go` (or `:overdue`) lists what's overdue.
+- A new 12-hour clock option shows times like `11PM` instead of `23:00`.
+
+Search:
+
+- `Space` `Space` finds items by their text, on any day. With nothing typed, it lists every item, so you can browse them.
+- `s` searches inside every item's notes, and `Enter` opens the notes to edit on the line it found.
+- `Esc` stops typing, so you can move through the results with `j` and `k`. `i` types again, and `Esc` or `q` closes.
+- On a wide terminal, the selected item's notes show beside the results.
+
+Notes:
+
+- `v` shows an item's notes formatted: headings, lists and task lists, quotes, code, tables, links, bold and italic. `i` edits them and comes back.
+- In the options, set your own editor for notes, like `nvim`. With one set, the notes search opens it on the line it found.
+
+Options:
+
+- Pin new items: new items start pinned. Off by default.
+- `/` searches the options.
+- A Delete section removes every note, or every item and note, in this workspace or all of them. Each asks you to type a word to confirm.
+- Reset todoro deletes every workspace and your settings, and starts again as if newly installed.
+- A first start now shows the newest releases, with a link to the rest on GitHub.
+
+### Fixes
+
+- Lines in notes stay as you typed them when shown formatted, instead of joining into one paragraph.
+
 ## [0.5.0] - 2026-10-06
 
 ### Breaking
