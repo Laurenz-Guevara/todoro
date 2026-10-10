@@ -66,7 +66,8 @@ todoro --help
 | `H` / `L` | Move the selected item to the previous / next day, and go with it |
 | `a` | Add an item below the cursor |
 | `A` | Add several items: `Enter` adds each one and starts the next, `Esc` stops |
-| `e` | Edit the selected item |
+| `e` | Edit the selected item, with the cursor at the end |
+| `E` | Edit the selected item with its text cleared, to write it again (leaving it empty keeps it as it was) |
 | `x` | Mark the selected item done, or not done again |
 | `m` | Pin or unpin the selected item, so it moves to the next day until done |
 | `@` / `:deadline` | Set a deadline on the selected item |

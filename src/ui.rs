@@ -462,6 +462,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Insert { editing: false, .. } => {
             ("INSERT", Color::Green, &[("←/→ move", 1), ("enter/esc save", 2), ("(empty discards)", 0)])
         }
+        Mode::Insert { replacing: true, .. } => {
+            ("INSERT", Color::Green, &[("←/→ move", 1), ("enter/esc save", 2), ("(empty keeps it)", 0)])
+        }
         Mode::Insert { editing: true, .. } => {
             ("INSERT", Color::Green, &[("←/→ move", 1), ("enter/esc save", 2), ("(empty asks to delete)", 0)])
         }

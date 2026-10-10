@@ -32,8 +32,9 @@ pub enum Mode {
     /// Typing an item at `index`. When `editing`, it replaces the existing item
     /// there; otherwise it is inserted as a new one.
     /// With `repeat` (from `A`), Enter adds the item and starts another below
-    /// it, until Esc or Enter on an empty line.
-    Insert { index: usize, input: LineInput, editing: bool, repeat: bool },
+    /// it, until Esc or Enter on an empty line. With `replacing` (from `E`),
+    /// the item's text starts cleared, and leaving it empty keeps it as it was.
+    Insert { index: usize, input: LineInput, editing: bool, repeat: bool, replacing: bool },
     /// Asking whether to delete the items at these screen rows.
     ConfirmDelete { rows: Vec<usize> },
     /// Selecting several items, from the row `anchor` to the selected row.
@@ -261,12 +262,14 @@ impl App {
         match &mut self.mode {
             Mode::Normal if self.command.is_some() => self.command_key(key.code),
             Mode::Normal => self.normal_key(key.code)?,
-            Mode::Insert { index, input, editing, repeat } => {
+            Mode::Insert { index, input, editing, repeat, replacing } => {
                 if input.handle_key(key.code) {
-                    let (index, text, editing) = (*index, input.text.trim().to_string(), *editing);
+                    let (index, text, editing, replacing) = (*index, input.text.trim().to_string(), *editing, *replacing);
                     let next = *repeat && key.code == KeyCode::Enter && !text.is_empty();
                     self.mode = Mode::Normal;
                     match (editing, text.is_empty()) {
+                        // Nothing typed after E: leave it as it was.
+                        (true, true) if replacing => {}
                         (true, true) => self.mode = Mode::ConfirmDelete { rows: vec![index] },
                         (true, false) => {
                             if let Some(slot) = self.slot(index) {
@@ -282,7 +285,7 @@ impl App {
                             self.selected = carried + index;
                             if next {
                                 let index = self.selected + 1;
-                                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true };
+                                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true, replacing: false };
                             }
                         }
                     }
@@ -554,16 +557,21 @@ impl App {
             // empty day), append to the end of the open items instead.
             KeyCode::Char('a') => {
                 let index = if self.selected < open { self.selected + 1 } else { open };
-                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: false };
+                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: false, replacing: false };
             }
             // Like a, but Enter keeps adding items until Esc or an empty line.
             KeyCode::Char('A') => {
                 let index = if self.selected < open { self.selected + 1 } else { open };
-                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true };
+                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true, replacing: false };
             }
             KeyCode::Char('e') if len > 0 => {
                 let input = LineInput::new(&self.items()[self.selected].text);
-                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false };
+                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: false };
+            }
+            // Edit with the text cleared, to write it again, as vim's cc.
+            KeyCode::Char('E') if len > 0 => {
+                let input = LineInput::default();
+                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: true };
             }
             KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete { rows: vec![self.selected] },
             KeyCode::Char('V') if len > 0 => self.mode = Mode::Visual { anchor: self.selected },
@@ -3758,5 +3766,72 @@ mod tests {
         // Enter on the list opens it at the top, as before.
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.start_external_edit().unwrap().unwrap().0, "nvim");
+    }
+
+    #[test]
+    fn e_edits_with_the_cursor_at_the_end() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "e");
+        let Mode::Insert { input, replacing, .. } = &app.mode else { panic!("editing") };
+        assert_eq!(input.text, "Buy milk");
+        assert_eq!(input.cursor, "Buy milk".len());
+        assert!(!replacing);
+        type_str(&mut app, " and eggs");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["Buy milk and eggs"]);
+    }
+
+    #[test]
+    fn capital_e_edits_with_the_text_cleared() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Café ☕"]);
+        type_str(&mut app, "jE");
+        let Mode::Insert { input, index: 1, editing: true, replacing: true, .. } = &app.mode else { panic!("replacing") };
+        assert_eq!(input.text, "");
+        type_str(&mut app, "Tea ☕");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["Buy milk", "Tea ☕"]);
+        // One undo step brings the old text back.
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Buy milk", "Café ☕"]);
+    }
+
+    #[test]
+    fn leaving_the_text_empty_after_capital_e_keeps_the_item() {
+        for key in [KeyCode::Enter, KeyCode::Esc] {
+            let (mut app, _dir) = app_with(&["Buy milk"]);
+            type_str(&mut app, "Ex");
+            press(&mut app, KeyCode::Backspace);
+            press(&mut app, key);
+            assert!(matches!(app.mode, Mode::Normal), "no delete popup");
+            assert_eq!(items(&app), ["Buy milk"]);
+        }
+        // Whereas emptying it with e still asks to delete it.
+        let (mut app, _dir) = app_with(&["Buy"]);
+        type_str(&mut app, "e");
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
+    }
+
+    #[test]
+    fn capital_e_keeps_the_items_notes_pin_and_deadline() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        app.store.set_notes(today(), 0, "numbers".into()).unwrap();
+        app.store.cycle_priority(today(), 0).unwrap();
+        type_str(&mut app, "EQ3 report");
+        press(&mut app, KeyCode::Enter);
+        let item = &app.items()[0];
+        assert_eq!(item.text, "Q3 report");
+        assert_eq!(item.notes, "numbers");
+        assert!(item.priority.is_some());
+    }
+
+    #[test]
+    fn capital_e_on_an_empty_list_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "E");
+        assert!(matches!(app.mode, Mode::Normal));
     }
 }
