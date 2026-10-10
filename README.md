@@ -70,6 +70,7 @@ todoro --help
 | `x` | Mark the selected item done, or not done again |
 | `m` | Pin or unpin the selected item, so it moves to the next day until done |
 | `@` / `:deadline` | Set a deadline on the selected item |
+| `go` / `:overdue` | List the items past their deadline |
 | `!` | Triage the selected item: High, Medium, Low, then no priority again |
 | `d` | Delete the selected item (asks to confirm) |
 | `yy` | Copy the selected item |
@@ -127,6 +128,8 @@ If most of what you add should follow you until it's done, turn on **Pin new ite
 `@` (or `:deadline`) gives the selected item a deadline. It opens the year calendar: move to the day (`h`/`j`/`k`/`l`, `H`/`L` for months, `t` for today) and press `Enter`. Then type a time, like `13:00`, `1300`, `1pm` or `11:30am`, and press `Enter`; or press `Enter` straight away for the whole day. `Esc` goes back to choosing the day, and `d` removes a deadline.
 
 An item with a deadline shows `◷` and when it's due where the pin would be, like `◷ 19:25` (today), `◷ tomorrow` or `◷ Fri 9AM`. It's yellow on the day it's due, and red once it's passed.
+
+Whenever something is overdue, the top-right corner of the list says how many, like `⚠ 2 overdue · go`, on whichever day you're looking at. `go` (or `:overdue`) lists them, most recently due first, with their notes beside them on a wide terminal; `Enter` goes to one.
 
 A deadline works like a pin that stops: the item moves on to today and shows on the days ahead, up to its deadline day, and not after. If you don't finish it in time, it stays on its deadline day, in red, rather than following you. Setting a deadline unpins an item, since the deadline decides how far it moves on; to pin it again, remove the deadline first.
 
@@ -204,7 +207,7 @@ Write `#words` in an item to tag it, like "Call #work about the #budget". Tags a
 There are two fuzzy searches, like finding files and searching inside them in vim:
 
 - `Space` `Space` finds items by their text, on every day. Before you type, it lists every item, closest day first, so you can browse them.
-- `s` searches inside every item's notes, line by line, and shows each item with its best matching line under it. The items' own text isn't searched. `Enter` opens the notes to edit, with the cursor on that line (or opens the file in your own editor, if you've set one).
+- `s` searches inside every item's notes, line by line, and shows each item with its best matching line under it. The items' own text isn't searched. `Enter` opens the notes to edit, with the cursor on that line. With your own editor set, it opens the file there, on that line too for editors that take `+N` (vi, vim, nvim, nano, emacs, micro and kak).
 
 Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words match separately, capitals only match capitals, and plain letters match accented ones. The best matches come first, with the closest days first among equals, and the matched letters are highlighted.
 

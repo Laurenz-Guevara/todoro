@@ -100,6 +100,18 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .border_type(BorderType::Rounded)
         .title(title.clone().centered())
         .title_bottom(Line::from(hint).centered().dim());
+    // How many items are overdue in the top-right corner, wherever you are,
+    // since they stay on their deadline day rather than following you.
+    let overdue = app.store.overdue_count(app.today, app.now);
+    if overdue > 0 {
+        let beside = (area.width as usize).saturating_sub(title.width()) / 2;
+        let long = format!(" ⚠ {overdue} overdue · go ");
+        let short = format!(" ⚠ {overdue} ");
+        let shown = [long, short].into_iter().find(|text| text.width() + 2 <= beside);
+        if let Some(text) = shown {
+            block = block.title(Line::from(text.red().bold()).right_aligned());
+        }
+    }
     // The workspace's name in the top-left corner, if it fits beside the date.
     if let Some(name) = &app.workspace {
         let name = format!(" {name} ");
@@ -1068,6 +1080,8 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let tag_title = search.tag.as_ref().map(|tag| truncate(&format!(" #{tag} "), room));
     let title = if let Some(title) = &tag_title {
         title.as_str()
+    } else if search.overdue {
+        fit_first(&[" Overdue ", " Late "], room)
     } else if search.kind == search::Kind::Notes {
         fit_first(&[" Search notes ", " Notes "], room)
     } else {
@@ -1109,7 +1123,9 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let prompt = "Search: ";
     let query = &search.input.text;
     let shown = if query.is_empty() {
-        let hints: &[&str] = if search.tag.is_some() {
+        let hints: &[&str] = if search.overdue {
+            &["every item past its deadline; type to narrow down", "type to narrow down", ""]
+        } else if search.tag.is_some() {
             &["type to narrow these down", "narrow down", ""]
         } else if search.kind == search::Kind::Notes {
             &["type to search inside every item's notes", "inside every note", "notes"]
@@ -1131,9 +1147,11 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
         search.preview_height.set(0);
         return;
     }
-    let hits = search.find(&app.store, app.today);
+    let hits = search.find(&app.store, app.today, app.now);
     if hits.is_empty() {
-        let message = if query.trim().is_empty() {
+        let message = if search.overdue && query.trim().is_empty() {
+            "Nothing is overdue".to_string()
+        } else if query.trim().is_empty() {
             "No items yet".to_string()
         } else if search.kind == search::Kind::Notes {
             format!("No notes match \"{query}\"")
@@ -2282,6 +2300,31 @@ mod tests {
         let overdue = (0..50).map(|x| &buffer[(x, 1)]).find(|cell| cell.symbol() == "◷").unwrap();
         assert_eq!(overdue.fg, Color::Red);
         assert!(overdue.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn overdue_shows_in_the_corner_on_any_day() {
+        let (mut app, _dir) = deadlines_app(false);
+        let corner = |app: &App, width: u16| render_sized(app, width, 8).backend().to_string().lines().next().unwrap().to_string();
+        assert!(corner(&app, 90).contains("⚠ 1 overdue · go"), "{}", corner(&app, 90));
+        // Narrower, just the count; narrower still, nothing.
+        assert!(corner(&app, 50).contains("⚠ 1 "), "{}", corner(&app, 50));
+        assert!(!corner(&app, 30).contains('⚠'), "{}", corner(&app, 30));
+        // On other days too.
+        type_str(&mut app, "l");
+        assert!(corner(&app, 90).contains("⚠ 1 overdue"));
+        // And not once it's done.
+        type_str(&mut app, "h");
+        app.store.toggle_done(today(), 0).unwrap();
+        assert!(!corner(&app, 90).contains('⚠'));
+    }
+
+    #[test]
+    fn nothing_overdue_says_so() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "go");
+        let screen = render_sized(&app, 60, 8).backend().to_string();
+        assert!(screen.contains(" Overdue ") && screen.contains("Nothing is overdue"), "{screen}");
     }
 
     #[test]

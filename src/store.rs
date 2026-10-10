@@ -29,6 +29,11 @@ pub struct Item {
 }
 
 impl Item {
+    /// Whether it's open and past its deadline, on `today` at `now`.
+    pub fn is_overdue(&self, today: NaiveDate, now: chrono::NaiveTime) -> bool {
+        !self.done && self.deadline.is_some_and(|deadline| deadline.is_overdue(today, now))
+    }
+
     /// The day this item, stored on an earlier day, moves on to by `today`:
     /// today if it's pinned, or up to its deadline day. `None` if it stays
     /// where it is (completed, or neither pinned nor due).
@@ -204,6 +209,11 @@ impl Store {
     pub fn notes_edited(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
         self.reload_notes(day, index)?;
         self.save()
+    }
+
+    /// How many open items are past their deadline, on `today` at `now`.
+    pub fn overdue_count(&self, today: NaiveDate, now: chrono::NaiveTime) -> usize {
+        self.days.values().flatten().filter(|item| item.is_overdue(today, now)).count()
     }
 
     /// Deletes every item's notes, and every notes file, for good.

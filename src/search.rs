@@ -4,7 +4,7 @@
 
 use std::cell::Cell;
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveTime};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -27,6 +27,8 @@ pub struct Search {
     pub kind: Kind,
     /// Only items with this tag (lower case, without the `#`), if any.
     pub tag: Option<String>,
+    /// Only open items past their deadline (`go`).
+    pub overdue: bool,
     /// The selected result.
     pub selected: usize,
     /// The first result on screen, kept by the UI between frames.
@@ -75,6 +77,7 @@ impl Search {
             input: LineInput::default(),
             kind,
             tag: None,
+            overdue: false,
             selected: 0,
             offset: Cell::new(0),
             typing: true,
@@ -88,6 +91,11 @@ impl Search {
     /// Every item with the tag `name`, narrowed down by typing.
     pub fn for_tag(name: String) -> Self {
         Self { tag: Some(name), ..Self::new(Kind::Items) }
+    }
+
+    /// Every overdue item, most recently due first, narrowed down by typing.
+    pub fn overdue() -> Self {
+        Self { overdue: true, ..Self::new(Kind::Items) }
     }
 
     /// Handles a key, given the results there are now. While typing, every
@@ -154,8 +162,13 @@ impl Search {
         self.preview_scroll = 0;
     }
 
-    pub fn find(&self, store: &Store, today: NaiveDate) -> Vec<Hit> {
-        find(store, &self.input.text, self.kind, self.tag.as_deref(), today)
+    /// The results, on `today` at `now` (which says what's overdue).
+    pub fn find(&self, store: &Store, today: NaiveDate, now: NaiveTime) -> Vec<Hit> {
+        let mut hits = find(store, &self.input.text, self.kind, self.tag.as_deref(), today);
+        if self.overdue {
+            hits.retain(|hit| store.items(hit.day)[hit.index].is_overdue(today, now));
+        }
+        hits
     }
 
     /// Moves the selection, showing the top of the newly selected item's notes.
@@ -377,7 +390,7 @@ mod tests {
         for c in "bu".chars() {
             search.handle_key(key(KeyCode::Char(c)), &[]);
         }
-        let hits = search.find(&store, today());
+        let hits = search.find(&store, today(), NaiveTime::MIN);
         search.handle_key(key(KeyCode::Down), &hits);
         assert_eq!(search.selected, 1);
         search.handle_key(key(KeyCode::Char('y')), &hits);
@@ -395,7 +408,7 @@ mod tests {
         let (store, _dir) = store();
         let mut search = Search::new(Kind::Items);
         search.handle_key(key(KeyCode::Char('u')), &[]);
-        let hits = search.find(&store, today());
+        let hits = search.find(&store, today(), NaiveTime::MIN);
         assert!(hits.len() >= 2);
         search.handle_key(key(KeyCode::Up), &hits);
         assert_eq!(search.selected, 0);
@@ -412,7 +425,7 @@ mod tests {
         let (store, _dir) = store();
         let mut search = Search::new(Kind::Items);
         search.input = LineInput::new("dentist");
-        let hits = search.find(&store, today());
+        let hits = search.find(&store, today(), NaiveTime::MIN);
         assert_eq!(search.handle_key(key(KeyCode::Enter), &hits), Action::Open { day: day(10), index: 0, line: None });
         assert_eq!(search.handle_key(key(KeyCode::Enter), &[]), Action::Stay);
         // Esc stops typing, then closes.
@@ -425,7 +438,7 @@ mod tests {
     fn moving(store: &Store) -> (Search, Vec<Hit>) {
         let mut search = Search::new(Kind::Items);
         search.input = LineInput::new("u");
-        let hits = search.find(store, today());
+        let hits = search.find(store, today(), NaiveTime::MIN);
         assert!(hits.len() >= 4, "enough to move through");
         search.handle_key(key(KeyCode::Esc), &hits);
         (search, hits)

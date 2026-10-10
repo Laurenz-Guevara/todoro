@@ -58,6 +58,29 @@ pub enum Mode {
     Help { help: Help, back: Box<Mode> },
 }
 
+/// Notes asked to be opened in the user's own editor.
+struct External {
+    slot: Slot,
+    /// The line to open them on, counting from 0, from searching notes.
+    line: Option<usize>,
+    /// The state before, once the editor is open, for undo.
+    before: Option<State>,
+}
+
+/// Editors that open a file on a line given as `+N` before it.
+const PLUS_LINE_EDITORS: &[&str] = &["vi", "vim", "nvim", "nano", "emacs", "emacsclient", "micro", "kak"];
+
+/// `command` with `+N` added to open the file on `line` (counting from 0),
+/// if it's an editor known to take that; otherwise just `command`.
+fn with_line(command: &str, line: Option<usize>) -> String {
+    let program = command.split_whitespace().next().unwrap_or_default();
+    let name = std::path::Path::new(program).file_stem().and_then(|name| name.to_str()).unwrap_or_default();
+    match line {
+        Some(line) if PLUS_LINE_EDITORS.contains(&name) => format!("{command} +{}", line + 1),
+        _ => command.to_string(),
+    }
+}
+
 /// Where an item on the current screen is stored.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Slot {
@@ -106,9 +129,8 @@ pub struct App {
     /// Text last copied or deleted in any item's notes, kept for the next
     /// notes screen as vim keeps its register.
     notes_register: Option<Register>,
-    /// Notes to open in the user's own editor (`Settings::editor`): the item,
-    /// once `Enter` asks for it, then also the state before, while it's open.
-    external: Option<(Slot, Option<State>)>,
+    /// Notes to open in the user's own editor (`Settings::editor`).
+    external: Option<External>,
     /// Whether editing was started from the viewer, to go back to it after.
     view_after_edit: bool,
 }
@@ -420,7 +442,7 @@ impl App {
                 tags::Action::Open(name) => self.mode = Mode::Search(Box::new(Search::for_tag(name))),
             },
             Mode::Search(search) => {
-                let hits = search.find(&self.store, self.today);
+                let hits = search.find(&self.store, self.today, self.now);
                 match search.handle_key(key, &hits) {
                     search::Action::Stay => {}
                     search::Action::Close => self.mode = Mode::Normal,
@@ -433,6 +455,9 @@ impl App {
                             self.open_notes()?;
                             if let Mode::Notes(editor) = &mut self.mode {
                                 editor.start_on_line(line + 1);
+                            }
+                            if let Some(external) = &mut self.external {
+                                external.line = Some(line);
                             }
                         }
                     }
@@ -469,6 +494,11 @@ impl App {
         match (self.pending.take(), code) {
             (Some('g'), KeyCode::Char('g')) => {
                 self.selected = row(count.unwrap_or(1));
+                return Ok(());
+            }
+            // go: "go to what's overdue".
+            (Some('g'), KeyCode::Char('o')) => {
+                self.mode = Mode::Search(Box::new(Search::overdue()));
                 return Ok(());
             }
             // Space Space finds items, as it finds files in many vim setups.
@@ -586,7 +616,7 @@ impl App {
     fn open_notes(&mut self) -> io::Result<()> {
         let Some(slot) = self.slot(self.selected) else { return Ok(()) };
         if self.editor().is_some() {
-            self.external = Some((slot, None));
+            self.external = Some(External { slot, line: None, before: None });
             return Ok(());
         }
         // Read the notes file again, in case something else changed it.
@@ -686,6 +716,7 @@ impl App {
                 match command.as_str() {
                     "q" | "q!" | "wq" | "wq!" | "x" | "x!" => self.quit = true,
                     "deadline" => self.open_deadline(),
+                    "overdue" => self.mode = Mode::Search(Box::new(Search::overdue())),
                     line => {
                         if let Ok(n) = line.parse::<usize>() {
                             let len = self.slots().len();
@@ -862,7 +893,7 @@ impl App {
     /// file. Call `finish_external_edit` once the editor has closed.
     pub fn start_external_edit(&mut self) -> io::Result<Option<(String, PathBuf)>> {
         // Only a request not started yet; one that's open waits for its finish.
-        let Some((slot, None)) = self.external else { return Ok(None) };
+        let Some(External { slot, line, before: None }) = self.external else { return Ok(None) };
         let Some(command) = self.editor().map(String::from) else {
             self.external = None;
             return Ok(None);
@@ -871,14 +902,14 @@ impl App {
         self.store.reload_notes(slot.day, slot.index)?;
         let before = self.state();
         let Some(path) = self.store.notes_path(slot.day, slot.index)? else { return Ok(None) };
-        self.external = Some((slot, Some(before)));
-        Ok(Some((command, path)))
+        self.external = Some(External { slot, line, before: Some(before) });
+        Ok(Some((with_line(&command, line), path)))
     }
 
     /// Takes in what the user's editor saved, as one change to undo, and
     /// says if the editor couldn't run.
     pub fn finish_external_edit(&mut self, result: io::Result<std::process::ExitStatus>) -> io::Result<()> {
-        let Some((slot, Some(before))) = self.external.take() else { return Ok(()) };
+        let Some(External { slot, before: Some(before), .. }) = self.external.take() else { return Ok(()) };
         let command = self.editor().unwrap_or_default().to_string();
         self.store.notes_edited(slot.day, slot.index)?;
         self.record(before);
@@ -2112,7 +2143,7 @@ mod tests {
         let (mut app, _dir) = app_with(&["one", "two"]);
         type_str(&mut app, "  ");
         let Mode::Search(search) = &app.mode else { panic!("finding items") };
-        assert_eq!(search.find(&app.store, app.today).len(), 2);
+        assert_eq!(search.find(&app.store, app.today, app.now).len(), 2);
         // Esc to move, j, Enter goes to the second.
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "j");
@@ -2518,7 +2549,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         let Mode::Search(search) = &app.mode else { panic!("should be showing the tag's items") };
         assert_eq!(search.tag.as_deref(), Some("work"));
-        assert_eq!(search.find(&app.store, today()).len(), 2);
+        assert_eq!(search.find(&app.store, today(), app.now).len(), 2);
         // Enter goes to the selected item, the closest to today.
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.day, today());
@@ -3634,7 +3665,7 @@ mod tests {
         type_str(&mut app, "ssam");
         press(&mut app, KeyCode::Enter);
         let (command, path) = app.start_external_edit().unwrap().unwrap();
-        assert_eq!(command, "nvim");
+        assert_eq!(command, "nvim +1", "on the line found");
         assert!(path.ends_with("trip.md"));
     }
 
@@ -3646,5 +3677,86 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.selected, 1);
+    }
+
+    /// An app at noon on `today()` with an item overdue since yesterday, one
+    /// overdue since 9:00 today, one due later today, and a done one.
+    fn app_with_overdue() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(&["Due at nine", "Due tonight", "Done late"]);
+        app.now = NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        let yesterday = today().pred_opt().unwrap();
+        app.store.insert(yesterday, 0, "Due yesterday".into()).unwrap();
+        let at = |date: NaiveDate, h: Option<u32>| Some(crate::deadline::Deadline { date, time: h.map(|h| NaiveTime::from_hms_opt(h, 0, 0).unwrap()) });
+        app.store.set_deadline(yesterday, 0, at(yesterday, None)).unwrap();
+        app.store.set_deadline(today(), 0, at(today(), Some(9))).unwrap();
+        app.store.set_deadline(today(), 1, at(today(), Some(20))).unwrap();
+        app.store.set_deadline(today(), 2, at(yesterday, None)).unwrap();
+        app.store.toggle_done(today(), 2).unwrap();
+        (app, dir)
+    }
+
+    #[test]
+    fn go_lists_whats_overdue() {
+        let (mut app, _dir) = app_with_overdue();
+        assert_eq!(app.store.overdue_count(app.today, app.now), 2);
+        type_str(&mut app, "go");
+        let Mode::Search(search) = &app.mode else { panic!("the overdue items") };
+        assert!(search.overdue);
+        let found: Vec<String> = search
+            .find(&app.store, app.today, app.now)
+            .iter()
+            .map(|hit| app.store.items(hit.day)[hit.index].text.clone())
+            .collect();
+        assert_eq!(found, ["Due at nine", "Due yesterday"]);
+        // Typing narrows them down, and Enter goes to one on its day.
+        type_str(&mut app, "yest");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.day, today().pred_opt().unwrap());
+        assert_eq!(items(&app), ["Due yesterday"]);
+    }
+
+    #[test]
+    fn colon_overdue_does_the_same_as_go() {
+        let (mut app, _dir) = app_with_overdue();
+        type_str(&mut app, ":overdue");
+        press(&mut app, KeyCode::Enter);
+        let Mode::Search(search) = &app.mode else { panic!("the overdue items") };
+        assert!(search.overdue);
+    }
+
+    #[test]
+    fn g_then_another_key_still_works() {
+        let (mut app, _dir) = app_with(&["one", "two", "three"]);
+        type_str(&mut app, "Ggg");
+        assert_eq!(app.selected, 0);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn editors_that_take_a_line_get_one() {
+        assert_eq!(with_line("nvim", Some(3)), "nvim +4");
+        assert_eq!(with_line("vim -p", Some(0)), "vim -p +1");
+        assert_eq!(with_line("/usr/bin/nvim", Some(9)), "/usr/bin/nvim +10");
+        assert_eq!(with_line("nano", Some(1)), "nano +2");
+        // Others don't know +N, so they get the file alone.
+        assert_eq!(with_line("code --wait", Some(3)), "code --wait");
+        assert_eq!(with_line("hx", Some(3)), "hx");
+        // And with no line, nothing is added.
+        assert_eq!(with_line("nvim", None), "nvim");
+    }
+
+    #[test]
+    fn a_notes_search_opens_your_editor_on_the_line_found() {
+        let (mut app, _dir) = app_with(&["Trip"]);
+        app.store.set_notes(today(), 0, "# Trip\nbook train\nask Sam".into()).unwrap();
+        app.settings.editor = Some("nvim".into());
+        type_str(&mut app, "ssam");
+        press(&mut app, KeyCode::Enter);
+        let (command, _) = app.start_external_edit().unwrap().unwrap();
+        assert_eq!(command, "nvim +3");
+        app.finish_external_edit(ok()).unwrap();
+        // Enter on the list opens it at the top, as before.
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.start_external_edit().unwrap().unwrap().0, "nvim");
     }
 }

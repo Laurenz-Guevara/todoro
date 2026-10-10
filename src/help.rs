@@ -29,6 +29,7 @@ pub const SECTIONS: &[Section] = &[
             ("x", "Mark the selected item done / not done"),
             ("m", "Pin / unpin: move to today until done"),
             ("@ / :deadline", "Set a deadline: a day, then a time or none"),
+            ("go / :overdue", "List the items past their deadline"),
             ("V", "Select several items"),
             ("!", "Triage: High, Medium, Low, then none"),
             ("d", "Delete the selected item"),

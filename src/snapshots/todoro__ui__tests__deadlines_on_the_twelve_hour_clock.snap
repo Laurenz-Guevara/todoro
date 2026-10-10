@@ -2,7 +2,7 @@
 source: src/ui.rs
 expression: "render_sized(&app, 50, 12).backend()"
 ---
-"╭──────── Monday, October 5 2026 (today) ────────╮"
+"╭──────── Monday, October 5 2026 (today) ─── ⚠ 1 ╮"
 "│1. Overdue ◷ 9AM                                │"
 "│2. Due later today ◷ 7:25PM                     │"
 "│3. Tomorrow ◷ tomorrow                          │"
