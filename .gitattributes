@@ -1,3 +1,7 @@
 # Snapshots are compared byte for byte, so keep their line endings the same
 # on every system (git on Windows would otherwise check them out with CRLF).
 *.snap text eol=lf
+
+# CHANGELOG.md is built into todoro and shown inside it, so it keeps LF
+# everywhere too, including the Windows release builds.
+CHANGELOG.md text eol=lf

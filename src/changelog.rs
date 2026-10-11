@@ -41,7 +41,9 @@ pub fn releases(changelog: &str) -> Vec<Release<'_>> {
     while let Some(start) = rest.find("\n## [") {
         rest = &rest[start + 1..];
         let heading_end = rest.find('\n').unwrap_or(rest.len());
-        let heading = &rest[3..heading_end];
+        // Without the \r of a Windows line ending, as git there checks
+        // files out with them unless told otherwise.
+        let heading = rest[3..heading_end].trim_end();
         let body = &rest[heading_end..];
         let end = body.find("\n## [").unwrap_or(body.len());
         if let Some(version) = heading.split(']').next().and_then(|v| parse_version(v.trim_start_matches('[')))
@@ -226,5 +228,15 @@ mod tests {
         assert!(!ChangelogView::newest(all).more());
         assert!(!ChangelogView::all().more());
         assert!(RELEASES_URL.starts_with("https://github.com/") && RELEASES_URL.ends_with("/releases"));
+    }
+
+    #[test]
+    fn windows_line_endings_are_read_the_same() {
+        let unix = "# Changelog\n\n## [0.2.0] - 2026-10-05\n\n- New\n\n## [0.1.0] - 2026-10-01\n\n- Old\n";
+        let windows = unix.replace('\n', "\r\n");
+        let titles = |text: &str| releases(text).into_iter().map(|release| release.title).collect::<Vec<_>>();
+        assert_eq!(titles(&windows), ["0.2.0 - 2026-10-05", "0.1.0 - 2026-10-01"]);
+        assert_eq!(titles(&windows), titles(unix));
+        assert_eq!(releases(&windows)[0].notes, "- New");
     }
 }

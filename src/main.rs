@@ -223,4 +223,14 @@ mod tests {
         let out = std::fs::read_to_string(dir.path().join("out")).unwrap();
         assert_eq!(out, format!("one two|{}", path.display()));
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_editor_command_runs_through_cmd_with_the_file_last() {
+        let path = Path::new(r"C:\Users\sam\a note.md");
+        let command = editor_command("code --wait", path);
+        assert_eq!(command.get_program(), "cmd");
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["/C", "code", "--wait", r"C:\Users\sam\a note.md"]);
+    }
 }
