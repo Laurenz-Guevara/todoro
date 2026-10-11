@@ -16,6 +16,7 @@ use crate::calendar::{self, Calendar, Zoom};
 use crate::changelog::{self as changes, ChangelogView};
 use crate::store::{Item, Priority};
 use crate::help::{Help, SECTIONS};
+use crate::leader::{self, Leader};
 use crate::notes::NotesEditor;
 use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, Options, TOGGLES};
 use crate::search::{self, Hit, Search};
@@ -56,6 +57,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Workspaces(picker) => draw_workspaces(frame, app, picker),
         Mode::Tags(picker) => draw_tags(frame, app, picker),
         Mode::Remind(picker) => draw_remind(frame, app, picker),
+        Mode::Leader(leader) => draw_leader(frame, leader, main),
         _ => {}
     }
 
@@ -589,6 +591,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
         }
+        Mode::Leader(_) => ("SPACE", Color::Magenta, &[("type a key", 2), ("⌫ back", 0), ("esc cancel", 1)]),
         Mode::Remind(picker) if picker.amount.is_some() => {
             ("REMIND", Color::Yellow, &[("enter save", 2), ("esc back", 1)])
         }
@@ -1164,6 +1167,50 @@ fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
     frame.set_cursor_position(Position::new(inner.x + col.min(inner.width.saturating_sub(1)), inner.y));
 }
 
+/// The `Space` popup, along the bottom of the list in `area` as in
+/// which-key: what each next key does, in as many columns as fit.
+fn draw_leader(frame: &mut Frame, leader: &Leader, area: Rect) {
+    // Inside the list's border, so the popup doesn't cover it.
+    let area = area.inner(ratatui::layout::Margin::new(1, 1));
+    let entries = leader.entries();
+    let width = area.width.min(80);
+    let inner_width = (width as usize).saturating_sub(4).max(1);
+    // Each cell is "key  label", padded to the widest so columns line up.
+    let key_width = entries.iter().map(|entry| leader::key_name(entry.key).width()).max().unwrap_or(1);
+    let label_width = entries.iter().map(|entry| entry.label.width()).max().unwrap_or(1);
+    let gap = 3;
+    let cell = (key_width + 2 + label_width).min(inner_width);
+    let columns = ((inner_width + gap) / (cell + gap)).max(1);
+    let rows = entries.len().div_ceil(columns).max(1);
+
+    let mut lines: Vec<Line> = vec![Line::default(); rows];
+    for (i, entry) in entries.iter().enumerate() {
+        // Fill down each column, then across, so the order reads top to bottom.
+        let line = &mut lines[i % rows];
+        if i >= rows {
+            line.push_span(" ".repeat(gap));
+        }
+        let key = format!("{:>key_width$}", leader::key_name(entry.key));
+        let label = truncate(&entry.label, cell.saturating_sub(key_width + 2));
+        let label = format!("{label:<width$}", width = cell.saturating_sub(key_width + 2));
+        line.push_span(key.yellow().bold());
+        line.push_span("  ");
+        line.push_span(if entry.group { label.magenta() } else { label.into() });
+    }
+
+    let height = (rows as u16 + 2).min(area.height);
+    let popup = Rect::new(area.x + (area.width - width) / 2, area.bottom().saturating_sub(height), width, height);
+    let typed: String = leader.typed.chars().map(|c| format!(" {}", leader::key_name(c))).collect();
+    let title = truncate(&format!(" Space{typed} "), (width as usize).saturating_sub(2));
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Magenta))
+        .title(title.bold())
+        .padding(Padding::horizontal(1));
+    frame.render_widget(Clear, popup);
+    frame.render_widget(Paragraph::new(lines).block(block), popup);
+}
+
 /// The `r` popup: how long before the item to be reminded of it, or then how
 /// many hours, days or months.
 fn draw_remind(frame: &mut Frame, app: &App, picker: &reminder::Picker) {
@@ -1248,8 +1295,12 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let tag_title = search.tag.as_ref().map(|tag| truncate(&format!(" #{tag} "), room));
     let title = if let Some(title) = &tag_title {
         title.as_str()
-    } else if search.overdue {
-        fit_first(&[" Overdue ", " Late "], room)
+    } else if let Some(filter) = search.filter {
+        match filter {
+            search::Filter::Overdue => fit_first(&[" Overdue ", " Late "], room),
+            search::Filter::Deadlines => fit_first(&[" Deadlines ", " Due "], room),
+            search::Filter::Reminders => fit_first(&[" Reminders ", " Remind "], room),
+        }
     } else if search.kind == search::Kind::Notes {
         fit_first(&[" Search notes ", " Notes "], room)
     } else {
@@ -1291,8 +1342,12 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     let prompt = "Search: ";
     let query = &search.input.text;
     let shown = if query.is_empty() {
-        let hints: &[&str] = if search.overdue {
+        let hints: &[&str] = if search.filter == Some(search::Filter::Overdue) {
             &["every item past its deadline; type to narrow down", "type to narrow down", ""]
+        } else if search.filter == Some(search::Filter::Deadlines) {
+            &["every deadline, soonest first; type to narrow down", "type to narrow down", ""]
+        } else if search.filter == Some(search::Filter::Reminders) {
+            &["every reminder, soonest first; type to narrow down", "type to narrow down", ""]
         } else if search.tag.is_some() {
             &["type to narrow these down", "narrow down", ""]
         } else if search.kind == search::Kind::Notes {
@@ -1317,8 +1372,12 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
     }
     let hits = search.find(&app.store, app.today, app.now);
     if hits.is_empty() {
-        let message = if search.overdue && query.trim().is_empty() {
+        let message = if search.filter == Some(search::Filter::Overdue) && query.trim().is_empty() {
             "Nothing is overdue".to_string()
+        } else if search.filter == Some(search::Filter::Deadlines) && query.trim().is_empty() {
+            "No open item has a deadline".to_string()
+        } else if search.filter == Some(search::Filter::Reminders) && query.trim().is_empty() {
+            "No open item has a reminder".to_string()
         } else if query.trim().is_empty() {
             "No items yet".to_string()
         } else if search.kind == search::Kind::Notes {
@@ -1347,7 +1406,35 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
             let item = &app.store.items(hit.day)[hit.index];
             let date = if hit.day == app.today { "Today".to_string() } else { hit.day.format("%a %-d %b").to_string() };
             let date_style = if hit.day == app.today { Style::new().fg(Color::Green) } else { Style::new().fg(Color::DarkGray) };
+            // Deadlines and reminders say when, as the date is the day it's on.
+            let when = match search.filter {
+                // Coloured as on the list: red once passed, bold once due.
+                Some(search::Filter::Deadlines) => item.deadline.map(|deadline| {
+                    let text = format!("{DEADLINE_MARKER}{}", deadline.describe(app.today, app.settings.twelve_hour));
+                    let style = if deadline.is_overdue(app.today, app.now) {
+                        Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    } else if deadline.date == app.today {
+                        Style::new().fg(Color::Yellow)
+                    } else {
+                        Style::new().fg(Color::Cyan)
+                    };
+                    Span::styled(text, style)
+                }),
+                Some(search::Filter::Reminders) => item.reminder_due_at(hit.day).map(|at| {
+                    let time = Some(at.time()).filter(|time| *time != chrono::NaiveTime::MIN);
+                    let when = Deadline { date: at.date(), time }.describe(app.today, app.settings.twelve_hour);
+                    let style = if at <= app.today.and_time(app.now) {
+                        Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::new().fg(Color::Cyan)
+                    };
+                    Span::styled(format!(" {REMINDER_MARKER} {when}"), style)
+                }),
+                _ => None,
+            };
+            let text_width = text_width.saturating_sub(when.as_ref().map_or(0, Span::width)).max(1);
             let mut text = highlighted(&item.text, &hit.text_matches, text_width, item_style(item), match_style);
+            text.extend(when);
             let mut lines = Vec::new();
             if stacked {
                 lines.push(Line::from(Span::styled(date, date_style)));
@@ -1985,6 +2072,20 @@ mod tests {
     }
 
     #[test]
+    fn space_menu() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom"]);
+        type_str(&mut app, " ");
+        assert_snapshot!(render_sized(&app, 70, 12).backend());
+    }
+
+    #[test]
+    fn space_menu_narrowed_to_a_group() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom"]);
+        type_str(&mut app, " s");
+        assert_snapshot!(render_sized(&app, 70, 12).backend());
+    }
+
+    #[test]
     fn empty_day() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         type_str(&mut app, "l");
@@ -2386,6 +2487,9 @@ mod tests {
             out.push_str(&format!("{name}\n{}\n", render_sized(app, width, 12).backend()));
         };
         shot(&app, "list");
+        type_str(&mut app, " ");
+        shot(&app, "space menu");
+        press(&mut app, KeyCode::Esc);
         type_str(&mut app, "a");
         shot(&app, "adding");
         press(&mut app, KeyCode::Esc);
@@ -2542,6 +2646,20 @@ mod tests {
     }
 
     #[test]
+    fn listing_deadlines() {
+        let (mut app, _dir) = deadlines_app(false);
+        type_str(&mut app, " sd");
+        assert_snapshot!(render_sized(&app, 60, 12).backend());
+    }
+
+    #[test]
+    fn listing_reminders() {
+        let (mut app, _dir) = reminders_app();
+        type_str(&mut app, " sr");
+        assert_snapshot!(render_sized(&app, 60, 10).backend());
+    }
+
+    #[test]
     fn choosing_a_reminder() {
         let (mut app, _dir) = reminders_app();
         type_str(&mut app, "r");
@@ -2602,7 +2720,7 @@ mod tests {
     #[test]
     fn options_searching() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
-        type_str(&mut app, "o/notes");
+        type_str(&mut app, " o/notes");
         let mut terminal = render_sized(&app, 70, 30);
         assert_snapshot!(terminal.backend());
         // The cursor is in the search.
@@ -2614,14 +2732,14 @@ mod tests {
     #[test]
     fn options_searching_for_nothing() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "o/zzz");
+        type_str(&mut app, " o/zzz");
         assert_snapshot!(render_sized(&app, 50, 12).backend());
     }
 
     #[test]
     fn options_confirming_a_deletion() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         let Mode::Options(options) = &mut app.mode else { panic!("the options") };
         options.folder = Some("~/todoro".into());
         options.selected = options.first_clear_row();
@@ -2637,7 +2755,7 @@ mod tests {
     #[test]
     fn options_delete_section() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         let Mode::Options(options) = &mut app.mode else { panic!("the options") };
         options.folder = Some("~/todoro".into());
         options.selected = options.first_clear_row() + options.clears().len() - 1;
@@ -2707,7 +2825,7 @@ mod tests {
             app.store.insert(on(d), index, text.into()).unwrap();
         }
         app.store.insert(NaiveDate::from_ymd_opt(2026, 12, 25).unwrap(), 0, "Christmas".into()).unwrap();
-        type_str(&mut app, "c");
+        type_str(&mut app, " c");
         type_str(&mut app, keys);
         (app, dir)
     }
@@ -2795,14 +2913,14 @@ mod tests {
         app.store
             .set_notes(app.day, 0, "## Shop\n- [ ] oat milk\n- [x] **bread**\n\n> the big bottle".into())
             .unwrap();
-        type_str(&mut app, "sa");
+        type_str(&mut app, " sga");
         assert_snapshot!(render_sized(&app, 120, 20).backend());
     }
 
     #[test]
     fn search_moving_through_results_with_a_preview() {
         let (mut app, _dir) = search_app("");
-        type_str(&mut app, "sdash");
+        type_str(&mut app, " sgdash");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "j");
         let terminal = render_sized(&app, 120, 20);
@@ -2825,7 +2943,7 @@ mod tests {
 
     #[test]
     fn searching_notes() {
-        let (app, _dir) = search_app("sdashboard");
+        let (app, _dir) = search_app(" sgdashboard");
         assert_snapshot!(render_sized(&app, 70, 14).backend());
     }
 
@@ -2838,7 +2956,7 @@ mod tests {
 
     #[test]
     fn search_empty_and_no_matches() {
-        let (mut app, _dir) = search_app("s");
+        let (mut app, _dir) = search_app(" sg");
         let empty = render_sized(&app, 70, 8).backend().to_string();
         type_str(&mut app, "zzz");
         let none = render_sized(&app, 70, 8).backend().to_string();
@@ -2847,7 +2965,7 @@ mod tests {
 
     #[test]
     fn search_narrow() {
-        let (app, _dir) = search_app("sdashboard");
+        let (app, _dir) = search_app(" sgdashboard");
         assert_snapshot!(render_sized(&app, 30, 14).backend());
     }
 
@@ -2871,14 +2989,14 @@ mod tests {
     fn options_popup() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         app.settings.semantic_icons = true;
-        type_str(&mut app, "oj");
+        type_str(&mut app, " oj");
         assert_snapshot!(render_sized(&app, 70, 16).backend());
     }
 
     #[test]
     fn options_popup_narrow() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         assert_snapshot!(render_sized(&app, 30, 12).backend());
     }
 
@@ -2900,10 +3018,10 @@ mod tests {
         type_str(&mut app, "!jm");
         app.settings.no_colour = true;
         let mut screens = vec![render(&app)];
-        type_str(&mut app, "c");
+        type_str(&mut app, " c");
         screens.push(render_sized(&app, 70, 24));
         press(&mut app, KeyCode::Esc);
-        type_str(&mut app, "sfix");
+        type_str(&mut app, " sgfix");
         screens.push(render_sized(&app, 70, 14));
         for terminal in &screens {
             let buffer = terminal.backend().buffer();
@@ -2964,14 +3082,14 @@ mod tests {
     #[test]
     fn tag_list() {
         let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home", "Send #work report"]);
-        type_str(&mut app, "#j");
+        type_str(&mut app, " tj");
         assert_snapshot!(render_sized(&app, 60, 12).backend());
     }
 
     #[test]
     fn tag_list_when_there_are_none() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "#");
+        type_str(&mut app, " t");
         assert_snapshot!(render_sized(&app, 40, 10).backend());
     }
 
@@ -2980,7 +3098,7 @@ mod tests {
         let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home"]);
         let later = app.day + chrono::Duration::days(5);
         app.store.insert(later, 0, "Send #Work report".into()).unwrap();
-        type_str(&mut app, "#");
+        type_str(&mut app, " t");
         press(&mut app, KeyCode::Enter);
         assert_snapshot!(render_sized(&app, 60, 12).backend());
     }
@@ -3248,14 +3366,14 @@ mod tests {
     #[test]
     fn workspaces_popup() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home", "Side project", "Work"]);
-        type_str(&mut app, "Wj");
+        type_str(&mut app, " wj");
         assert_snapshot!(render_sized(&app, 60, 14).backend());
     }
 
     #[test]
     fn deleting_a_workspace() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
-        type_str(&mut app, "WjdWor");
+        type_str(&mut app, " wjdWor");
         let mut terminal = render_sized(&app, 60, 16);
         assert_snapshot!(terminal.backend());
         // The cursor is after what's been typed.
@@ -3267,7 +3385,7 @@ mod tests {
     #[test]
     fn options_with_the_todoro_folder() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         let Mode::Options(options) = &mut app.mode else { panic!("the options") };
         // A fixed path, so the snapshot doesn't depend on where the test runs.
         options.folder = Some("~/todoro".into());
@@ -3279,7 +3397,7 @@ mod tests {
     #[test]
     fn options_typing_a_notes_editor() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         type_str(&mut app, &"j".repeat(crate::options::EDITOR_ROW));
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "nvim");
@@ -3294,7 +3412,7 @@ mod tests {
     fn options_with_a_notes_editor_set() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         app.settings.editor = Some("nvim".into());
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         type_str(&mut app, &"j".repeat(crate::options::EDITOR_ROW));
         assert_snapshot!(render_sized(&app, 70, 18).backend());
     }

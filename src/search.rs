@@ -1,6 +1,6 @@
 //! Fuzzy search across every day: finding items by their text (`Space
-//! Space`, like finding files), or searching inside their notes (`s`, like
-//! grep).
+//! Space`, like finding files), or searching inside their notes (`Space s
+//! g`), each item's best line.
 
 use std::cell::Cell;
 
@@ -12,6 +12,17 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::input::LineInput;
 use crate::store::Store;
 use crate::tags::has_tag;
+
+/// Which items a list of them keeps, before typing narrows it down.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Filter {
+    /// Open items past their deadline (`go`).
+    Overdue,
+    /// Open items with a deadline, soonest first (`Space s d`).
+    Deadlines,
+    /// Open items with a reminder, soonest first (`Space s r`).
+    Reminders,
+}
 
 /// What a search looks through.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,8 +38,8 @@ pub struct Search {
     pub kind: Kind,
     /// Only items with this tag (lower case, without the `#`), if any.
     pub tag: Option<String>,
-    /// Only open items past their deadline (`go`).
-    pub overdue: bool,
+    /// Only some items, if any: overdue, or with a deadline or reminder.
+    pub filter: Option<Filter>,
     /// The selected result.
     pub selected: usize,
     /// The first result on screen, kept by the UI between frames.
@@ -77,7 +88,7 @@ impl Search {
             input: LineInput::default(),
             kind,
             tag: None,
-            overdue: false,
+            filter: None,
             selected: 0,
             offset: Cell::new(0),
             typing: true,
@@ -95,7 +106,12 @@ impl Search {
 
     /// Every overdue item, most recently due first, narrowed down by typing.
     pub fn overdue() -> Self {
-        Self { overdue: true, ..Self::new(Kind::Items) }
+        Self::filtered(Filter::Overdue)
+    }
+
+    /// Every item `filter` keeps, narrowed down by typing.
+    pub fn filtered(filter: Filter) -> Self {
+        Self { filter: Some(filter), ..Self::new(Kind::Items) }
     }
 
     /// Handles a key, given the results there are now. While typing, every
@@ -163,10 +179,26 @@ impl Search {
     }
 
     /// The results, on `today` at `now` (which says what's overdue).
+    /// Deadlines and reminders come soonest first until something is typed,
+    /// then best match first.
     pub fn find(&self, store: &Store, today: NaiveDate, now: NaiveTime) -> Vec<Hit> {
         let mut hits = find(store, &self.input.text, self.kind, self.tag.as_deref(), today);
-        if self.overdue {
-            hits.retain(|hit| store.items(hit.day)[hit.index].is_overdue(today, now));
+        let item = |hit: &Hit| &store.items(hit.day)[hit.index];
+        match self.filter {
+            None => {}
+            Some(Filter::Overdue) => hits.retain(|hit| item(hit).is_overdue(today, now)),
+            Some(Filter::Deadlines) => {
+                hits.retain(|hit| !item(hit).done && item(hit).deadline.is_some());
+                if self.input.text.trim().is_empty() {
+                    hits.sort_by_key(|hit| item(hit).deadline.map(|deadline| (deadline.date, deadline.time)));
+                }
+            }
+            Some(Filter::Reminders) => {
+                hits.retain(|hit| item(hit).reminder_due_at(hit.day).is_some());
+                if self.input.text.trim().is_empty() {
+                    hits.sort_by_key(|hit| item(hit).reminder_due_at(hit.day));
+                }
+            }
         }
         hits
     }
@@ -525,5 +557,42 @@ mod tests {
         search.handle_key(ctrl('d'), &hits);
         assert_eq!(search.preview_scroll, 5);
         assert_eq!(search.input.text, "u");
+    }
+
+    fn noon() -> NaiveTime {
+        NaiveTime::from_hms_opt(12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn deadlines_list_open_items_with_one_soonest_first() {
+        use crate::deadline::Deadline;
+        let (mut store, _dir) = store();
+        // Buy milk (today) due in 10 days, Dentist (day 10) due in 3, Buy
+        // stamps (3 days ago) due at 9:00 today, and Call mum done.
+        let due = |days: i64, time: Option<u32>| Some(Deadline { date: day(days), time: time.map(|h| NaiveTime::from_hms_opt(h, 0, 0).unwrap()) });
+        store.set_deadline(today(), 0, due(10, None)).unwrap();
+        store.set_deadline(day(10), 0, due(3, Some(9))).unwrap();
+        store.set_deadline(day(-3), 0, due(0, Some(9))).unwrap();
+        store.set_deadline(day(2), 0, due(1, None)).unwrap();
+        let search = Search::filtered(Filter::Deadlines);
+        let hits = search.find(&store, today(), noon());
+        assert_eq!(texts(&store, &hits), ["Buy stamps", "Dentist at 3pm", "Buy milk"]);
+        // Typing narrows them down.
+        let mut search = Search::filtered(Filter::Deadlines);
+        search.input = LineInput::new("dent");
+        assert_eq!(texts(&store, &search.find(&store, today(), noon())), ["Dentist at 3pm"]);
+    }
+
+    #[test]
+    fn reminders_list_open_items_with_one_by_when_they_go_off() {
+        use crate::reminder::{Reminder, Unit};
+        let (mut store, _dir) = store();
+        // Dentist (day 10) 2 days before goes off on day 8; Café (day 1)
+        // 3 hours before at 21:00 today; Call mum is done.
+        store.set_reminder(day(10), 0, Some(Reminder::Before { amount: 2, unit: Unit::Days })).unwrap();
+        store.set_reminder(day(1), 0, Some(Reminder::Before { amount: 3, unit: Unit::Hours })).unwrap();
+        store.set_reminder(day(2), 0, Some(Reminder::Before { amount: 1, unit: Unit::Days })).unwrap();
+        let hits = Search::filtered(Filter::Reminders).find(&store, today(), noon());
+        assert_eq!(texts(&store, &hits), ["Café with Zoë", "Dentist at 3pm"]);
     }
 }

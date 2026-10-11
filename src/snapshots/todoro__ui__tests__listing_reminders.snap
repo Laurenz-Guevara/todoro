@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 10).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1╭ Reminders ───────────────────────────────────────────╮ │"
+"│2│ Search: type to narrow down                          │ │"
+"│3│ ──────────────────────────────────────────────────── │ │"
+"│ │ Thu 8 Oct  Buy a birthday gift ⚑ 3 Oct               │ │"
+"│ │ Today      Water plants ⚑ yesterday                  │ │"
+"│ │ Today      Call the bank ⚑ 22:00                     │ │"
+"│ │                                                      │ │"
+"╰─╰──── ↑/↓ select · ↵ go to item · esc stop typing ─────╯─╯"
+" SEARCH   ↑/↓ select  ↵ go to item  esc stop typing         "

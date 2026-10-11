@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 12).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ──────── ⚠ 1 ╮"
+"│1╭ Deadlines ───────────────────────────────────────────╮ │"
+"│2│ Search: type to narrow down                          │ │"
+"│3│ ──────────────────────────────────────────────────── │ │"
+"│4│ Today      Overdue ◷ 09:00                           │ │"
+"│5│ Today      Due later today ◷ 19:25                   │ │"
+"│─│ Today      Tomorrow ◷ tomorrow                       │─│"
+"│✓│ Today      Next month ◷ 5 Nov 23:00                  │ │"
+"│ │                                                      │ │"
+"│ │                                                      │ │"
+"╰─╰──── ↑/↓ select · ↵ go to item · esc stop typing ─────╯─╯"
+" SEARCH   ↑/↓ select  ↵ go to item  esc stop typing         "

@@ -1,6 +1,6 @@
 # todoro
 
-A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and pin the ones you want to follow you to the next day with `m`. Any item can have longer notes, which you open with `Enter`, and a calendar (`c`) lets you plan weeks or months ahead.
+A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and pin the ones you want to follow you to the next day with `m`. Any item can have longer notes, which you open with `Enter`, and a calendar (`Space` `c`) lets you plan weeks or months ahead.
 
 ```
 ╭───────────── Monday, October 5 2026 (today) ─────────────╮
@@ -81,19 +81,25 @@ todoro --help
 | `Enter` | Edit the selected item's notes, in your own editor if you've set one |
 | `v` | View the selected item's notes, formatted |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
-| `c` | Open the calendar |
+| `Space` | Open the menu of the commands below |
 | `Space` `Space` | Find items by their text, on any day |
-| `s` | Search inside every item's notes |
-| `#` | List your tags, to show every item with one |
-| `o` | Options: accessibility, your own notes editor, the todoro folder |
-| `N` | What's new: the notes for every release |
-| `W` | Workspaces: switch, create or delete |
+| `Space` `s` `g` | Search inside every item's notes |
+| `Space` `s` `d` | List every open item with a deadline, soonest first |
+| `Space` `s` `r` | List every open item with a reminder, soonest first |
+| `Space` `s` `o` | Search the options |
+| `Space` `c` | Open the calendar |
+| `Space` `t` | List your tags, to show every item with one |
+| `Space` `o` | Options: accessibility, your own notes editor, the todoro folder |
+| `Space` `w` | Workspaces: switch, create or delete |
+| `Space` `n` | What's new: the notes for every release |
 | `?` | Show all keybindings |
 | `q` / `:q` | Quit |
 
+Keys you use all the time have one key each. Less frequent commands are behind `Space`: press it and a menu along the bottom shows what each next key does, like which-key in Neovim. Each key you type narrows it down to the commands that still match, and runs the one it finishes. A key that matches nothing closes the menu, as does `Esc`; `Backspace` steps back a key.
+
 Undo covers everything you change from the list, including moving items between days and a whole visit to an item's notes, and takes you back to where the change was made.
 
-Pinned items are marked with `⚲` and items that have notes with `≡`. A triaged item's number is coloured by its priority, including while it's selected: red for High, yellow for Medium and green for Low. If colours are hard to tell apart, turn on semantic icons in the options (`o`) to also show `∧` High, `–` Medium and `∨` Low.
+Pinned items are marked with `⚲` and items that have notes with `≡`. A triaged item's number is coloured by its priority, including while it's selected: red for High, yellow for Medium and green for Low. If colours are hard to tell apart, turn on semantic icons in the options (`Space` `o`) to also show `∧` High, `–` Medium and `∨` Low.
 
 ### Selecting several items
 
@@ -123,7 +129,7 @@ If todoro is open at midnight, this happens then too, and the list moves on to t
 
 Completed items always stay on the day you completed them, so you can go back with `h` to see what you did.
 
-If most of what you add should follow you until it's done, turn on **Pin new items** in the options (`o`). New items then start pinned, and `m` unpins the ones that belong to their day.
+If most of what you add should follow you until it's done, turn on **Pin new items** in the options (`Space` `o`). New items then start pinned, and `m` unpins the ones that belong to their day.
 
 ### Deadlines
 
@@ -162,7 +168,7 @@ With `A`, `Enter` adds the item and starts a new one below it, so you can type a
 
 `Enter` on an item opens its notes: free text that isn't shown on the main list. The notes screen has its own small vim-style editor, with line numbers, and saves as you type.
 
-To use your own editor instead, open the options (`o`) and set the notes editor to its command, like `nvim`, `hx` or `code --wait`. `Enter` then opens the item's Markdown file in it, and todoro picks up what you saved when it closes. Leave the command empty to go back to todoro's editor.
+To use your own editor instead, open the options (`Space` `o`) and set the notes editor to its command, like `nvim`, `hx` or `code --wait`. `Enter` then opens the item's Markdown file in it, and todoro picks up what you saved when it closes. Leave the command empty to go back to todoro's editor.
 
 `v` on an item shows its notes formatted, for reading: headings, lists and task lists (`- [ ]` and `- [x]`), quotes, code, tables, links and **bold** or *italic* text.
 
@@ -210,14 +216,16 @@ You can paste text from elsewhere straight into notes, in either mode: it goes i
 
 ### Tags
 
-Write `#words` in an item to tag it, like "Call #work about the #budget". Tags are coloured on the list and ignore case, so `#Work` and `#work` are the same tag. `#` lists every tag with how many items have it; pick one with `j` / `k` and press `Enter` to see all its items across every day, where you can type to narrow them down and press `Enter` to go to one.
+Write `#words` in an item to tag it, like "Call #work about the #budget". Tags are coloured on the list and ignore case, so `#Work` and `#work` are the same tag. `Space` `t` lists every tag with how many items have it; pick one with `j` / `k` and press `Enter` to see all its items across every day, where you can type to narrow them down and press `Enter` to go to one.
 
 ### Search
 
 There are two fuzzy searches, like finding files and searching inside them in vim:
 
 - `Space` `Space` finds items by their text, on every day. Before you type, it lists every item, closest day first, so you can browse them.
-- `s` searches inside every item's notes, line by line, and shows each item with its best matching line under it. The items' own text isn't searched. `Enter` opens the notes to edit, with the cursor on that line. With your own editor set, it opens the file there, on that line too for editors that take `+N` (vi, vim, nvim, nano, emacs, micro and kak).
+- `Space` `s` `g` searches inside every item's notes, line by line, and shows each item with its best matching line under it. The items' own text isn't searched. `Enter` opens the notes to edit, with the cursor on that line. With your own editor set, it opens the file there, on that line too for editors that take `+N` (vi, vim, nvim, nano, emacs, micro and kak).
+
+`Space` `s` `d` and `Space` `s` `r` list every open item with a deadline or a reminder, soonest first, with when it's due or when you'll be reminded; type to narrow them down. `Space` `s` `o` opens the options with their search ready to type in.
 
 Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words match separately, capitals only match capitals, and plain letters match accented ones. The best matches come first, with the closest days first among equals, and the matched letters are highlighted.
 
@@ -227,7 +235,7 @@ On a wide terminal, the results are on the left and the selected item's notes on
 
 ### Calendar
 
-`c` opens a calendar on the day you're viewing, for planning ahead without stepping through days one at a time. It has three views:
+`Space` `c` opens a calendar on the day you're viewing, for planning ahead without stepping through days one at a time. It has three views:
 
 - **Week** (`w`): each day of the week with its items.
 - **Month** (`m`, the default): a grid with each day's items, or a `•` on days with open items when there's no room for them.
@@ -248,7 +256,7 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 ### Options
 
-`o` opens the options. `j` / `k` select one, `Space` or `Enter` turns it on or off, and `Esc` closes them. They're saved and remembered next time.
+`Space` `o` opens the options. `j` / `k` select one, `Space` or `Enter` turns it on or off, and `Esc` closes them. They're saved and remembered next time.
 
 `/` searches them: type a word or two, like `clock` or `delete notes`, and only the options that match show, by name, description or section. `↑` / `↓` move among them as you type; `Enter` keeps the matches, so `j` / `k` and `Space` work on just those, and `Esc` clears the search (and then closes the options).
 
@@ -282,11 +290,11 @@ Deleting notes removes the `.md` files in each workspace's `notes` folder, confl
 
 Workspaces keep separate sets of todos and notes, as if you had several todoros: say, Personal and Work. The one you're in shows in the top-left corner of the list.
 
-`W` lists them. `j` / `k` pick one and `Enter` opens it; `a` creates a new one and opens it; `d` deletes one, after you type its name to confirm, since it deletes its todos and notes for good. You can't delete the workspace you're in or your only one. Each workspace has its own undo history, and todoro opens the one you used last.
+`Space` `w` lists them. `j` / `k` pick one and `Enter` opens it; `a` creates a new one and opens it; `d` deletes one, after you type its name to confirm, since it deletes its todos and notes for good. You can't delete the workspace you're in or your only one. Each workspace has its own undo history, and todoro opens the one you used last.
 
 ### What's new
 
-The first time you start todoro after updating, it shows what's new in the versions since the one you last used. The very first time (or after a reset), it shows the last five releases, with a link to the rest on GitHub. `N` shows the notes for every release at any time; `j` / `k` scroll (`Space` a page, `g` / `G` to the top or bottom), the corner shows where you are (`Top`, a percentage, `Bot`, or `All` when it all fits), and `Esc` closes them. The notes are built into todoro, so they always match the version you have.
+The first time you start todoro after updating, it shows what's new in the versions since the one you last used. The very first time (or after a reset), it shows the last five releases, with a link to the rest on GitHub. `Space` `n` shows the notes for every release at any time; `j` / `k` scroll (`Space` a page, `g` / `G` to the top or bottom), the corner shows where you are (`Top`, a percentage, `Bot`, or `All` when it all fits), and `Esc` closes them. The notes are built into todoro, so they always match the version you have.
 
 ### Help
 
@@ -316,7 +324,7 @@ todoro never backs anything up for you. Because it's one plain folder, that's ea
 
 If you used todoro before it had this folder, your existing todos move into your first workspace when you set it up.
 
-To keep everything somewhere else later, open the options (`o`), select **Todoro folder** under **Data** and press `Enter`, then type the new folder. todoro moves every workspace there. If the new folder already has a workspace with the same name, it moves nothing and tells you.
+To keep everything somewhere else later, open the options (`Space` `o`), select **Todoro folder** under **Data** and press `Enter`, then type the new folder. todoro moves every workspace there. If the new folder already has a workspace with the same name, it moves nothing and tells you.
 
 Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes_file": "....md", "done": true, "pinned": true, "priority": "high" }`.
 

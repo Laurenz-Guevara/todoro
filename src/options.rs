@@ -228,6 +228,14 @@ pub enum Action {
 }
 
 impl Options {
+    /// Starts typing a search, keeping one already typed (`/`, or opening
+    /// the options with `Space s o`).
+    pub fn start_search(&mut self) {
+        self.search.get_or_insert_with(LineInput::default);
+        self.searching = true;
+        self.message = None;
+    }
+
     pub fn new(editor: Option<&str>, folder: Option<String>, workspace: Option<String>) -> Self {
         Self { editor: editor.unwrap_or_default().to_string(), folder, workspace, ..Self::default() }
     }
@@ -381,11 +389,7 @@ impl Options {
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => self.step(true),
             KeyCode::Char('k') | KeyCode::Up => self.step(false),
-            KeyCode::Char('/') => {
-                self.search.get_or_insert_with(LineInput::default);
-                self.searching = true;
-                self.message = None;
-            }
+            KeyCode::Char('/') => self.start_search(),
             // Esc clears a search before it closes the options.
             KeyCode::Esc if self.search.is_some() => self.search = None,
             KeyCode::Char(' ') | KeyCode::Enter if self.selected == EDITOR_ROW => {

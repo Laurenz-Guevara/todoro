@@ -9,6 +9,7 @@ use crate::calendar::{self, Calendar};
 use crate::changelog::{self, ChangelogView};
 use crate::help::Help;
 use crate::input::LineInput;
+use crate::leader::{self, Leader};
 use crate::notes::{Action, NotesEditor, Register};
 use crate::options::{self, Options, Settings, TOGGLES};
 use crate::reminder;
@@ -58,6 +59,8 @@ pub enum Mode {
     Calendar(Box<Calendar>),
     /// The `r` popup, to choose when to be reminded of the selected item.
     Remind(reminder::Picker),
+    /// The `Space` popup of less frequent commands, narrowing as keys are typed.
+    Leader(Leader),
     /// The keybinding help popup, over the screen in `back`.
     Help { help: Help, back: Box<Mode> },
 }
@@ -377,6 +380,14 @@ impl App {
                 }
                 calendar::Action::Help => self.open_help(),
             },
+            Mode::Leader(leader) => match leader.handle_key(key.code) {
+                leader::Action::Stay => {}
+                leader::Action::Close => self.mode = Mode::Normal,
+                leader::Action::Run(command) => {
+                    self.mode = Mode::Normal;
+                    self.run(command)?;
+                }
+            },
             Mode::Remind(picker) => {
                 let (day, index) = (picker.day, picker.index);
                 match picker.handle_key(key.code) {
@@ -542,11 +553,6 @@ impl App {
                 self.mode = Mode::Search(Box::new(Search::overdue()));
                 return Ok(());
             }
-            // Space Space finds items, as it finds files in many vim setups.
-            (Some(' '), KeyCode::Char(' ')) => {
-                self.mode = Mode::Search(Box::new(Search::new(search::Kind::Items)));
-                return Ok(());
-            }
             (Some('y'), KeyCode::Char('y')) => {
                 if let Some(slot) = slot {
                     self.register = vec![self.store.items(slot.day)[slot.index].clone()];
@@ -556,7 +562,8 @@ impl App {
             _ => {}
         }
         match code {
-            KeyCode::Char('g' | 'y' | ' ') => {
+            KeyCode::Char(' ') => self.mode = Mode::Leader(Leader::default()),
+            KeyCode::Char('g' | 'y') => {
                 self.pending = Some(code.as_char().expect("a char key"));
                 // Keep the count for the second key, as in 7gg.
                 self.count = count;
@@ -568,19 +575,6 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char(':') => self.command = Some(LineInput::default()),
             KeyCode::Char('?') => self.open_help(),
-            KeyCode::Char('o') => {
-                let folder = self.workspaces.as_ref().map(|folder| workspaces::display_path(&folder.dir));
-                self.mode = Mode::Options(Options::new(self.settings.editor.as_deref(), folder, self.workspace.clone()));
-            }
-            KeyCode::Char('N') => self.mode = Mode::Changelog(ChangelogView::all()),
-            KeyCode::Char('W') => {
-                if let (Some(folder), Some(current)) = (&self.workspaces, &self.workspace) {
-                    self.mode = Mode::Workspaces(Picker::new(&folder.list()?, current));
-                }
-            }
-            KeyCode::Char('#') => self.mode = Mode::Tags(TagPicker::default()),
-            KeyCode::Char('s') => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Notes))),
-            KeyCode::Char('c') => self.mode = Mode::Calendar(Box::new(Calendar::new(self.day, self.today))),
             KeyCode::Char('h') | KeyCode::Left => self.change_day(-1),
             KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
             KeyCode::Char('j') | KeyCode::Down => self.selected = (self.selected + times).min(len.saturating_sub(1)),
@@ -717,6 +711,35 @@ impl App {
         }
         self.selected = 0;
         self.clamp_selection();
+        Ok(())
+    }
+
+    /// Carries out a command chosen from the `Space` popup.
+    fn run(&mut self, command: leader::Command) -> io::Result<()> {
+        use leader::Command;
+        match command {
+            // Like finding files in many vim setups.
+            Command::FindItems => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Items))),
+            Command::SearchNotes => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Notes))),
+            Command::Deadlines => self.mode = Mode::Search(Box::new(Search::filtered(search::Filter::Deadlines))),
+            Command::Reminders => self.mode = Mode::Search(Box::new(Search::filtered(search::Filter::Reminders))),
+            Command::Calendar => self.mode = Mode::Calendar(Box::new(Calendar::new(self.day, self.today))),
+            Command::Tags => self.mode = Mode::Tags(TagPicker::default()),
+            // Searching the options opens them ready to type.
+            Command::Options | Command::SearchOptions => {
+                let folder = self.workspaces.as_ref().map(|folder| workspaces::display_path(&folder.dir));
+                let mut options = Options::new(self.settings.editor.as_deref(), folder, self.workspace.clone());
+                if command == Command::SearchOptions {
+                    options.start_search();
+                }
+                self.mode = Mode::Options(options);
+            }
+            Command::Workspaces => match (&self.workspaces, &self.workspace) {
+                (Some(folder), Some(current)) => self.mode = Mode::Workspaces(Picker::new(&folder.list()?, current)),
+                _ => self.message = Some("Workspaces are off while TODORO_FILE is set.".into()),
+            },
+            Command::WhatsNew => self.mode = Mode::Changelog(ChangelogView::all()),
+        }
         Ok(())
     }
 
@@ -1260,7 +1283,7 @@ mod tests {
         let (mut app, _dir) = app_with(&["one"]);
         type_str(&mut app, "d");
         assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
-        type_str(&mut app, "c");
+        type_str(&mut app, " c");
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(items(&app), ["one"]);
     }
@@ -1313,7 +1336,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
         // Cancelling keeps the original text.
-        type_str(&mut app, "c");
+        type_str(&mut app, " c");
         assert_eq!(items(&app), ["ab"]);
     }
 
@@ -2016,9 +2039,9 @@ mod tests {
     }
 
     #[test]
-    fn c_opens_the_calendar_on_the_day_shown() {
+    fn space_c_opens_the_calendar_on_the_day_shown() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "lc");
+        type_str(&mut app, "l c");
         assert_eq!(calendar(&app).cursor, today().succ_opt().unwrap());
         assert_eq!(calendar(&app).today, today());
     }
@@ -2026,7 +2049,7 @@ mod tests {
     #[test]
     fn esc_closes_the_calendar_back_on_the_same_day() {
         let (mut app, _dir) = app_with(&["one", "two"]);
-        type_str(&mut app, "jcjjl");
+        type_str(&mut app, "j cjjl");
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.day, today());
@@ -2036,7 +2059,7 @@ mod tests {
     #[test]
     fn enter_in_the_calendar_opens_that_day() {
         let (mut app, _dir) = app_with(&["one", "two"]);
-        type_str(&mut app, "jcjl");
+        type_str(&mut app, "j cjl");
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.day, today() + chrono::Duration::days(8));
@@ -2050,7 +2073,7 @@ mod tests {
         app.store.insert(later, 0, "already there".into()).unwrap();
         app.store.insert(later, 1, "finished".into()).unwrap();
         app.store.toggle_done(later, 1).unwrap();
-        type_str(&mut app, "cjjaDentist 3pm");
+        type_str(&mut app, " cjjaDentist 3pm");
         press(&mut app, KeyCode::Enter);
         // Still in the calendar, and the list's day is unchanged.
         assert!(calendar(&app).adding.is_none());
@@ -2064,7 +2087,7 @@ mod tests {
     fn u_in_the_calendar_undoes_an_add_and_ctrl_r_redoes_it() {
         let (mut app, _dir) = app_with(&[]);
         let tomorrow = today().succ_opt().unwrap();
-        type_str(&mut app, "claplan");
+        type_str(&mut app, " claplan");
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "u");
         assert!(app.store.items(tomorrow).is_empty());
@@ -2080,14 +2103,14 @@ mod tests {
     #[test]
     fn u_while_adding_in_the_calendar_is_text() {
         let (mut app, _dir) = app_with(&[]);
-        type_str(&mut app, "cau");
+        type_str(&mut app, " cau");
         assert_eq!(calendar(&app).adding.as_ref().unwrap().text, "u");
     }
 
     #[test]
     fn help_from_the_calendar_returns_to_it() {
         let (mut app, _dir) = app_with(&[]);
-        type_str(&mut app, "cwl?");
+        type_str(&mut app, " cwl?");
         assert!(matches!(app.mode, Mode::Help { .. }));
         press(&mut app, KeyCode::Esc);
         assert_eq!(calendar(&app).zoom, calendar::Zoom::Week);
@@ -2183,7 +2206,7 @@ mod tests {
     }
 
     #[test]
-    fn s_searches_notes_and_space_space_finds_items() {
+    fn space_s_searches_notes_and_space_space_finds_items() {
         let (mut app, _dir) = app_with(&["one", "two"]);
         app.store.set_notes(today(), 1, "remember the passport".into()).unwrap();
         // Finding items doesn't look in notes, so Enter does nothing.
@@ -2192,11 +2215,11 @@ mod tests {
         assert!(matches!(app.mode, Mode::Search(_)));
         press(&mut app, KeyCode::Esc);
         // And searching notes doesn't look at the items' text.
-        type_str(&mut app, "stwo");
+        type_str(&mut app, " sgtwo");
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Search(_)));
         press(&mut app, KeyCode::Esc);
-        type_str(&mut app, "spassport");
+        type_str(&mut app, " sgpassport");
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Notes(_)), "editing its notes");
         assert_eq!(app.selected, 1);
@@ -2216,14 +2239,61 @@ mod tests {
     }
 
     #[test]
-    fn one_space_then_another_key_does_that_keys_own_thing() {
+    fn space_then_a_key_with_no_command_closes_and_does_nothing() {
         let (mut app, _dir) = app_with(&["one", "two"]);
-        type_str(&mut app, " j");
+        type_str(&mut app, " ");
+        assert!(matches!(app.mode, Mode::Leader(_)));
+        type_str(&mut app, "j");
         assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.selected, 1);
-        // S does nothing now.
-        type_str(&mut app, "S");
+        assert_eq!(app.selected, 0, "j isn't run as a list key");
+        // Esc closes it too.
+        type_str(&mut app, " ");
+        press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn space_commands_open_their_screens() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
+        for (keys, opened) in [
+            ("  ", "search"),
+            (" sg", "search"),
+            (" c", "calendar"),
+            (" t", "tags"),
+            (" o", "options"),
+            (" w", "workspaces"),
+            (" n", "changelog"),
+        ] {
+            app.mode = Mode::Normal;
+            type_str(&mut app, keys);
+            let mode = match &app.mode {
+                Mode::Search(_) => "search",
+                Mode::Calendar(_) => "calendar",
+                Mode::Tags(_) => "tags",
+                Mode::Options(_) => "options",
+                Mode::Workspaces(_) => "workspaces",
+                Mode::Changelog(_) => "changelog",
+                _ => "something else",
+            };
+            assert_eq!(mode, opened, "{keys:?}");
+        }
+    }
+
+    #[test]
+    fn the_old_keys_for_space_commands_do_nothing() {
+        let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
+        for key in ['s', 'c', '#', 'o', 'W', 'N'] {
+            press(&mut app, KeyCode::Char(key));
+            assert!(matches!(app.mode, Mode::Normal), "{key}");
+        }
+    }
+
+    #[test]
+    fn space_w_with_a_single_todos_file_says_why() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, " w");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.message.as_ref().unwrap().contains("TODORO_FILE"));
     }
 
     #[test]
@@ -2241,18 +2311,18 @@ mod tests {
     #[test]
     fn keys_typed_in_search_do_not_act_on_the_list() {
         let (mut app, _dir) = app_with(&["one", "two"]);
-        type_str(&mut app, "sxdpjtqu");
+        type_str(&mut app, " sgxdpjtqu");
         assert!(matches!(app.mode, Mode::Search(_)));
         assert!(app.items().iter().all(|item| !item.done && !item.pinned && item.priority.is_none()));
         assert!(!app.quit);
     }
 
     #[test]
-    fn o_opens_options_and_toggling_saves_the_settings() {
+    fn space_o_opens_options_and_toggling_saves_the_settings() {
         let (mut app, dir) = app_with(&["one"]);
         let path = dir.path().join("settings.json");
         app.settings_path = Some(path.clone());
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         assert!(matches!(app.mode, Mode::Options(_)));
         type_str(&mut app, " ");
         assert!(app.settings.semantic_icons);
@@ -2270,7 +2340,7 @@ mod tests {
     #[test]
     fn keys_in_options_do_not_act_on_the_list() {
         let (mut app, _dir) = app_with(&["one", "two"]);
-        type_str(&mut app, "oxdpta");
+        type_str(&mut app, " oxdpta");
         assert!(matches!(app.mode, Mode::Options(_)));
         assert!(app.items().iter().all(|item| !item.done && !item.pinned && item.priority.is_none()));
         assert_eq!(items(&app), ["one", "two"]);
@@ -2279,7 +2349,7 @@ mod tests {
     #[test]
     fn toggling_options_is_not_an_undoable_change() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "xo ");
+        type_str(&mut app, "x o ");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "u");
         assert!(app.settings.semantic_icons);
@@ -2603,11 +2673,11 @@ mod tests {
     }
 
     #[test]
-    fn hash_lists_tags_and_enter_shows_items_with_one() {
+    fn space_t_lists_tags_and_enter_shows_items_with_one() {
         let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home"]);
         let later = today() + chrono::Duration::days(5);
         app.store.insert(later, 0, "Send #Work report".into()).unwrap();
-        type_str(&mut app, "#");
+        type_str(&mut app, " t");
         assert!(matches!(app.mode, Mode::Tags(_)));
         // Most used first: work (2), then budget and home (1 each).
         press(&mut app, KeyCode::Enter);
@@ -2623,7 +2693,7 @@ mod tests {
     #[test]
     fn a_tags_items_can_be_narrowed_by_typing() {
         let (mut app, _dir) = app_with(&["Call #work", "Email #work"]);
-        type_str(&mut app, "#");
+        type_str(&mut app, " t");
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "email");
         press(&mut app, KeyCode::Enter);
@@ -2633,10 +2703,10 @@ mod tests {
     #[test]
     fn esc_or_hash_closes_the_tag_list() {
         let (mut app, _dir) = app_with(&["#a"]);
-        type_str(&mut app, "#");
+        type_str(&mut app, " t");
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
-        type_str(&mut app, "##");
+        type_str(&mut app, " t#");
         assert!(matches!(app.mode, Mode::Normal));
     }
 
@@ -2896,9 +2966,9 @@ mod tests {
     }
 
     #[test]
-    fn capital_n_shows_every_release() {
+    fn space_n_shows_every_release() {
         let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "N");
+        type_str(&mut app, " n");
         let Mode::Changelog(view) = &app.mode else { panic!("should show the changelog") };
         assert!(view.since.is_none());
         type_str(&mut app, "jkN");
@@ -2953,10 +3023,10 @@ mod tests {
     }
 
     #[test]
-    fn capital_w_switches_workspace_and_keeps_them_separate() {
+    fn space_w_switches_workspace_and_keeps_them_separate() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
         assert_eq!(items(&app), ["Home item"]);
-        type_str(&mut app, "W");
+        type_str(&mut app, " w");
         let Mode::Workspaces(picker) = &app.mode else { panic!("the workspaces popup") };
         assert_eq!(picker.selected, 0);
         type_str(&mut app, "j");
@@ -2967,7 +3037,7 @@ mod tests {
         // Changes stay in their own workspace.
         type_str(&mut app, "anew");
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "W");
+        type_str(&mut app, " w");
         type_str(&mut app, "k");
         press(&mut app, KeyCode::Enter);
         assert_eq!(items(&app), ["Home item"]);
@@ -2978,7 +3048,7 @@ mod tests {
     fn undo_never_reaches_into_another_workspace() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
         type_str(&mut app, "x");
-        type_str(&mut app, "Wj");
+        type_str(&mut app, " wj");
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "u");
         assert_eq!(items(&app), ["Work item"]);
@@ -2988,7 +3058,7 @@ mod tests {
     #[test]
     fn a_in_the_workspaces_popup_creates_one_and_opens_it() {
         let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home"]);
-        type_str(&mut app, "Wa");
+        type_str(&mut app, " wa");
         type_str(&mut app, "Side project");
         press(&mut app, KeyCode::Enter);
         assert!(matches!(app.mode, Mode::Normal));
@@ -2996,7 +3066,7 @@ mod tests {
         assert!(app.items().is_empty());
         assert!(dir.path().join("todoro").join("Side project").join("todos.json").exists());
         // A name that's taken stays in the popup with a message.
-        type_str(&mut app, "Wahome");
+        type_str(&mut app, " wahome");
         press(&mut app, KeyCode::Enter);
         let Mode::Workspaces(picker) = &app.mode else { panic!("still in the popup") };
         assert!(picker.error.as_ref().unwrap().contains("already"));
@@ -3005,7 +3075,7 @@ mod tests {
     #[test]
     fn d_deletes_another_workspace_after_typing_its_name() {
         let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
-        type_str(&mut app, "Wjd");
+        type_str(&mut app, " wjd");
         type_str(&mut app, "Work");
         press(&mut app, KeyCode::Enter);
         let Mode::Workspaces(picker) = &app.mode else { panic!("still in the popup") };
@@ -3017,17 +3087,10 @@ mod tests {
     }
 
     #[test]
-    fn capital_w_does_nothing_with_a_single_todos_file() {
-        let (mut app, _dir) = app_with(&["one"]);
-        type_str(&mut app, "W");
-        assert!(matches!(app.mode, Mode::Normal));
-    }
-
-    #[test]
     fn moving_the_folder_from_the_options_moves_every_workspace() {
         let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
         let to = dir.path().join("moved here");
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         let Mode::Options(options) = &app.mode else { panic!("the options") };
         assert!(options.folder.is_some());
         type_str(&mut app, &"j".repeat(crate::options::FOLDER_ROW));
@@ -3055,7 +3118,7 @@ mod tests {
         let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
         let to = dir.path().join("taken");
         std::fs::create_dir_all(to.join("Work")).unwrap();
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         type_str(&mut app, &"j".repeat(crate::options::FOLDER_ROW));
         press(&mut app, KeyCode::Enter);
         for _ in 0..200 {
@@ -3252,7 +3315,7 @@ mod tests {
     #[test]
     fn the_editor_is_set_from_the_options() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "o");
+        type_str(&mut app, " o");
         type_str(&mut app, &"j".repeat(crate::options::EDITOR_ROW));
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "hx");
@@ -3386,7 +3449,7 @@ mod tests {
     fn with_pin_new_items_on_items_added_in_the_calendar_start_pinned() {
         let (mut app, _dir) = app_with(&[]);
         app.settings.pin_new_items = true;
-        type_str(&mut app, "clatrip");
+        type_str(&mut app, " clatrip");
         press(&mut app, KeyCode::Enter);
         let tomorrow = today().succ_opt().unwrap();
         assert_eq!(app.store.items(tomorrow)[0].text, "trip");
@@ -3559,7 +3622,7 @@ mod tests {
 
     /// Chooses a deletion in the options and confirms it with `word`.
     fn clear_from_options(app: &mut App, clear: options::Clear, word: &str) {
-        type_str(app, "o");
+        type_str(app, " o");
         let Mode::Options(popup) = &mut app.mode else { panic!("the options") };
         popup.selected = popup.first_clear_row() + popup.clears().iter().position(|&c| c == clear).unwrap();
         press(app, KeyCode::Enter);
@@ -3717,7 +3780,7 @@ mod tests {
         let later = today() + chrono::Duration::days(3);
         app.store.insert(later, 0, "Plan".into()).unwrap();
         app.store.set_notes(later, 0, "# Plan\n\nbook the train\nask Sam about dates".into()).unwrap();
-        type_str(&mut app, "sdates");
+        type_str(&mut app, " sgdates");
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.day, later);
         let Mode::Notes(editor) = &app.mode else { panic!("editing the notes") };
@@ -3739,7 +3802,7 @@ mod tests {
         let (mut app, _dir) = app_with(&["Trip"]);
         app.store.set_notes(today(), 0, "ask Sam".into()).unwrap();
         app.settings.editor = Some("nvim".into());
-        type_str(&mut app, "ssam");
+        type_str(&mut app, " sgsam");
         press(&mut app, KeyCode::Enter);
         let (command, path) = app.start_external_edit().unwrap().unwrap();
         assert_eq!(command, "nvim +1", "on the line found");
@@ -3778,7 +3841,7 @@ mod tests {
         assert_eq!(app.store.overdue_count(app.today, app.now), 2);
         type_str(&mut app, "go");
         let Mode::Search(search) = &app.mode else { panic!("the overdue items") };
-        assert!(search.overdue);
+        assert_eq!(search.filter, Some(search::Filter::Overdue));
         let found: Vec<String> = search
             .find(&app.store, app.today, app.now)
             .iter()
@@ -3798,7 +3861,7 @@ mod tests {
         type_str(&mut app, ":overdue");
         press(&mut app, KeyCode::Enter);
         let Mode::Search(search) = &app.mode else { panic!("the overdue items") };
-        assert!(search.overdue);
+        assert_eq!(search.filter, Some(search::Filter::Overdue));
     }
 
     #[test]
@@ -3827,7 +3890,7 @@ mod tests {
         let (mut app, _dir) = app_with(&["Trip"]);
         app.store.set_notes(today(), 0, "# Trip\nbook train\nask Sam".into()).unwrap();
         app.settings.editor = Some("nvim".into());
-        type_str(&mut app, "ssam");
+        type_str(&mut app, " sgsam");
         press(&mut app, KeyCode::Enter);
         let (command, _) = app.start_external_edit().unwrap().unwrap();
         assert_eq!(command, "nvim +3");
@@ -4006,5 +4069,32 @@ mod tests {
         assert_eq!(items(&app), ["Gift"]);
         type_str(&mut app, "t");
         assert_eq!(items(&app), ["Gift", "Today's"]);
+    }
+
+    #[test]
+    fn space_s_d_and_space_s_r_list_deadlines_and_reminders() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        type_str(&mut app, " sd");
+        let Mode::Search(search) = &app.mode else { panic!("the deadlines") };
+        assert_eq!(search.filter, Some(search::Filter::Deadlines));
+        assert!(search.typing);
+        app.mode = Mode::Normal;
+        type_str(&mut app, " sr");
+        let Mode::Search(search) = &app.mode else { panic!("the reminders") };
+        assert_eq!(search.filter, Some(search::Filter::Reminders));
+    }
+
+    #[test]
+    fn space_s_o_opens_the_options_ready_to_search() {
+        let (mut app, _dir) = app_with(&["Report"]);
+        type_str(&mut app, " sotwelve");
+        let Mode::Options(options) = &app.mode else { panic!("the options") };
+        assert!(options.searching);
+        assert_eq!(options.search.as_ref().unwrap().text, "twelve");
+        // Space o opens them without searching, so keys move and toggle.
+        app.mode = Mode::Normal;
+        type_str(&mut app, " o");
+        let Mode::Options(options) = &app.mode else { panic!("the options") };
+        assert!(!options.searching);
     }
 }

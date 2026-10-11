@@ -5,6 +5,7 @@ mod deadline;
 mod cli;
 mod help;
 mod input;
+mod leader;
 mod markdown;
 mod notes;
 mod notes_files;
