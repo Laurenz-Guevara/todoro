@@ -2,7 +2,7 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
-## [0.6.0] - 2026-10-10
+## [0.6.0] - 2026-10-11
 
 ### Breaking
 
@@ -61,6 +61,8 @@ Options:
 ### Fixes
 
 - Lines in notes stay as you typed them when shown formatted, instead of joining into one paragraph.
+- Resetting todoro also deletes empty workspace folders.
+- On Windows, the release titles in the patch notes no longer carry a stray character from Windows line endings.
 
 ## [0.5.0] - 2026-10-06
 
