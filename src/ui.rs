@@ -15,10 +15,11 @@ use crate::app::{App, Mode};
 use crate::calendar::{self, Calendar, Zoom};
 use crate::changelog::{self as changes, ChangelogView};
 use crate::store::{Item, Priority};
-use crate::help::{Help, SECTIONS};
-use crate::leader::{self, Leader};
+use crate::help::Help;
+use crate::keymap::{self, Command};
+use crate::leader::Leader;
 use crate::notes::NotesEditor;
-use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, Options, TOGGLES};
+use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, KEYS_ABOUT, KEYS_ROW, Options, TOGGLES};
 use crate::search::{self, Hit, Search};
 use crate::setup::Setup;
 use crate::workspaces::Picker;
@@ -57,7 +58,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Workspaces(picker) => draw_workspaces(frame, app, picker),
         Mode::Tags(picker) => draw_tags(frame, app, picker),
         Mode::Remind(picker) => draw_remind(frame, app, picker),
-        Mode::Leader(leader) => draw_leader(frame, leader, main),
+        Mode::Leader(leader) => draw_leader(frame, app, leader, main),
         _ => {}
     }
 
@@ -95,8 +96,16 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_else(|| (truncate(&app.day.format("%-d/%-m").to_string(), room), ""));
     let title = vec![" ".into(), date.bold(), today.fg(Color::Green), " ".into()];
 
+    // The keys for moving around, as keys.toml has them.
+    let key = |command| list_key(app, command);
+    let (prev, up, down, next) = (key(Command::PrevDay), key(Command::Up), key(Command::Down), key(Command::NextDay));
+    let hints = [
+        format!(" {prev} ← prev day · {up} ↑ up · {down} ↓ down · next day → {next} "),
+        format!(" {prev} ← day · {up} ↑ · {down} ↓ · day → {next} "),
+        format!(" {prev}/{next} day · {down}/{up} move "),
+    ];
     let hint = fit_first(
-        &[" h ← prev day · k ↑ up · j ↓ down · next day → l ", " h ← day · k ↑ · j ↓ · day → l ", " h/l day · j/k move "],
+        &hints.iter().map(String::as_str).collect::<Vec<_>>(),
         (area.width as usize).saturating_sub(2),
     );
     let title = Line::from(title);
@@ -109,7 +118,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let overdue = app.store.overdue_count(app.today, app.now);
     if overdue > 0 {
         let beside = (area.width as usize).saturating_sub(title.width()) / 2;
-        let long = format!(" ⚠ {overdue} overdue · go ");
+        let go = app.keymap.key_for(Command::Overdue).map_or(String::new(), |key| format!(" · {key}"));
+        let long = format!(" ⚠ {overdue} overdue{go} ");
         let short = format!(" ⚠ {overdue} ");
         let shown = [long, short].into_iter().find(|text| text.width() + 2 <= beside);
         if let Some(text) = shown {
@@ -122,7 +132,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     if reminded > 0 {
         let beside = (area.width as usize).saturating_sub(title.width()) / 2;
         let overdue_width = if overdue > 0 { format!(" ⚠ {overdue} ").width() } else { 0 };
-        let long = format!(" {REMINDER_MARKER} {reminded} today · t ");
+        let today = app.keymap.key_for(Command::Today).map_or(String::new(), |key| format!(" · {key}"));
+        let long = format!(" {REMINDER_MARKER} {reminded} today{today} ");
         let short = format!(" {REMINDER_MARKER} {reminded} ");
         let shown = [long, short].into_iter().find(|text| text.width() + overdue_width + 2 <= beside);
         if let Some(text) = shown {
@@ -321,8 +332,11 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let mut state = ListState::default().with_offset(app.list_offset.get()).with_selected(selected.map(list_row));
 
     if items.is_empty() {
-        let empty =
-            Paragraph::new("Nothing to do. Press a to add an item.").dim().centered().wrap(Wrap { trim: true });
+        let text = match app.keymap.key_for(Command::Add) {
+            Some(key) => format!("Nothing to do. Press {key} to add an item."),
+            None => "Nothing to do.".into(),
+        };
+        let empty = Paragraph::new(text).dim().centered().wrap(Wrap { trim: true });
         frame.render_widget(block, area);
         frame.render_widget(empty, inner);
         return;
@@ -568,14 +582,27 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         frame.set_cursor_position(Position::new(area.x + col.min(area.width.saturating_sub(1)), area.y));
         return;
     }
+    // The list's hints name its keys as keys.toml has them, leaving out a
+    // command with none.
+    let normal: Vec<(String, u8)> = [
+        (Command::Add, "add", 4),
+        (Command::Edit, "edit", 2),
+        (Command::ToggleDone, "done", 3),
+        (Command::Delete, "delete", 1),
+        (Command::OpenNotes, "notes", 0),
+        (Command::Help, "help", 5),
+    ]
+    .into_iter()
+    .filter_map(|(command, word, priority)| {
+        let key = app.keymap.list.iter().find(|binding| binding.command == command)?;
+        Some((format!("{} {word}", hint_key(&keymap::show_keys(&key.keys))), priority))
+    })
+    .collect();
+    let normal: Vec<(&str, u8)> = normal.iter().map(|(hint, priority)| (hint.as_str(), *priority)).collect();
     // Each hint has a priority. On a narrow screen the lowest go first, so
     // `? help` is the last to go.
     let (mode, color, hints): (_, _, &[(&str, u8)]) = match &app.mode {
-        Mode::Normal => (
-            "NORMAL",
-            Color::Blue,
-            &[("a add", 4), ("e edit", 2), ("x done", 3), ("d delete", 1), ("↵ notes", 0), ("? help", 5)],
-        ),
+        Mode::Normal => ("NORMAL", Color::Blue, &normal),
         Mode::Insert { .. } if !app.tag_suggestions().is_empty() => {
             ("INSERT", Color::Green, &[("tab complete tag", 3), ("↑/↓ choose", 1), ("enter save as typed", 2)])
         }
@@ -644,7 +671,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
         }
-        Mode::Leader(_) => ("SPACE", Color::Magenta, &[("type a key", 2), ("⌫ back", 0), ("esc cancel", 1)]),
+        Mode::Leader(_) => ("LEADER", Color::Magenta, &[("type a key", 2), ("⌫ back", 0), ("esc cancel", 1)]),
         Mode::Remind(picker) if picker.amount.is_some() => {
             ("REMIND", Color::Yellow, &[("enter save", 2), ("esc back", 1)])
         }
@@ -701,6 +728,20 @@ fn fit_hints(hints: &[(&str, u8)], width: usize) -> String {
         }
         let lowest = shown.iter().enumerate().rev().min_by_key(|(_, (_, priority))| *priority).map(|(i, _)| i);
         shown.remove(lowest.expect("shown is not empty"));
+    }
+}
+
+/// A key as the hints show it: `↵` for Enter, to keep them short.
+fn hint_key(key: &str) -> String {
+    key.replace("Enter", "↵")
+}
+
+/// The first of the list's keys for `command`, as the hints show it, or
+/// `–` if it has none.
+fn list_key(app: &App, command: Command) -> String {
+    match app.keymap.list.iter().find(|binding| binding.command == command) {
+        Some(binding) => hint_key(&keymap::show_keys(&binding.keys)),
+        None => "–".into(),
     }
 }
 
@@ -1224,14 +1265,14 @@ fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
 
 /// The `Space` popup, along the bottom of the list in `area` as in
 /// which-key: what each next key does, in as many columns as fit.
-fn draw_leader(frame: &mut Frame, leader: &Leader, area: Rect) {
+fn draw_leader(frame: &mut Frame, app: &App, leader: &Leader, area: Rect) {
     // Inside the list's border, so the popup doesn't cover it.
     let area = area.inner(ratatui::layout::Margin::new(1, 1));
-    let entries = leader.entries();
+    let entries = leader.entries(&app.keymap);
     let width = area.width.min(80);
     let inner_width = (width as usize).saturating_sub(4).max(1);
     // Each cell is "key  label", padded to the widest so columns line up.
-    let key_width = entries.iter().map(|entry| leader::key_name(entry.key).width()).max().unwrap_or(1);
+    let key_width = entries.iter().map(|entry| entry.key.name().width()).max().unwrap_or(1);
     let label_width = entries.iter().map(|entry| entry.label.width()).max().unwrap_or(1);
     let gap = 3;
     let cell = (key_width + 2 + label_width).min(inner_width);
@@ -1245,7 +1286,7 @@ fn draw_leader(frame: &mut Frame, leader: &Leader, area: Rect) {
         if i >= rows {
             line.push_span(" ".repeat(gap));
         }
-        let key = format!("{:>key_width$}", leader::key_name(entry.key));
+        let key = format!("{:>key_width$}", entry.key.name());
         let label = truncate(&entry.label, cell.saturating_sub(key_width + 2));
         let label = format!("{label:<width$}", width = cell.saturating_sub(key_width + 2));
         line.push_span(key.yellow().bold());
@@ -1255,8 +1296,8 @@ fn draw_leader(frame: &mut Frame, leader: &Leader, area: Rect) {
 
     let height = (rows as u16 + 2).min(area.height);
     let popup = Rect::new(area.x + (area.width - width) / 2, area.bottom().saturating_sub(height), width, height);
-    let typed: String = leader.typed.chars().map(|c| format!(" {}", leader::key_name(c))).collect();
-    let title = truncate(&format!(" Space{typed} "), (width as usize).saturating_sub(2));
+    let typed: String = leader.typed.iter().map(|key| format!(" {}", key.name())).collect();
+    let title = truncate(&format!(" {}{typed} ", app.keymap.leader_name()), (width as usize).saturating_sub(2));
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(Color::Magenta))
@@ -1654,7 +1695,11 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
     // The rows with a value to type: the notes editor, and the folder with a
     // way to move it.
     let editor = if options.editor.is_empty() { "Built-in" } else { options.editor.as_str() };
-    let mut text_rows = vec![(EDITOR_ROW, "Notes", "Notes editor: ", editor, EDITOR_ABOUT, "Command:")];
+    let keys = options.keys.as_deref().unwrap_or("unavailable");
+    let mut text_rows = vec![
+        (EDITOR_ROW, "Notes", "Notes editor: ", editor, EDITOR_ABOUT, "Command:"),
+        (KEYS_ROW, "Keys", "Keybindings: ", keys, KEYS_ABOUT, ""),
+    ];
     if let Some(folder) = &options.folder {
         text_rows.push((FOLDER_ROW, "Data", "Todoro folder: ", folder.as_str(), FOLDER_ABOUT, "Move to:"));
     }
@@ -2059,26 +2104,38 @@ fn draw_help(frame: &mut Frame, help: &Help) {
     // Line the descriptions up in one column, sized for every key so it
     // doesn't shift as you search, and wrap them. If that leaves too little
     // room, put each description under its key instead.
-    let keys_width = SECTIONS.iter().flat_map(|s| s.bindings).map(|(keys, _)| keys.width()).max().unwrap_or(0);
+    let keys_width = help.sections.iter().flat_map(|s| &s.bindings).map(|row| row.keys.width()).max().unwrap_or(0);
     let width = results.width as usize;
     let column = width.saturating_sub(keys_width + 4);
     let stacked = column < 16;
-    let mut lines = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
+    // Before searching, where to change the keys.
+    if help.query.is_empty() {
+        lines.extend(wrap(&help.tip, width.max(1), usize::MAX).into_iter().map(|part| Line::from(part).dim()));
+    }
     for section in &matches {
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        lines.push(Line::from(section.title.bold()));
-        for (keys, action) in &section.bindings {
+        lines.push(Line::from(section.title.clone().bold()));
+        for row in &section.bindings {
+            let keys = row.keys.as_str();
+            let (indent, room) = if stacked { (4, width.saturating_sub(4).max(1)) } else { (keys_width + 4, column) };
             if stacked {
                 lines.push(Line::from(format!("  {keys}").yellow()));
-                for part in wrap(action, width.saturating_sub(4).max(1), usize::MAX) {
-                    lines.push(Line::from(format!("    {part}")));
-                }
-            } else {
-                for (n, part) in wrap(action, column, usize::MAX).into_iter().enumerate() {
-                    let keys = if n == 0 { keys } else { "" };
-                    lines.push(Line::from(vec![format!("  {keys:<keys_width$}  ").yellow(), part.into()]));
+            }
+            for (n, part) in wrap(&row.action, room, usize::MAX).into_iter().enumerate() {
+                let lead = if stacked || n > 0 { " ".repeat(indent) } else { format!("  {keys:<keys_width$}  ") };
+                lines.push(Line::from(vec![lead.yellow(), part.into()]));
+            }
+            // The command's name for keys.toml, dimmed, after what it does,
+            // or under it without room.
+            if let Some(name) = row.name {
+                let last = lines.last_mut().expect("wrap gives a row at least one line");
+                if last.width() + 2 + name.width() <= width {
+                    last.push_span(format!("  {name}").dark_gray());
+                } else {
+                    lines.push(Line::from(vec![" ".repeat(indent).into(), name.dark_gray()]));
                 }
             }
         }
@@ -3066,6 +3123,17 @@ mod tests {
         app.settings.semantic_icons = true;
         type_str(&mut app, " oj");
         assert_snapshot!(render_sized(&app, 70, 16).backend());
+    }
+
+    #[test]
+    fn options_keys_row() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.keys_path = Some(PathBuf::from("/home/sam/.config/todoro/keys.toml"));
+        type_str(&mut app, " o");
+        let Mode::Options(options) = &mut app.mode else { panic!("the options") };
+        options.selected = crate::options::KEYS_ROW;
+        options.message = Some(("Keys loaded".into(), true));
+        assert_snapshot!(render_sized(&app, 70, 30).backend());
     }
 
     #[test]

@@ -54,6 +54,8 @@ todoro --help
 
 ### Normal mode
 
+These are the default keys. You can change any of them, and the leader menu's, in your own `keys.toml`: see [Changing keys](#changing-keys).
+
 | Key | Action |
 |---|---|
 | `h` / `l` | Previous / next day |
@@ -92,7 +94,7 @@ todoro --help
 | `Space` `c` | Open the calendar |
 | `Space` `o` | Options: accessibility, your own notes editor, the todoro folder |
 | `Space` `w` | Workspaces: switch, create or delete |
-| `Space` `n` | What's new: the notes for every release |
+| `Space` `n` | Patch notes: what changed in every release |
 | `?` | Show all keybindings |
 | `q` / `:q` | Quit |
 
@@ -303,13 +305,102 @@ The first time you start todoro after updating, it shows what's new in the versi
 
 ### Help
 
-`?` opens a popup listing every key, from the main list or the notes screen. Start typing to search: a single character such as `x` or `G` finds that key, and a word such as `undo` or `esc` finds keys by name or by what they do. `↑` / `↓` scroll and `Esc` closes it.
+`?` (or `Space` `s` `k`) opens a popup listing every key, from the main list or the notes screen, with the keys you've set in `keys.toml`. Start typing to search: a single character such as `x` or `G` finds that key, and a word such as `undo` or `esc` finds keys by name, by what they do, or by their command name in `keys.toml`. `↑` / `↓` scroll and `Esc` closes it.
 
 ### Delete popup
 
 Press `d` to delete the item, or `c` (or `Esc`) to cancel.
 
 `Ctrl+C` quits from any mode.
+
+## Changing keys
+
+Every key on the list and in the leader menu can be changed in a file of your own, `keys.toml`. It lists only what you change; every other key keeps its default. Without the file, todoro uses its defaults.
+
+The easiest way to start: open the options (`Space` `o`), select **Keybindings** under **Keys** and press `Enter`. The first time, todoro writes the file with every default binding in it, commented out, and opens it in your editor (the notes editor from the options, otherwise `$VISUAL` or `$EDITOR`, otherwise `vi`, or Notepad on Windows). Uncomment a line, change its key, save and close the editor, and the new keys work straight away. If a line can't be used, todoro says which and why, and uses the rest.
+
+You can also write the file yourself, keep it with your dotfiles, and copy it between computers. todoro never changes it. It lives beside the settings:
+
+| System | `keys.toml` |
+|---|---|
+| Linux | `~/.config/todoro/keys.toml` |
+| macOS | `~/Library/Application Support/todoro/keys.toml`, or `~/.config/todoro/keys.toml` if you keep it there |
+| Windows | `C:\Users\<you>\AppData\Roaming\todoro\keys.toml` |
+
+`todoro --help` shows where it is on your computer, and the `TODORO_KEYS` variable points todoro at another file.
+
+```toml
+# The key that opens the leader menu (Space by default). Keep it above [list].
+leader = ","
+
+[list]
+"c" = "calendar"         # c opens the calendar
+"ctrl+d" = "delete"      # Ctrl+D deletes, as well as d
+"x" = "none"             # x does nothing
+
+[leader-menu]
+"f" = "find-items"       # leader f finds items
+"s n" = "search-notes"   # leader s n searches notes
+"s" = "+search"          # names the group shown after leader s
+```
+
+- **Keys** are a character (`x`, `G`, `@`), a name (`space`, `enter`, `tab`, `backspace`, `delete`, `esc`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `f1` to `f12`), or `ctrl+` and one of those, like `ctrl+r`. Separate a sequence with spaces: `"g g"`, `"s n"`.
+- **A new key adds to the old ones**: with `"ctrl+d" = "delete"`, `d` still deletes too. To move a command, also set its old key to `"none"`.
+- **A key you set replaces any default it clashes with.** Binding `"g"` frees `gg` and `go`, since `g` would always run first. Two of your own keys that clash are reported, and the second is skipped.
+- **Every command works in both places**, so you can put `toggle-done` in the leader menu or `calendar` on a key of its own.
+- **Digits** are for counts (`4j`), and **`Ctrl+C`** always quits, so neither can be bound.
+- Keys on other screens (the calendar, search, notes and popups) can't be changed yet.
+
+On macOS, `Cmd` keys never reach programs in a terminal, and `Option` keys depend on the terminal's settings. On Windows, the console keeps a few `Ctrl` keys for itself.
+
+The help (`?`) shows each key with its command's name in grey. These are all the commands:
+
+| Command | What it does |
+|---|---|
+| `prev-day` | Previous day |
+| `next-day` | Next day |
+| `today` | Go to today |
+| `down` | Move down |
+| `up` | Move up |
+| `first` | First item |
+| `last` | Last item, or with a number before it, that item |
+| `move-down` | Move the item down the list |
+| `move-up` | Move the item up the list |
+| `move-to-prev-day` | Move the item to the previous day |
+| `move-to-next-day` | Move the item to the next day |
+| `add` | Add an item below the cursor |
+| `add-several` | Add several items, one after another |
+| `edit` | Edit the selected item, cursor at the end |
+| `edit-cleared` | Edit it with the text cleared |
+| `toggle-done` | Mark the selected item done / not done |
+| `toggle-pin` | Pin / unpin: move to today until done |
+| `deadline` | Set a deadline: a day, then a time or none |
+| `reminder` | Set a reminder, some time before or on a day |
+| `overdue` | List the items past their deadline |
+| `triage` | Triage: High, Medium, Low, then none |
+| `delete` | Delete the selected item |
+| `copy` | Copy the selected item |
+| `paste-below` | Paste below (also after deleting) |
+| `paste-above` | Paste above |
+| `select` | Select several items |
+| `view-notes` | View the selected item's notes, formatted |
+| `open-notes` | Edit the selected item's notes (in your own editor, if set in the options) |
+| `undo` | Undo a change to the list |
+| `redo` | Redo a change to the list |
+| `command-line` | Type a command, like :42 to go to item 42 |
+| `help` | Show this help |
+| `quit` | Quit |
+| `leader` | Menu of the commands below, narrowing as you type |
+| `find-items` | Find items by their text, on any day |
+| `search-notes` | Search inside every item's notes |
+| `deadlines` | List every deadline, soonest first |
+| `reminders` | List every reminder, soonest first |
+| `tags` | List tags, to show the items with one |
+| `search-options` | Search the options |
+| `calendar` | Open the calendar |
+| `options` | Options, including accessibility |
+| `workspaces` | Workspaces: switch, create or delete |
+| `patch-notes` | Patch notes: what changed in every release |
 
 ## Your todos folder
 

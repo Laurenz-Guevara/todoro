@@ -5,6 +5,7 @@ mod deadline;
 mod cli;
 mod help;
 mod input;
+mod keymap;
 mod leader;
 mod markdown;
 mod notes;
@@ -44,7 +45,7 @@ fn main() -> io::Result<()> {
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let todoro_file = std::env::var_os("TODORO_FILE").map(PathBuf::from);
-    match cli::parse(&args, &settings, todoro_file.as_deref()) {
+    match cli::parse(&args, &settings, todoro_file.as_deref(), keymap::default_path().as_deref()) {
         cli::Run::App => {}
         cli::Run::Print(text) => {
             println!("{text}");
@@ -68,6 +69,8 @@ fn main() -> io::Result<()> {
         let mut app = App::new(store, today);
         app.settings = settings;
         app.settings_path = settings_path.clone();
+        app.keys_path = keymap::default_path();
+        app.load_keys();
         if let Some((workspaces, name)) = workspace {
             app.workspaces = Some(workspaces);
             app.workspace = Some(name);

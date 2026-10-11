@@ -118,8 +118,11 @@ pub struct Options {
     /// The notes editor's command, or empty for todoro's own. It's the row
     /// after the toggles (`EDITOR_ROW`).
     pub editor: String,
+    /// The user's `keys.toml` as shown, if there's somewhere for it. It's
+    /// the row after the editor (`KEYS_ROW`).
+    pub keys: Option<String>,
     /// The todoro folder as shown, if there is one to change (not with
-    /// `TODORO_FILE`). It's the row after the editor (`FOLDER_ROW`).
+    /// `TODORO_FILE`). It's the row after the keys (`FOLDER_ROW`).
     pub folder: Option<String>,
     /// The open workspace's name (not with `TODORO_FILE`), for the rows that
     /// delete things, which come last.
@@ -139,10 +142,13 @@ pub struct Options {
 
 /// The rows after the toggles.
 pub const EDITOR_ROW: usize = TOGGLES.len();
-pub const FOLDER_ROW: usize = TOGGLES.len() + 1;
+pub const KEYS_ROW: usize = TOGGLES.len() + 1;
+pub const FOLDER_ROW: usize = TOGGLES.len() + 2;
 
 /// What the rows after the toggles say about themselves.
 pub const EDITOR_ABOUT: &str = "A command to open notes files with, like nvim. Leave it empty for todoro's own editor.";
+pub const KEYS_ABOUT: &str = "Your own keys for the list and the leader menu. Enter to edit them in your editor; \
+     the first time, todoro writes the file with every default, commented out.";
 pub const FOLDER_ABOUT: &str = "Where every workspace is kept. Enter to move them all to another folder.";
 
 /// What the last rows of the options delete, for good, in the order shown.
@@ -223,6 +229,8 @@ pub enum Action {
     MoveFolder(PathBuf),
     /// Open notes with this command, or todoro's own editor for `None`.
     SetEditor(Option<String>),
+    /// Edit `keys.toml` in the user's editor.
+    EditKeys,
     /// Delete this, confirmed.
     Clear(Clear),
 }
@@ -250,9 +258,10 @@ impl Options {
         }
     }
 
-    /// The row of the first deletion, after the editor and the folder.
+    /// The row of the first deletion, after the editor, the keys and the
+    /// folder.
     pub fn first_clear_row(&self) -> usize {
-        EDITOR_ROW + 1 + usize::from(self.folder.is_some())
+        KEYS_ROW + 1 + usize::from(self.folder.is_some())
     }
 
     /// The deletion on `row`, if it's one of those rows.
@@ -274,6 +283,9 @@ impl Options {
         if row == EDITOR_ROW {
             let editor = if self.editor.is_empty() { "Built-in" } else { &self.editor };
             return format!("Notes Notes editor {editor} {EDITOR_ABOUT}");
+        }
+        if row == KEYS_ROW {
+            return format!("Keys Keybindings keys.toml {} {KEYS_ABOUT}", self.keys.as_deref().unwrap_or_default());
         }
         if let Some(clear) = self.clear_at(row) {
             return format!("Delete {} {}", clear.label(self.workspace.as_deref()), clear.description());
@@ -396,6 +408,7 @@ impl Options {
                 self.editing = Some(LineInput::new(&self.editor));
                 self.message = None;
             }
+            KeyCode::Char(' ') | KeyCode::Enter if self.selected == KEYS_ROW => return Action::EditKeys,
             KeyCode::Char(' ') | KeyCode::Enter if clear.is_some() => {
                 self.editing = Some(LineInput::default());
                 self.message = None;
@@ -475,7 +488,7 @@ mod tests {
     #[test]
     fn the_folder_row_comes_after_the_toggles_and_opens_for_typing() {
         let mut options = Options::new(None, Some("~/todoro".into()), None);
-        for _ in 0..5 {
+        for _ in 0..FOLDER_ROW {
             press(&mut options, KeyCode::Char('j'));
         }
         assert_eq!(options.selected, FOLDER_ROW);
@@ -495,8 +508,22 @@ mod tests {
     #[test]
     fn without_a_folder_there_is_no_folder_row() {
         let options = Options::new(None, None, None);
-        // The deletions follow the editor straight away.
-        assert_eq!(options.clear_at(EDITOR_ROW + 1), Some(Clear::Items));
+        // The deletions follow the editor and the keys straight away.
+        assert_eq!(options.clear_at(KEYS_ROW + 1), Some(Clear::Items));
+    }
+
+    #[test]
+    fn the_keys_row_follows_the_editor_and_asks_to_edit_the_file() {
+        let mut options = Options::new(None, None, None);
+        options.keys = Some("~/.config/todoro/keys.toml".into());
+        options.selected = KEYS_ROW;
+        assert_eq!(press(&mut options, KeyCode::Enter), Action::EditKeys);
+        assert_eq!(press(&mut options, KeyCode::Char(' ')), Action::EditKeys);
+        // Searching finds it by "keys" and by its file.
+        options.search = Some(LineInput::new("keys"));
+        assert!(options.visible().contains(&KEYS_ROW));
+        options.search = Some(LineInput::new("keybindings toml"));
+        assert_eq!(options.visible(), [KEYS_ROW]);
     }
 
     #[test]
@@ -586,7 +613,7 @@ mod tests {
     fn with_a_single_file_only_its_own_deletions_are_offered() {
         let options = Options::new(None, None, None);
         assert_eq!(options.clears(), [Clear::Items, Clear::Notes]);
-        assert_eq!(options.first_clear_row(), EDITOR_ROW + 1);
+        assert_eq!(options.first_clear_row(), KEYS_ROW + 1);
         assert_eq!(Clear::Items.label(None), "Delete all items and notes");
         assert_eq!(Clear::Items.confirm_word(None), "delete");
     }

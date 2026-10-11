@@ -9,6 +9,7 @@ use crate::calendar::{self, Calendar};
 use crate::changelog::{self, ChangelogView};
 use crate::help::Help;
 use crate::input::LineInput;
+use crate::keymap::{self, Command, Key, Keymap};
 use crate::leader::{self, Leader};
 use crate::notes::{Action, NotesEditor, Register};
 use crate::options::{self, Options, Settings, TOGGLES};
@@ -123,8 +124,8 @@ pub struct App {
     /// The state when the notes screen was opened. Everything typed there is
     /// one change for the list's undo.
     notes_before: Option<State>,
-    /// First key of a two-key command (`gg`, `yy`) waiting for its second key.
-    pending: Option<char>,
+    /// The start of a key sequence (`g` of `gg`), waiting for the rest.
+    pending: Vec<Key>,
     /// A count typed before a command, like the 4 in `4j`.
     count: Option<usize>,
     /// The `:` command being typed on the list, if any.
@@ -142,6 +143,19 @@ pub struct App {
     view_after_edit: bool,
     /// Which tag suggestion is selected while typing a `#tag`.
     pub tag_choice: usize,
+    /// The keys of the list and the leader menu, with the user's own.
+    pub keymap: Keymap,
+    /// The user's `keys.toml`, if there's somewhere for it.
+    pub keys_path: Option<PathBuf>,
+    /// Editing `keys.toml` in the user's editor: asked for, then open.
+    keys_edit: KeysEdit,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum KeysEdit {
+    No,
+    Asked,
+    Open,
 }
 
 impl App {
@@ -163,7 +177,7 @@ impl App {
             undo: Vec::new(),
             redo: Vec::new(),
             notes_before: None,
-            pending: None,
+            pending: Vec::new(),
             count: None,
             command: None,
             message: None,
@@ -172,6 +186,9 @@ impl App {
             external: None,
             view_after_edit: false,
             tag_choice: 0,
+            keymap: Keymap::default(),
+            keys_path: None,
+            keys_edit: KeysEdit::No,
         }
     }
 
@@ -244,13 +261,24 @@ impl App {
             self.quit = true;
             return Ok(());
         }
-        // Undo works from the list and the calendar, but not while typing.
-        let can_undo = match &self.mode {
-            Mode::Normal => self.command.is_none(),
-            Mode::Calendar(calendar) => calendar.adding.is_none(),
-            _ => false,
-        };
-        if can_undo {
+        // The list's keys and the leader menu's run commands, changed by
+        // keys.toml. Undo and redo aren't changes to record themselves.
+        if let Some(resolved) = self.resolve(key) {
+            let Some((command, count)) = resolved else { return Ok(()) };
+            match command {
+                Command::Undo => return self.undo(),
+                Command::Redo => return self.redo(),
+                _ => {}
+            }
+            let before = self.state();
+            self.run(command, count)?;
+            self.record(before);
+            return Ok(());
+        }
+        // The calendar's undo, which keeps its own keys.
+        if let Mode::Calendar(calendar) = &self.mode
+            && calendar.adding.is_none()
+        {
             match key.code {
                 KeyCode::Char('u') if !ctrl => return self.undo(),
                 KeyCode::Char('r') if ctrl => return self.redo(),
@@ -282,7 +310,8 @@ impl App {
         }
         match &mut self.mode {
             Mode::Normal if self.command.is_some() => self.command_key(key.code),
-            Mode::Normal => self.normal_key(key.code)?,
+            // Handled in `resolve`.
+            Mode::Normal => {}
             Mode::Insert { index, input, editing, repeat, replacing } => {
                 if input.handle_key(key.code) {
                     let (index, text, editing, replacing) = (*index, input.text.trim().to_string(), *editing, *replacing);
@@ -386,14 +415,8 @@ impl App {
                 }
                 calendar::Action::Help => self.open_help(),
             },
-            Mode::Leader(leader) => match leader.handle_key(key.code) {
-                leader::Action::Stay => {}
-                leader::Action::Close => self.mode = Mode::Normal,
-                leader::Action::Run(command) => {
-                    self.mode = Mode::Normal;
-                    self.run(command)?;
-                }
-            },
+            // Handled with the list's keys, in `resolve`.
+            Mode::Leader(_) => {}
             Mode::Remind(picker) => {
                 let (day, index) = (picker.day, picker.index);
                 match picker.handle_key(key.code) {
@@ -468,6 +491,10 @@ impl App {
                         });
                     }
                 }
+                options::Action::EditKeys => match &self.keys_path {
+                    Some(_) => self.keys_edit = KeysEdit::Asked,
+                    None => popup.message = Some(("There's no settings folder here to keep keys.toml in".into(), false)),
+                },
                 options::Action::SetEditor(command) => {
                     self.settings.editor = command;
                     if let Some(path) = &self.settings_path {
@@ -530,131 +557,60 @@ impl App {
         Ok(())
     }
 
-    fn normal_key(&mut self, code: KeyCode) -> io::Result<()> {
-        let slot = self.slot(self.selected);
-        let len = self.slots().len();
-        let open = self.carried() + self.store.open_count(self.day);
+    /// What a key on the list or in the leader menu runs, once a whole
+    /// binding is typed: `None` if it isn't one of those (the key is for
+    /// something else), `Some(None)` if it ran nothing yet (a count, or the
+    /// start of a sequence), or the command with any count typed before it.
+    fn resolve(&mut self, event: KeyEvent) -> Option<Option<(Command, Option<usize>)>> {
+        match &mut self.mode {
+            Mode::Normal if self.command.is_none() => Some(self.resolve_list(Key::from_event(event))),
+            Mode::Leader(leader) => match leader.handle_key(event, &self.keymap.leader) {
+                leader::Action::Stay => Some(None),
+                leader::Action::Close => {
+                    self.mode = Mode::Normal;
+                    Some(None)
+                }
+                leader::Action::Run(command) => {
+                    self.mode = Mode::Normal;
+                    Some(Some((command, None)))
+                }
+            },
+            _ => None,
+        }
+    }
+
+    fn resolve_list(&mut self, key: Key) -> Option<(Command, Option<usize>)> {
         // Digits build a count for the next command, as in vim: 4j moves down
         // four items and 42G goes to item 42. A 0 only counts after another digit.
-        if let KeyCode::Char(c @ '0'..='9') = code
+        if self.pending.is_empty()
+            && !key.ctrl
+            && let KeyCode::Char(c @ '0'..='9') = key.code
             && (c != '0' || self.count.is_some())
         {
             let digit = c as usize - '0' as usize;
             self.count = Some((self.count.unwrap_or(0) * 10 + digit).min(99_999));
-            return Ok(());
+            return None;
         }
-        let count = self.count.take();
-        let times = count.unwrap_or(1);
-        // Item N is the Nth row, which is its number for open items.
-        let row = |n: usize| n.saturating_sub(1).min(len.saturating_sub(1));
-        // Any other key cancels an unfinished two-key command, then does its
-        // own thing, as in vim.
-        match (self.pending.take(), code) {
-            (Some('g'), KeyCode::Char('g')) => {
-                self.selected = row(count.unwrap_or(1));
-                return Ok(());
+        self.pending.push(key);
+        match keymap::lookup(&self.keymap.list, &self.pending) {
+            keymap::Match::Run(command) => {
+                self.pending.clear();
+                Some((command, self.count.take()))
             }
-            // go: "go to what's overdue".
-            (Some('g'), KeyCode::Char('o')) => {
-                self.mode = Mode::Search(Box::new(Search::overdue()));
-                return Ok(());
-            }
-            (Some('y'), KeyCode::Char('y')) => {
-                if let Some(slot) = slot {
-                    self.register = vec![self.store.items(slot.day)[slot.index].clone()];
+            // Wait for the rest, keeping the count, as in 7gg.
+            keymap::Match::More => None,
+            keymap::Match::Nothing => {
+                // Any other key cancels an unfinished sequence, then does
+                // its own thing, as in vim.
+                let unfinished = self.pending.len() > 1;
+                self.pending.clear();
+                if unfinished {
+                    return self.resolve_list(key);
                 }
-                return Ok(());
+                self.count = None;
+                None
             }
-            _ => {}
         }
-        match code {
-            KeyCode::Char(' ') => self.mode = Mode::Leader(Leader::default()),
-            KeyCode::Char('g' | 'y') => {
-                self.pending = Some(code.as_char().expect("a char key"));
-                // Keep the count for the second key, as in 7gg.
-                self.count = count;
-            }
-            // Paste below or above the cursor, like a and its opposite.
-            KeyCode::Char('p') => self.paste(if self.selected < open && len > 0 { self.selected + 1 } else { open })?,
-            KeyCode::Char('P') => self.paste(self.selected.min(open))?,
-            KeyCode::Char('G') => self.selected = count.map_or(len.saturating_sub(1), row),
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char(':') => self.command = Some(LineInput::default()),
-            KeyCode::Char('?') => self.open_help(),
-            KeyCode::Char('h') | KeyCode::Left => self.change_day(-1),
-            KeyCode::Char('l') | KeyCode::Right => self.change_day(1),
-            KeyCode::Char('j') | KeyCode::Down => self.selected = (self.selected + times).min(len.saturating_sub(1)),
-            KeyCode::Char('k') | KeyCode::Up => self.selected = self.selected.saturating_sub(times),
-            // Move the item down or up, within the open or completed items.
-            KeyCode::Char('J') => self.move_selected(1)?,
-            KeyCode::Char('K') => self.move_selected(-1)?,
-            // Like h and l, but taking the selected item along to that day.
-            KeyCode::Char('H') => self.move_to_day(-1)?,
-            KeyCode::Char('L') => self.move_to_day(1)?,
-            // Like vim's `a`, append after the cursor. From a completed item (or an
-            // empty day), append to the end of the open items instead.
-            KeyCode::Char('a') => {
-                let index = if self.selected < open { self.selected + 1 } else { open };
-                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: false, replacing: false };
-            }
-            // Like a, but Enter keeps adding items until Esc or an empty line.
-            KeyCode::Char('A') => {
-                let index = if self.selected < open { self.selected + 1 } else { open };
-                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true, replacing: false };
-            }
-            KeyCode::Char('e') if len > 0 => {
-                let input = LineInput::new(&self.items()[self.selected].text);
-                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: false };
-            }
-            // Edit with the text cleared, to write it again, as vim's cc.
-            KeyCode::Char('E') if len > 0 => {
-                let input = LineInput::default();
-                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: true };
-            }
-            KeyCode::Char('d') if len > 0 => self.mode = Mode::ConfirmDelete { rows: vec![self.selected] },
-            KeyCode::Char('V') if len > 0 => self.mode = Mode::Visual { anchor: self.selected },
-            // The cursor stays put, so you can tick off several items in a row.
-            // A carried item is changed where it's stored, which can take it off
-            // this day's screen, hence the clamp.
-            KeyCode::Char('x') => {
-                if let Some(slot) = slot {
-                    self.store.toggle_done(slot.day, slot.index)?;
-                    self.clamp_selection();
-                }
-            }
-            // Like the calendar's t: back to today, where you were if already there.
-            KeyCode::Char('t') if self.day != self.today => self.show_day(self.today),
-            // Triage: cycle the item's priority.
-            KeyCode::Char('!') => {
-                if let Some(slot) = slot {
-                    self.store.cycle_priority(slot.day, slot.index)?;
-                }
-            }
-            // Pin: "mark" the item to carry forward. One with a deadline
-            // already moves on until then.
-            KeyCode::Char('m') => {
-                if let Some(slot) = slot {
-                    if self.store.items(slot.day)[slot.index].deadline.is_some() {
-                        self.message = Some("This has a deadline, so it moves on until then. @ then d removes it.".into());
-                    } else {
-                        self.store.toggle_pinned(slot.day, slot.index)?;
-                        self.clamp_selection();
-                    }
-                }
-            }
-            KeyCode::Char('@') => self.open_deadline(),
-            KeyCode::Char('r') => self.open_reminder(),
-            KeyCode::Enter if len > 0 => self.open_notes()?,
-            KeyCode::Char('v') if len > 0 => {
-                // Read the notes file again, in case something else changed it.
-                if let Some(slot) = slot {
-                    self.store.reload_notes(slot.day, slot.index)?;
-                }
-                self.mode = Mode::View(Viewer::default());
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     /// Opens the selected item's notes to edit: in the user's editor if one
@@ -789,10 +745,107 @@ impl App {
         true
     }
 
-    /// Carries out a command chosen from the `Space` popup.
-    fn run(&mut self, command: leader::Command) -> io::Result<()> {
-        use leader::Command;
+    /// Carries out a command from the list's keys or the leader menu, with
+    /// the count typed before it, if any.
+    fn run(&mut self, command: Command, count: Option<usize>) -> io::Result<()> {
+        let slot = self.slot(self.selected);
+        let len = self.slots().len();
+        let open = self.carried() + self.store.open_count(self.day);
+        let times = count.unwrap_or(1);
+        // Item N is the Nth row, which is its number for open items.
+        let row = |n: usize| n.saturating_sub(1).min(len.saturating_sub(1));
         match command {
+            Command::First => self.selected = row(count.unwrap_or(1)),
+            Command::Last => self.selected = count.map_or(len.saturating_sub(1), row),
+            Command::Overdue => self.mode = Mode::Search(Box::new(Search::overdue())),
+            Command::Copy => {
+                if let Some(slot) = slot {
+                    self.register = vec![self.store.items(slot.day)[slot.index].clone()];
+                }
+            }
+            Command::Leader => self.mode = Mode::Leader(Leader::default()),
+            // Paste below or above the cursor, like a and its opposite.
+            Command::PasteBelow => self.paste(if self.selected < open && len > 0 { self.selected + 1 } else { open })?,
+            Command::PasteAbove => self.paste(self.selected.min(open))?,
+            Command::Quit => self.quit = true,
+            Command::Colon => self.command = Some(LineInput::default()),
+            Command::Help => self.open_help(),
+            Command::PrevDay => self.change_day(-1),
+            Command::NextDay => self.change_day(1),
+            Command::Down => self.selected = (self.selected + times).min(len.saturating_sub(1)),
+            Command::Up => self.selected = self.selected.saturating_sub(times),
+            // Move the item down or up, within the open or completed items.
+            Command::MoveDown => self.move_selected(1)?,
+            Command::MoveUp => self.move_selected(-1)?,
+            // Like the day keys, but taking the selected item along to that day.
+            Command::MoveToPrevDay => self.move_to_day(-1)?,
+            Command::MoveToNextDay => self.move_to_day(1)?,
+            // Like vim's `a`, append after the cursor. From a completed item (or an
+            // empty day), append to the end of the open items instead.
+            Command::Add => {
+                let index = if self.selected < open { self.selected + 1 } else { open };
+                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: false, replacing: false };
+            }
+            // Like add, but Enter keeps adding items until Esc or an empty line.
+            Command::AddSeveral => {
+                let index = if self.selected < open { self.selected + 1 } else { open };
+                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true, replacing: false };
+            }
+            Command::Edit if len > 0 => {
+                let input = LineInput::new(&self.items()[self.selected].text);
+                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: false };
+            }
+            // Edit with the text cleared, to write it again, as vim's cc.
+            Command::EditCleared if len > 0 => {
+                let input = LineInput::default();
+                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: true };
+            }
+            Command::Delete if len > 0 => self.mode = Mode::ConfirmDelete { rows: vec![self.selected] },
+            Command::Select if len > 0 => self.mode = Mode::Visual { anchor: self.selected },
+            // The cursor stays put, so you can tick off several items in a row.
+            // A carried item is changed where it's stored, which can take it off
+            // this day's screen, hence the clamp.
+            Command::ToggleDone => {
+                if let Some(slot) = slot {
+                    self.store.toggle_done(slot.day, slot.index)?;
+                    self.clamp_selection();
+                }
+            }
+            // Like the calendar's t: back to today, where you were if already there.
+            Command::Today if self.day != self.today => self.show_day(self.today),
+            // Triage: cycle the item's priority.
+            Command::Triage => {
+                if let Some(slot) = slot {
+                    self.store.cycle_priority(slot.day, slot.index)?;
+                }
+            }
+            // Pin: "mark" the item to carry forward. One with a deadline
+            // already moves on until then.
+            Command::TogglePin => {
+                if let Some(slot) = slot {
+                    if self.store.items(slot.day)[slot.index].deadline.is_some() {
+                        let how = self.keymap.key_for(Command::Deadline).map_or(String::new(), |key| format!(" {key} then d removes it."));
+                        self.message = Some(format!("This has a deadline, so it moves on until then.{how}"));
+                    } else {
+                        self.store.toggle_pinned(slot.day, slot.index)?;
+                        self.clamp_selection();
+                    }
+                }
+            }
+            Command::Deadline => self.open_deadline(),
+            Command::Reminder => self.open_reminder(),
+            Command::OpenNotes if len > 0 => self.open_notes()?,
+            Command::ViewNotes if len > 0 => {
+                // Read the notes file again, in case something else changed it.
+                if let Some(slot) = slot {
+                    self.store.reload_notes(slot.day, slot.index)?;
+                }
+                self.mode = Mode::View(Viewer::default());
+            }
+            // Handled before running, as they aren't changes to record.
+            Command::Undo | Command::Redo => {}
+            // Needing an item, with none.
+            Command::Edit | Command::EditCleared | Command::Delete | Command::Select | Command::OpenNotes | Command::ViewNotes | Command::Today => {}
             // Like finding files in many vim setups.
             Command::FindItems => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Items))),
             Command::SearchNotes => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Notes))),
@@ -804,6 +857,7 @@ impl App {
             Command::Options | Command::SearchOptions => {
                 let folder = self.workspaces.as_ref().map(|folder| workspaces::display_path(&folder.dir));
                 let mut options = Options::new(self.settings.editor.as_deref(), folder, self.workspace.clone());
+                options.keys = self.keys_path.as_deref().map(workspaces::display_path);
                 if command == Command::SearchOptions {
                     options.start_search();
                 }
@@ -813,9 +867,7 @@ impl App {
                 (Some(folder), Some(current)) => self.mode = Mode::Workspaces(Picker::new(&folder.list()?, current)),
                 _ => self.message = Some("Workspaces are off while TODORO_FILE is set.".into()),
             },
-            Command::WhatsNew => self.mode = Mode::Changelog(ChangelogView::all()),
-            // The same as ?, for those who look for it in the menu.
-            Command::Keybindings => self.open_help(),
+            Command::PatchNotes => self.mode = Mode::Changelog(ChangelogView::all()),
         }
         Ok(())
     }
@@ -1052,10 +1104,56 @@ impl App {
         self.settings.editor.as_deref().map(str::trim).filter(|command| !command.is_empty())
     }
 
+    /// How to open the options, in brackets, like ` (Space o)`.
+    fn options_hint(&self) -> String {
+        self.keymap.key_for(Command::Options).map_or(String::new(), |key| format!(" ({key})"))
+    }
+
+    /// Reads the user's `keys.toml` again, and says what in it couldn't be
+    /// used, if anything: in the options if they're open, otherwise in the
+    /// status bar. Returns whether all of it could.
+    pub fn load_keys(&mut self) -> bool {
+        let (keymap, problems) = Keymap::load(self.keys_path.as_deref());
+        self.keymap = keymap;
+        self.pending.clear();
+        let Some(first) = problems.first() else { return true };
+        let more = match problems.len() {
+            1 => String::new(),
+            n => format!(" (and {} more)", n - 1),
+        };
+        let message = format!("keys.toml: {first}{more}");
+        match &mut self.mode {
+            Mode::Options(options) => options.message = Some((message, false)),
+            _ => self.message = Some(message),
+        }
+        false
+    }
+
+    /// The editor for `keys.toml`: the one set for notes, otherwise
+    /// `$VISUAL` or `$EDITOR`, otherwise one every system has.
+    fn keys_editor(&self) -> String {
+        let from_env = ["VISUAL", "EDITOR"]
+            .iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .map(|command| command.trim().to_string())
+            .find(|command| !command.is_empty());
+        let fallback = if cfg!(windows) { "notepad" } else { "vi" };
+        self.editor().map(String::from).or(from_env).unwrap_or_else(|| fallback.into())
+    }
+
     /// If `Enter` asked to open notes in the user's editor: the command and
     /// the notes file to open with it. An item without notes gets an empty
     /// file. Call `finish_external_edit` once the editor has closed.
     pub fn start_external_edit(&mut self) -> io::Result<Option<(String, PathBuf)>> {
+        if self.keys_edit == KeysEdit::Asked {
+            let Some(path) = self.keys_path.clone() else {
+                self.keys_edit = KeysEdit::No;
+                return Ok(None);
+            };
+            keymap::ensure_file(&path)?;
+            self.keys_edit = KeysEdit::Open;
+            return Ok(Some((self.keys_editor(), path)));
+        }
         // Only a request not started yet; one that's open waits for its finish.
         let Some(External { slot, line, before: None }) = self.external else { return Ok(None) };
         let Some(command) = self.editor().map(String::from) else {
@@ -1073,6 +1171,25 @@ impl App {
     /// Takes in what the user's editor saved, as one change to undo, and
     /// says if the editor couldn't run.
     pub fn finish_external_edit(&mut self, result: io::Result<std::process::ExitStatus>) -> io::Result<()> {
+        if self.keys_edit == KeysEdit::Open {
+            self.keys_edit = KeysEdit::No;
+            let command = self.keys_editor();
+            let failed = match result {
+                Ok(status) if status.success() => None,
+                Ok(status) if matches!(status.code(), Some(127 | 9009)) => Some(format!("Couldn't find {command}")),
+                Ok(_) => Some(format!("{command} closed with an error")),
+                Err(error) => Some(format!("Couldn't open {command}: {error}")),
+            };
+            if self.load_keys()
+                && let Mode::Options(options) = &mut self.mode
+            {
+                options.message = Some(match failed {
+                    Some(failed) => (failed, false),
+                    None => ("Keys loaded".into(), true),
+                });
+            }
+            return Ok(());
+        }
         let Some(External { slot, before: Some(before), .. }) = self.external.take() else { return Ok(()) };
         let command = self.editor().unwrap_or_default().to_string();
         self.store.notes_edited(slot.day, slot.index)?;
@@ -1082,10 +1199,10 @@ impl App {
             Ok(status) if status.success() => None,
             // What sh (127) and cmd (9009) give for a command they can't find.
             Ok(status) if matches!(status.code(), Some(127 | 9009)) => {
-                Some(format!("Couldn't find {command}. Change the editor in the options (o)."))
+                Some(format!("Couldn't find {command}. Change the editor in the options{}.", self.options_hint()))
             }
             Ok(_) => Some(format!("{command} closed with an error")),
-            Err(error) => Some(format!("Couldn't open {command}: {error}. Change the editor in the options (o).")),
+            Err(error) => Some(format!("Couldn't open {command}: {error}. Change the editor in the options{}.", self.options_hint())),
         };
         self.report_conflicts();
         Ok(())
@@ -1232,7 +1349,7 @@ impl App {
 
     fn open_help(&mut self) {
         let back = std::mem::replace(&mut self.mode, Mode::Normal);
-        self.mode = Mode::Help { help: Help::default(), back: Box::new(back) };
+        self.mode = Mode::Help { help: Help::new(&self.keymap), back: Box::new(back) };
     }
 
     /// Moves "today" on when the date changes while todoro is open, carrying
@@ -1250,7 +1367,7 @@ impl App {
         self.today = today;
         self.undo.clear();
         self.redo.clear();
-        self.pending = None;
+        self.pending.clear();
         Ok(())
     }
 
@@ -4248,5 +4365,113 @@ mod tests {
         // ? still does the same.
         type_str(&mut app, "?");
         assert!(matches!(app.mode, Mode::Help { .. }));
+    }
+
+    /// An app with these items and `keys` as its keys.toml.
+    fn app_with_keys(items: &[&str], keys: &str) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(items);
+        let path = dir.path().join("keys.toml");
+        std::fs::write(&path, keys).unwrap();
+        app.keys_path = Some(path);
+        app.load_keys();
+        (app, dir)
+    }
+
+    #[test]
+    fn keys_from_keys_toml_run_their_commands() {
+        let (mut app, _dir) = app_with_keys(&["one", "two"], "[list]\n\"c\" = \"calendar\"\n\"x\" = \"none\"\n\"ctrl+d\" = \"toggle-done\"\n");
+        assert!(app.message.is_none());
+        type_str(&mut app, "x");
+        assert!(!app.items()[0].done, "x does nothing now");
+        app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)).unwrap();
+        // "one" is done, so it moves below "two".
+        assert_eq!(app.store.items(today())[1].text, "one");
+        assert!(app.store.items(today())[1].done);
+        // Undo still undoes a change made with a new key.
+        type_str(&mut app, "u");
+        assert!(!app.store.items(today()).iter().any(|item| item.done));
+        type_str(&mut app, "c");
+        assert!(matches!(app.mode, Mode::Calendar(_)));
+    }
+
+    #[test]
+    fn the_leader_can_move_and_its_menu_change() {
+        let (mut app, _dir) = app_with_keys(&["one"], "leader = \",\"\n[leader-menu]\n\"f\" = \"find-items\"\n\"x\" = \"toggle-done\"\n");
+        type_str(&mut app, " ");
+        assert!(matches!(app.mode, Mode::Normal), "space isn't the leader now");
+        type_str(&mut app, ",");
+        assert!(matches!(app.mode, Mode::Leader(_)));
+        type_str(&mut app, "f");
+        assert!(matches!(app.mode, Mode::Search(_)));
+        // A list command from the leader menu is undoable like any change.
+        app.mode = Mode::Normal;
+        type_str(&mut app, ",x");
+        assert!(app.items()[0].done);
+        type_str(&mut app, "u");
+        assert!(!app.items()[0].done);
+    }
+
+    #[test]
+    fn counts_and_sequences_work_with_new_keys() {
+        let (mut app, _dir) = app_with_keys(&["a", "b", "c", "d", "e"], "[list]\n\"n\" = \"down\"\n\"z z\" = \"last\"\n");
+        type_str(&mut app, "3n");
+        assert_eq!(app.selected, 3);
+        type_str(&mut app, "gg");
+        assert_eq!(app.selected, 0, "the defaults stay");
+        type_str(&mut app, "zz");
+        assert_eq!(app.selected, 4);
+        // An unfinished sequence is cancelled by a key that doesn't finish
+        // it, which then does its own thing.
+        type_str(&mut app, "zk");
+        assert_eq!(app.selected, 3);
+    }
+
+    #[test]
+    fn problems_in_keys_toml_are_reported_and_the_rest_applies() {
+        let (app, _dir) = app_with_keys(&["one"], "[list]\n\"x\" = \"explode\"\n\"c\" = \"calendar\"\n\"1\" = \"add\"\n");
+        assert_eq!(app.message.as_deref(), Some("keys.toml: [list] \"x\": \"explode\" isn't a command (and 1 more)"));
+        assert_eq!(app.keymap.key_for(Command::Calendar).as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn the_options_open_keys_toml_in_your_editor_and_reload_it() {
+        let (mut app, dir) = app_with(&["one"]);
+        let path = dir.path().join("config").join("keys.toml");
+        app.keys_path = Some(path.clone());
+        app.settings.editor = Some("nvim".into());
+        type_str(&mut app, " o");
+        let Mode::Options(options) = &mut app.mode else { panic!("the options") };
+        assert_eq!(options.keys.as_deref(), Some(crate::workspaces::display_path(&path).as_str()));
+        options.selected = crate::options::KEYS_ROW;
+        press(&mut app, KeyCode::Enter);
+        // The first time, the starter file is written, then opened.
+        let (command, opened) = app.start_external_edit().unwrap().unwrap();
+        assert_eq!((command.as_str(), opened.as_path()), ("nvim", path.as_path()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), keymap::starter_file());
+        // What the editor saved is loaded when it closes.
+        std::fs::write(&path, "[list]\n\"c\" = \"calendar\"\n").unwrap();
+        app.finish_external_edit(ok()).unwrap();
+        let Mode::Options(options) = &app.mode else { panic!("still the options") };
+        assert_eq!(options.message, Some(("Keys loaded".into(), true)));
+        assert_eq!(app.keymap.key_for(Command::Calendar).as_deref(), Some("c"));
+        // A mistake is shown there instead.
+        app.keys_edit = KeysEdit::Asked;
+        app.start_external_edit().unwrap();
+        std::fs::write(&path, "[list]\n\"c\" = \"nope\"\n").unwrap();
+        app.finish_external_edit(ok()).unwrap();
+        let Mode::Options(options) = &app.mode else { panic!("still the options") };
+        assert_eq!(options.message, Some(("keys.toml: [list] \"c\": \"nope\" isn't a command".into(), false)));
+    }
+
+    #[test]
+    fn without_somewhere_for_keys_toml_the_options_say_so() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, " o");
+        let Mode::Options(options) = &mut app.mode else { panic!("the options") };
+        options.selected = crate::options::KEYS_ROW;
+        press(&mut app, KeyCode::Enter);
+        assert!(app.start_external_edit().unwrap().is_none());
+        let Mode::Options(options) = &app.mode else { panic!("still the options") };
+        assert!(!options.message.as_ref().unwrap().1);
     }
 }

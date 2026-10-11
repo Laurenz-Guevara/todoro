@@ -17,10 +17,21 @@ Options:
   --version    Print the version
   --help       Print this help
 
+Keys:
+  Change any key in keys.toml (KEYS). Inside todoro, the options (Space o)
+  open it in your editor, with every default listed.
+
 Environment:
   TODORO_SETTINGS  Use this settings file
+  TODORO_KEYS      Use this keys file
   TODORO_FILE      Use this single todos file, with no folder or workspaces
   NO_COLOR         Start with colours off";
+
+/// The help, with where the keys file is.
+fn help(keys: Option<&Path>) -> String {
+    let keys = keys.map_or_else(|| "beside the settings".to_string(), |path| path.display().to_string());
+    HELP.replace("(KEYS)", &format!("({keys})"))
+}
 
 /// What to do for the command line.
 #[derive(Debug, PartialEq)]
@@ -33,22 +44,22 @@ pub enum Run {
     Fail(String, i32),
 }
 
-/// What to do for `args` (without the program name), given the settings
-/// and `TODORO_FILE`.
-pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>) -> Run {
+/// What to do for `args` (without the program name), given the settings,
+/// `TODORO_FILE` and where the keys file is.
+pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, keys: Option<&Path>) -> Run {
     match args {
         [] => Run::App,
         [flag] => match flag.as_str() {
             "--version" | "-V" => Run::Print(format!("todoro {VERSION}")),
-            "--help" | "-h" => Run::Print(HELP.to_string()),
+            "--help" | "-h" => Run::Print(help(keys)),
             "--where" => match (todoro_file, &settings.data_dir) {
                 (Some(file), _) => Run::Print(file.display().to_string()),
                 (None, Some(dir)) => Run::Print(dir.display().to_string()),
                 (None, None) => Run::Fail("todoro isn't set up yet. Run todoro to choose a folder.".into(), 1),
             },
-            other => Run::Fail(format!("todoro: unknown option {other}\n\n{HELP}"), 2),
+            other => Run::Fail(format!("todoro: unknown option {other}\n\n{}", help(keys)), 2),
         },
-        _ => Run::Fail(format!("todoro: give at most one option\n\n{HELP}"), 2),
+        _ => Run::Fail(format!("todoro: give at most one option\n\n{}", help(keys)), 2),
     }
 }
 
@@ -59,7 +70,8 @@ mod tests {
     use super::*;
 
     fn run(args: &[&str], settings: &Settings, file: Option<&Path>) -> Run {
-        parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>(), settings, file)
+        let keys = Path::new("/home/sam/.config/todoro/keys.toml");
+        parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>(), settings, file, Some(keys))
     }
 
     #[test]
@@ -73,6 +85,8 @@ mod tests {
         assert_eq!(run(&["-V"], &Settings::default(), None), Run::Print(format!("todoro {VERSION}")));
         let Run::Print(help) = run(&["--help"], &Settings::default(), None) else { panic!("help") };
         assert!(help.contains("--where"));
+        assert!(help.contains("keys.toml (/home/sam/.config/todoro/keys.toml)"), "{help}");
+        assert!(help.contains("TODORO_KEYS"));
         assert_eq!(run(&["-h"], &Settings::default(), None), Run::Print(help));
     }
 

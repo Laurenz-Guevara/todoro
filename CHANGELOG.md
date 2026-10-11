@@ -6,7 +6,7 @@ All notable changes to todoro. Each release's section is also shown on its GitHu
 
 ### Breaking
 
-- Less frequent commands have moved behind `Space`, which opens a menu of them that narrows down as you type, like which-key in Neovim: `Space` `s` `g` searches notes, `Space` `c` opens the calendar, `Space` `s` `t` lists tags (was `#`), `Space` `o` the options, `Space` `w` workspaces (was `W`) and `Space` `n` what's new (was `N`). `Space` `s` `k` searches the keybindings, as `?` does. The old keys do nothing now, to leave room for more.
+- Less frequent commands have moved behind `Space`, which opens a menu of them that narrows down as you type, like which-key in Neovim: `Space` `s` `g` searches notes, `Space` `c` opens the calendar, `Space` `s` `t` lists tags (was `#`), `Space` `o` the options, `Space` `w` workspaces (was `W`) and `Space` `n` the patch notes (was `N`). `Space` `s` `k` searches the keybindings, as `?` does. The old keys do nothing now, to leave room for more.
 - The searches have changed. `Space` `Space` now finds items by their text, and `Space` `s` `g` searches inside notes only. `S` is gone.
 - Deadlines are saved in your todos file. An older version of todoro would drop them if it saved the file.
 
@@ -24,6 +24,12 @@ Reminders:
 - `r` (or `:remind`) sets a reminder on an item: `h`, `d` or `m` and a number for hours, days or months before, or `c` to choose a day on the calendar. `x` removes it.
 - Hours count back from the deadline, or from the end of the item's day. Days and months start at the beginning of the day, so you have all of it.
 - Once a reminder is due, the item shows at the top of today's list with `⚑` until its own day. On other days, the top-right corner says how many are due.
+
+Keys:
+
+- Change any key on the list and in the leader menu in your own `keys.toml`. Open it from the options (`Space` `o`, under Keys): the first time, todoro writes it with every default listed, commented out, and when you close your editor the new keys work straight away. Keys you don't mention keep their defaults.
+- `leader = ","` moves the leader menu off `Space`. `todoro --help` shows where `keys.toml` is.
+- The help shows your keys, with each command's name to use in `keys.toml`.
 
 Search:
 

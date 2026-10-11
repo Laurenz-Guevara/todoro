@@ -4,58 +4,17 @@ use std::cell::Cell;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::keymap::{self, Command, Keymap};
+
 pub struct Section {
     pub title: &'static str,
     /// `(keys, action)` pairs. Keys are separated by spaces or ` / `.
     pub bindings: &'static [(&'static str, &'static str)],
 }
 
-/// Every keybinding in the app. Keep it in sync with the key handling.
+/// Every keybinding outside the list and the leader menu, whose sections
+/// come from the keymap (`sections`). Keep it in sync with the key handling.
 pub const SECTIONS: &[Section] = &[
-    Section {
-        title: "List",
-        bindings: &[
-            ("h / l", "Previous / next day"),
-            ("t", "Go to today"),
-            ("j / k", "Move down / up"),
-            ("gg / G", "First / last item"),
-            ("4j / 4k", "Move four items down / up (any number)"),
-            ("42G / :42", "Go to item 42"),
-            ("J / K", "Move the item down / up the list"),
-            ("H / L", "Move the item to the previous / next day"),
-            ("a", "Add an item below the cursor"),
-            ("A", "Add several items, one after another"),
-            ("e", "Edit the selected item, cursor at the end"),
-            ("E", "Edit it with the text cleared"),
-            ("x", "Mark the selected item done / not done"),
-            ("m", "Pin / unpin: move to today until done"),
-            ("@ / :deadline", "Set a deadline: a day, then a time or none"),
-            ("go / :overdue", "List the items past their deadline"),
-            ("r / :remind", "Set a reminder, some time before or on a day"),
-            ("V", "Select several items"),
-            ("!", "Triage: High, Medium, Low, then none"),
-            ("d", "Delete the selected item"),
-            ("yy", "Copy the selected item"),
-            ("p / P", "Paste below / above (also after deleting)"),
-            ("Enter", "Edit the selected item's notes (in your own editor, if set in the options)"),
-            ("v", "View the selected item's notes, formatted"),
-            ("u / Ctrl+R", "Undo / redo a change to the list"),
-            ("Space", "Menu of the commands below it, narrowing as you type"),
-            ("Space Space", "Find items by their text, on any day"),
-            ("Space s g", "Search inside every item's notes"),
-            ("Space s d", "List every deadline, soonest first"),
-            ("Space s r", "List every reminder, soonest first"),
-            ("Space s t", "List tags, to show the items with one"),
-            ("Space s o", "Search the options"),
-            ("Space s k", "Search the keybindings: this help, as ? shows it"),
-            ("Space c", "Open the calendar"),
-            ("Space o", "Options, including accessibility"),
-            ("Space w", "Workspaces: switch, create or delete"),
-            ("Space n", "What's new: every release's notes"),
-            ("?", "Show this help"),
-            ("q / :q", "Quit"),
-        ],
-    },
     Section {
         title: "Adding or editing an item",
         bindings: &[
@@ -207,13 +166,98 @@ pub const SECTIONS: &[Section] = &[
 ];
 
 /// A section with only the bindings that match the search.
-pub struct Matches {
-    pub title: &'static str,
-    pub bindings: Vec<(&'static str, &'static str)>,
+/// One binding as the help shows it: its keys, what it does, and for the
+/// list's and leader menu's, the command's name in `keys.toml`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    pub keys: String,
+    pub action: String,
+    pub name: Option<&'static str>,
+}
+
+impl Row {
+    fn new(keys: impl Into<String>, action: impl Into<String>, name: Option<&'static str>) -> Self {
+        Self { keys: keys.into(), action: action.into(), name }
+    }
+}
+
+/// A section of the help, with its rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shown {
+    pub title: String,
+    pub bindings: Vec<Row>,
+}
+
+/// `:` commands that do the same as a command's keys.
+fn colon_alias(command: Command) -> Option<&'static str> {
+    match command {
+        Command::Deadline => Some(":deadline"),
+        Command::Reminder => Some(":remind"),
+        Command::Overdue => Some(":overdue"),
+        Command::Quit => Some(":q"),
+        _ => None,
+    }
+}
+
+/// Every section of the help, with the list's and the leader menu's keys
+/// as `keymap` has them, so changes in keys.toml show.
+pub fn sections(keymap: &Keymap) -> Vec<Shown> {
+    let shown = |bindings: &[keymap::Binding], command: Command| -> Vec<String> {
+        bindings.iter().filter(|binding| binding.command == command).map(|binding| keymap::show_keys(&binding.keys)).collect()
+    };
+    let mut list = Vec::new();
+    for command in Command::all() {
+        let mut keys = shown(&keymap.list, command);
+        if keys.is_empty() {
+            continue;
+        }
+        keys.extend(colon_alias(command).map(String::from));
+        list.push(Row::new(keys.join(" / "), command.description(), Some(command.name())));
+        // Counts, with the keys they go before.
+        let first = |command| shown(&keymap.list, command).into_iter().next();
+        if command == Command::Up
+            && let (Some(down), Some(up)) = (first(Command::Down), first(Command::Up))
+        {
+            list.push(Row::new(format!("4{down} / 4{up}"), "Move four items down / up (any number)", None));
+        }
+        if command == Command::Last
+            && let Some(last) = first(Command::Last)
+        {
+            list.push(Row::new(format!("42{last} / :42"), "Go to item 42", None));
+        }
+    }
+    let leader = keymap.leader_name();
+    let menu = Command::all()
+        .flat_map(|command| {
+            keymap
+                .leader
+                .iter()
+                .filter(move |binding| binding.command == command)
+                .map(move |binding| (binding, command))
+                .collect::<Vec<_>>()
+        })
+        .map(|(binding, command)| {
+            Row::new(format!("{leader} {}", keymap::show_spaced(&binding.keys)), command.description(), Some(command.name()))
+        })
+        .collect();
+    let mut all = vec![
+        Shown { title: "List".into(), bindings: list },
+        Shown { title: format!("Leader menu ({leader})"), bindings: menu },
+    ];
+    all.extend(SECTIONS.iter().map(|section| Shown {
+        title: section.title.into(),
+        bindings: section.bindings.iter().map(|(keys, action)| Row::new(*keys, *action, None)).collect(),
+    }));
+    all.retain(|section| !section.bindings.is_empty());
+    all
 }
 
 #[derive(Default)]
 pub struct Help {
+    /// Every section, with the keys as they were when it opened.
+    pub sections: Vec<Shown>,
+    /// Where to change the keys, shown above them.
+    pub tip: String,
     pub query: String,
     /// First visible line of the results.
     pub scroll: usize,
@@ -225,6 +269,12 @@ pub struct Help {
 }
 
 impl Help {
+    pub fn new(keymap: &Keymap) -> Self {
+        let options = keymap.key_for(Command::Options).map_or_else(|| "the options".into(), |key| format!("the options ({key})"));
+        let tip = format!("Change the list's and the leader menu's keys in keys.toml: open it from {options}, under Keys.");
+        Self { sections: sections(keymap), tip, ..Self::default() }
+    }
+
     /// Handles a key and returns `true` when the popup should close.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -248,17 +298,12 @@ impl Help {
         false
     }
 
-    pub fn matches(&self) -> Vec<Matches> {
-        SECTIONS
+    pub fn matches(&self) -> Vec<Shown> {
+        self.sections
             .iter()
-            .map(|section| Matches {
-                title: section.title,
-                bindings: section
-                    .bindings
-                    .iter()
-                    .copied()
-                    .filter(|&(keys, action)| matches(keys, action, &self.query))
-                    .collect(),
+            .map(|section| Shown {
+                title: section.title.clone(),
+                bindings: section.bindings.iter().filter(|row| matches(row, &self.query)).cloned().collect(),
             })
             .filter(|section| !section.bindings.is_empty())
             .collect()
@@ -286,16 +331,19 @@ impl Help {
 
 /// A single character is almost always a key, and nearly every description
 /// contains common letters, so it only matches key names (case-sensitively, so
-/// `G` and `g` differ). Longer searches match keys or descriptions, ignoring case.
-fn matches(keys: &str, action: &str, query: &str) -> bool {
+/// `G` and `g` differ). Longer searches match keys, descriptions or command
+/// names, ignoring case.
+fn matches(row: &Row, query: &str) -> bool {
     let query = query.trim();
     let mut chars = query.chars();
     match (chars.next(), chars.next()) {
         (None, _) => true,
-        (Some(c), None) => keys.split([' ', '/']).any(|key| key.starts_with(c)),
+        (Some(c), None) => row.keys.split([' ', '/']).any(|key| key.starts_with(c)),
         _ => {
             let query = query.to_lowercase();
-            keys.to_lowercase().contains(&query) || action.to_lowercase().contains(&query)
+            [row.keys.as_str(), row.action.as_str(), row.name.unwrap_or_default()]
+                .iter()
+                .any(|text| text.to_lowercase().contains(&query))
         }
     }
 }
@@ -305,7 +353,7 @@ mod tests {
     use super::*;
 
     fn help(query: &str) -> Help {
-        Help { query: query.into(), ..Help::default() }
+        Help { query: query.into(), ..Help::new(&Keymap::default()) }
     }
 
     /// The matching bindings as "section: keys".
@@ -313,7 +361,7 @@ mod tests {
         help(query)
             .matches()
             .iter()
-            .flat_map(|section| section.bindings.iter().map(move |(keys, _)| format!("{}: {keys}", section.title)))
+            .flat_map(|section| section.bindings.iter().map(|row| format!("{}: {}", section.title, row.keys)).collect::<Vec<_>>())
             .collect()
     }
 
@@ -323,7 +371,7 @@ mod tests {
 
     #[test]
     fn empty_search_shows_everything() {
-        let total: usize = SECTIONS.iter().map(|section| section.bindings.len()).sum();
+        let total: usize = sections(&Keymap::default()).iter().map(|section| section.bindings.len()).sum();
         let shown: usize = help("").matches().iter().map(|section| section.bindings.len()).sum();
         assert_eq!(shown, total);
     }
@@ -339,7 +387,7 @@ mod tests {
 
     #[test]
     fn single_key_search_is_case_sensitive() {
-        assert_eq!(found("G"), ["List: gg / G", "Notes: gg / G", "Viewing notes (v): gg / G", "Search: j / k, gg / G"]);
+        assert_eq!(found("G"), ["List: G", "Notes: gg / G", "Viewing notes (v): gg / G", "Search: j / k, gg / G"]);
         assert_eq!(found("O"), ["Notes: o / O"]);
         assert!(found("g").contains(&"Notes: gg / G".to_string()));
         assert!(!found("A").contains(&"List: a".to_string()));
@@ -347,8 +395,8 @@ mod tests {
 
     #[test]
     fn longer_search_matches_descriptions_ignoring_case() {
-        assert_eq!(found("UNDO"), ["List: u / Ctrl+R", "Notes: u / Ctrl+R", "Calendar: u / Ctrl+R"]);
-        assert_eq!(found("next day"), ["List: h / l", "List: H / L", "Selecting several (V): H / L"]);
+        assert_eq!(found("UNDO"), ["List: u", "Notes: u / Ctrl+R", "Calendar: u / Ctrl+R"]);
+        assert_eq!(found("next day"), ["List: l / →", "List: L", "Selecting several (V): H / L"]);
     }
 
     #[test]
@@ -356,7 +404,7 @@ mod tests {
         assert_eq!(
             found("ctrl"),
             [
-                "List: u / Ctrl+R",
+                "List: Ctrl+R",
                 "Notes: Ctrl+→ / Ctrl+←",
                 "Notes: Ctrl+Home / End",
                 "Notes: u / Ctrl+R",
@@ -436,5 +484,42 @@ mod tests {
     fn esc_closes() {
         assert!(press(&mut help("abc"), KeyCode::Esc));
         assert!(!press(&mut help(""), KeyCode::Enter));
+    }
+
+    #[test]
+    fn the_list_and_leader_menu_show_the_keys_as_keys_toml_has_them() {
+        let (keymap, problems) = Keymap::from_toml(
+            r#"
+            leader = ","
+            [list]
+            "c" = "calendar"
+            "x" = "none"
+            [leader-menu]
+            "f" = "find-items"
+            "#,
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        let help = Help { query: "calendar".into(), ..Help::new(&keymap) };
+        let found: Vec<String> =
+            help.matches().iter().flat_map(|section| section.bindings.iter().map(|row| format!("{}: {}", section.title, row.keys)).collect::<Vec<_>>()).collect();
+        assert!(found.contains(&"List: c".to_string()), "{found:?}");
+        assert!(found.contains(&"Leader menu (,): , c".to_string()), "{found:?}");
+        // A freed key is gone, and the leader's own key shows.
+        let all = sections(&keymap);
+        assert!(!all[0].bindings.iter().any(|row| row.name == Some("toggle-done")));
+        assert!(all[0].bindings.iter().any(|row| row.keys == "," && row.name == Some("leader")));
+        assert!(all[1].bindings.iter().any(|row| row.keys == ", f"));
+    }
+
+    #[test]
+    fn command_names_are_shown_and_searchable() {
+        let rows = &sections(&Keymap::default())[0].bindings;
+        let done = rows.iter().find(|row| row.keys == "x").unwrap();
+        assert_eq!(done.name, Some("toggle-done"));
+        assert_eq!(found("toggle-done"), ["List: x"]);
+        // : commands show beside their keys.
+        assert!(rows.iter().any(|row| row.keys == "@ / :deadline"));
+        assert!(rows.iter().any(|row| row.keys == "4j / 4k"));
+        assert!(rows.iter().any(|row| row.keys == "42G / :42"));
     }
 }
