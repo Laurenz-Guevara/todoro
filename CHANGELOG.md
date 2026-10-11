@@ -2,6 +2,29 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [0.7.0] - 2026-10-11
+
+### Breaking
+
+- Sub-items and planned times are saved in your todos file. An older version of todoro would drop them if it saved the file.
+- `v` now selects several items, as `V` does (and as `v` does in the notes). Viewing an item's notes formatted has moved to `Space` `v`.
+
+### Features
+
+Sub-items:
+
+- Any item can have sub-items, as deep as you like. `o` adds one under the selected item, and `O` adds several. `>` makes an item a sub-item of the one above it, and `<` moves it back out.
+- A parent shows how many of its sub-items are done. `x` on it completes everything under it, and reopening a sub-item reopens what it's under.
+- `za` folds an item's sub-items away and unfolds them, as do `zc` and `zo`, and `Shift+Enter` in terminals that tell it from `Enter`.
+- Sub-items go where their item goes: moving, pinning, carrying over, copying and deleting an item take them along.
+
+Planning your day:
+
+- `Space` `t` shows the day as a timeline: each item with a time as a block from its start to its end, and a red line across at the time now. Items with no time are listed as all day.
+- `Space` `p` plans the day: the list, with the timeline beside it. `Enter` types an item's start and then its end (just `Enter` for an hour), then goes on to the next item without a time, starting where the last one ended.
+- In the plan, `L` moves into the timeline, where `j` and `k` go down a column of blocks and `h` and `l` across, and `H` back. `c` clears a time, `R` clears them all, `!` triages, `u` undoes, and the list's keys work too. `w` saves, and `q` asks whether to save first.
+- A triaged item's block takes its priority's colour.
+
 ## [0.6.0] - 2026-10-11
 
 ### Breaking
