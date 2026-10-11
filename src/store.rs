@@ -10,6 +10,7 @@ use crate::deadline::Deadline;
 use crate::notes_files::{Conflict, NotesFiles};
 use crate::outline;
 use crate::reminder::Reminder;
+use crate::timeline::TimeSlot;
 
 /// One todo entry. `notes` is longer free text shown only on the notes screen,
 /// kept in its own Markdown file named by `notes_file`. A `pinned` item moves
@@ -35,6 +36,8 @@ pub struct Item {
     pub depth: usize,
     /// Whether its sub-items are hidden (`za`).
     pub folded: bool,
+    /// When it's planned for, on a day (`Space p`), if it is.
+    pub time: Option<TimeSlot>,
 }
 
 impl Item {
@@ -113,6 +116,9 @@ enum RawItem {
         reminder: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         folded: bool,
+        /// `2026-10-11 09:00-10:30`; anything else is ignored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        time: Option<String>,
         /// Its sub-items, written the same way.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         items: Vec<RawItem>,
@@ -125,10 +131,11 @@ fn flatten(raw: Vec<RawItem>, depth: usize, into: &mut Vec<Item>) {
     for raw in raw {
         match raw {
             RawItem::Text(text) => into.push(Item { text, depth, ..Item::default() }),
-            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, items } => {
+            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, time, items } => {
                 let deadline = deadline.as_deref().and_then(Deadline::from_stored);
                 let reminder = reminder.as_deref().and_then(Reminder::from_stored);
-                into.push(Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, depth, folded });
+                let time = time.as_deref().and_then(TimeSlot::from_stored);
+                into.push(Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, depth, folded, time });
                 flatten(items, depth + 1, into);
             }
         }
@@ -150,14 +157,16 @@ fn nest(items: &[Item]) -> Vec<RawItem> {
             && item.deadline.is_none()
             && item.reminder.is_none()
             && !item.folded
+            && item.time.is_none()
             && sub.is_empty()
         {
             RawItem::Text(item.text)
         } else {
-            let Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, .. } = item;
+            let Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, time, .. } = item;
             let deadline = deadline.map(Deadline::to_stored);
             let reminder = reminder.map(Reminder::to_stored);
-            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, items: sub }
+            let time = time.map(TimeSlot::to_stored);
+            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, time, items: sub }
         });
         i = end;
     }
@@ -618,6 +627,14 @@ impl Store {
         let moved = outline::normalize(items);
         self.save()?;
         Ok(Some(moved[at]))
+    }
+
+    /// Plans an item for a time on a day, or with `None`, for no time.
+    pub fn set_time(&mut self, day: NaiveDate, index: usize, time: Option<TimeSlot>) -> io::Result<()> {
+        if let Some(item) = self.item_mut(day, index) {
+            item.time = time;
+        }
+        self.save()
     }
 
     /// Folds or unfolds an item's sub-items.
@@ -1214,6 +1231,7 @@ mod tests {
             reminder: Some(Reminder::Before { amount: 2, unit: crate::reminder::Unit::Days }),
             depth: 0,
             folded: false,
+            time: None,
         };
         assert_eq!(store.insert_items(today(), 9, vec![copy.clone(), copy.clone()]).unwrap(), 1);
         assert_eq!(texts(&store, today()), ["a", "copy", "copy", "b"]);
@@ -1572,5 +1590,25 @@ mod tests {
     fn a_completed_parent_with_open_sub_items_in_the_file_is_open() {
         let (_dir, _path, store) = store_with(r#"{ "2026-10-05": [{ "text": "trip", "done": true, "items": ["flights"] }, "milk"] }"#);
         assert_eq!(outline_of(&store, today()), ["trip", "  flights", "milk"]);
+    }
+
+    #[test]
+    fn times_are_saved_and_loaded() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Standup".into()).unwrap();
+        let slot = TimeSlot {
+            date: today(),
+            start: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(),
+            end: chrono::NaiveTime::from_hms_opt(9, 30, 0).unwrap(),
+        };
+        store.set_time(today(), 0, Some(slot)).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json, serde_json::json!({ "2026-10-05": [{ "text": "Standup", "time": "2026-10-05 09:00-09:30" }] }));
+        assert_eq!(Store::open(path.clone()).unwrap().items(today())[0].time, Some(slot));
+        // Without one it's plain text again.
+        store.set_time(today(), 0, None).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["2026-10-05"][0], "Standup");
     }
 }

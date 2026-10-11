@@ -146,6 +146,42 @@ pub const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: "Timeline (Space t)",
+        bindings: &[
+            ("j / k", "Scroll an hour down / up"),
+            ("h / l", "Previous / next day"),
+            ("t", "Today"),
+            ("p", "Plan the day"),
+            ("Esc / q", "Back to the list"),
+        ],
+    },
+    Section {
+        title: "Planning the day (Space p)",
+        bindings: &[
+            ("j / k", "Choose an item, on the list or the timeline"),
+            ("L / H", "Move into the timeline's blocks / back to the list"),
+            ("j / k (timeline)", "Down / up the column of blocks"),
+            ("h / l (timeline)", "The column to the left / right"),
+            ("Enter", "Type its start time, then its end, then on to the next without one"),
+            ("Enter (empty)", "Start as the last one ends (or now); end an hour later"),
+            ("Tab", "While typing: leave this item, on to the next"),
+            ("a / A", "Add an item / several, as on the list"),
+            ("o / O", "Add a sub-item / several under the item"),
+            ("e / E", "Edit / edit with the text cleared, as on the list"),
+            ("u / Ctrl+R", "Undo / redo a change in the plan"),
+            ("J / K, yy, p / P", "Move, copy and paste, as on the list"),
+            ("> / <, za", "Indent / outdent, fold (zc, zo too)"),
+            ("m / @ / r", "Pin, deadline, reminder"),
+            ("V", "Select several (not to another day)"),
+            ("c", "Clear the item's time"),
+            ("x / d", "Delete the item, asking first"),
+            ("!", "Triage: High, Medium, Low, then none"),
+            ("w", "Save the plan"),
+            ("R", "Reset: clear every time, all day again"),
+            ("Esc / q", "Leave, asking to save if anything changed (w save, q don't, n back)"),
+        ],
+    },
+    Section {
         title: "Calendar",
         bindings: &[
             ("h j k l", "Move by day and week, following the layout"),
@@ -378,7 +414,7 @@ mod tests {
 
     #[test]
     fn single_key_matches_key_names_only() {
-        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x", "Setting a reminder (r): x"]);
+        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x", "Setting a reminder (r): x", "Planning the day (Space p): x / d"]);
         assert_eq!(found("?"), ["List: ?", "Notes: ?", "Calendar: ?"]);
         assert_eq!(found("$"), ["Notes: 0 / $"]);
         assert!(found("v").contains(&"List: v".to_string()));
@@ -388,15 +424,15 @@ mod tests {
     #[test]
     fn single_key_search_is_case_sensitive() {
         assert_eq!(found("G"), ["List: G", "Notes: gg / G", "Viewing notes (v): gg / G", "Search: j / k, gg / G"]);
-        assert_eq!(found("O"), ["List: O", "Notes: o / O"]);
+        assert_eq!(found("O"), ["List: O", "Notes: o / O", "Planning the day (Space p): o / O"]);
         assert!(found("g").contains(&"Notes: gg / G".to_string()));
         assert!(!found("A").contains(&"List: a".to_string()));
     }
 
     #[test]
     fn longer_search_matches_descriptions_ignoring_case() {
-        assert_eq!(found("UNDO"), ["List: u", "Notes: u / Ctrl+R", "Calendar: u / Ctrl+R"]);
-        assert_eq!(found("next day"), ["List: l / →", "List: L", "Selecting several (V): H / L"]);
+        assert_eq!(found("UNDO"), ["List: u", "Notes: u / Ctrl+R", "Planning the day (Space p): u / Ctrl+R", "Calendar: u / Ctrl+R"]);
+        assert_eq!(found("next day"), ["List: l / →", "List: L", "Selecting several (V): H / L", "Timeline (Space t): h / l"]);
     }
 
     #[test]
@@ -411,6 +447,7 @@ mod tests {
                 "Viewing notes (v): Ctrl+D / Ctrl+U",
                 "Viewing notes (v): Space / Ctrl+B",
                 "Search: Ctrl+D / Ctrl+U",
+                "Planning the day (Space p): u / Ctrl+R",
                 "Calendar: u / Ctrl+R",
                 "Anywhere: Ctrl+C",
             ]
@@ -474,7 +511,7 @@ mod tests {
     #[test]
     fn short_results_do_not_scroll() {
         let mut h = help("undo");
-        h.height.set(10);
+        h.height.set(h.line_count() + 1);
         h.total.set(h.line_count());
         press(&mut h, KeyCode::Down);
         assert_eq!(h.scroll, 0);

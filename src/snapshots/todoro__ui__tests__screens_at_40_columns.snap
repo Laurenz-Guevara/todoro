@@ -18,7 +18,6 @@ list
 
 space menu
 "╭─── Monday, October 5 2026 (today) ───╮"
-"│1. Buy milk                           │"
 "│╭ Space ─────────────────────────────╮│"
 "││ Space  find items                  ││"
 "││     s  +search                     ││"
@@ -26,6 +25,7 @@ space menu
 "││     o  options                     ││"
 "││     w  workspaces                  ││"
 "││     n  patch notes                 ││"
+"││     t  timeline                    ││"
 "│╰────────────────────────────────────╯│"
 "╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
 " LEADER   type a key  ⌫ back  esc cancel"
@@ -169,6 +169,48 @@ with a reminder
 "│                                      │"
 "╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
 " NORMAL   a add  e edit  x done  ? help "
+
+timeline
+"╭─────── Monday, October 5 2026 ───────╮"
+"│All day  Buy milk                     │"
+"│         Write the quarterly report f…│"
+"│──────────────────────────────────────│"
+"│00:00 ────────────────────────────────│"
+"│01:00                                 │"
+"│02:00                                 │"
+"│03:00                                 │"
+"│04:00                                 │"
+"│05:00                                 │"
+"╰──────────────────────────────────────╯"
+" TIMELINE   h/l day  p plan  ? help     "
+
+planning
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│1. Buy milk                           │"
+"│2. Write the quarterly                │"
+"│   report for the team ◷ 17:30 ⚑ ≡    │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" PLAN   ↵ set time  w save  esc cancel  "
+
+typing a start
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│1. Buy milk                           │"
+"│2. Write the quarterly                │"
+"│   report for the team ◷ 17:30 ⚑ ≡    │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+"Start: 9                                "
 
 empty day
 "╭────── Tuesday, October 6 2026 ───────╮"

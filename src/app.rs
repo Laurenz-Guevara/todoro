@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::io;
 use std::path::PathBuf;
 
-use chrono::{Days, NaiveDate, NaiveTime};
+use chrono::{Days, NaiveDate, NaiveTime, Timelike};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::calendar::{self, Calendar};
@@ -13,6 +13,7 @@ use crate::keymap::{self, Command, Key, Keymap};
 use crate::leader::{self, Leader};
 use crate::notes::{Action, NotesEditor, Register};
 use crate::options::{self, Options, Settings, TOGGLES};
+use crate::timeline::{self, Plan, TimeSlot, Typing};
 use crate::outline;
 use crate::reminder;
 use crate::search::{self, Search};
@@ -25,7 +26,7 @@ use crate::workspaces::{self, Picker, Workspaces};
 const UNDO_LIMIT: usize = 200;
 
 /// Every item, plus the day and row on screen, from before (or after) a change.
-struct State {
+pub struct State {
     snapshot: Snapshot,
     day: NaiveDate,
     selected: usize,
@@ -63,6 +64,12 @@ pub enum Mode {
     Remind(reminder::Picker),
     /// The `Space` popup of less frequent commands, narrowing as keys are typed.
     Leader(Leader),
+    /// The day as a timeline, items with a time as blocks (`Space t`).
+    /// `scroll` is the hour at the top, once moved from where it starts.
+    Timeline { scroll: Option<u32> },
+    /// Giving the day's items their times (`Space p`), beside the timeline.
+    /// `before` is how things were when it opened, for reset, cancel and undo.
+    Plan { plan: Plan, before: Box<State> },
     /// The keybinding help popup, over the screen in `back`.
     Help { help: Help, back: Box<Mode> },
 }
@@ -87,6 +94,14 @@ fn with_line(command: &str, line: Option<usize>) -> String {
     match line {
         Some(line) if PLUS_LINE_EDITORS.contains(&name) => format!("{command} +{}", line + 1),
         _ => command.to_string(),
+    }
+}
+
+/// Starts typing a start time in the plan view.
+fn plan_typing(mode: &mut Mode) {
+    if let Mode::Plan { plan, .. } = mode {
+        plan.typing = Some(Typing::Start(LineInput::default()));
+        plan.error = None;
     }
 }
 
@@ -117,6 +132,18 @@ pub struct App {
     /// The first list row on screen. The UI updates it while drawing so the
     /// view only scrolls when the cursor reaches its top or bottom edge.
     pub list_offset: Cell<usize>,
+    /// The hour at the top of the timeline as last drawn, to scroll from.
+    pub timeline_top: Cell<u32>,
+    /// Whether the plan view had room for the timeline when last drawn.
+    pub timeline_shown: Cell<bool>,
+    /// The plan view, set aside while an item is added, edited or deleted
+    /// from it, to go back to once that's done. What's typed then is part
+    /// of the plan, saved or put back with it.
+    pub plan_stash: Option<(Plan, Box<State>)>,
+    /// The plan view's own undo and redo, a step for each change made in
+    /// it, while it's open. Saving still makes the whole plan one change.
+    plan_undo: Vec<State>,
+    plan_redo: Vec<State>,
     pub mode: Mode,
     pub quit: bool,
     /// Set by resetting todoro: the event loop stops, and todoro starts
@@ -177,6 +204,11 @@ impl App {
             day: today,
             selected: 0,
             list_offset: Cell::new(0),
+            timeline_top: Cell::new(0),
+            timeline_shown: Cell::new(true),
+            plan_stash: None,
+            plan_undo: Vec::new(),
+            plan_redo: Vec::new(),
             mode: Mode::Normal,
             quit: false,
             restart: false,
@@ -215,19 +247,38 @@ impl App {
         } else {
             Vec::new()
         };
-        // Each top-level item, then what shows of its sub-items.
+        // Each top-level item, then what shows of its sub-items. Planning
+        // and the timeline are about what's left to do, so they leave out
+        // what's completed (and a completed item's sub-items are too).
+        let hide_done = self.planning_view();
+        let shown = |day: NaiveDate, start: usize| {
+            let items = self.store.items(day);
+            outline::visible_block(items, start)
+                .into_iter()
+                .filter(move |&index| !(hide_done && items[index].done))
+                .map(move |index| Slot { day, index })
+        };
         let mut slots: Vec<Slot> = Vec::new();
         for (day, index) in roots {
-            let items = self.store.items(day);
-            slots.extend(outline::visible_block(items, index).into_iter().map(|index| Slot { day, index }));
+            slots.extend(shown(day, index));
         }
         let items = self.store.items(self.day);
         let mut at = 0;
         while at < items.len() {
-            slots.extend(outline::visible_block(items, at).into_iter().map(|index| Slot { day: self.day, index }));
+            slots.extend(shown(self.day, at));
             at = outline::block_end(items, at);
         }
         slots
+    }
+
+    /// Whether the plan view or the timeline is on screen (with or without
+    /// help over it, or an item being typed from the plan).
+    pub fn planning_view(&self) -> bool {
+        let screen = match &self.mode {
+            Mode::Help { back, .. } => back.as_ref(),
+            mode => mode,
+        };
+        matches!(screen, Mode::Plan { .. } | Mode::Timeline { .. }) || self.plan_stash.is_some()
     }
 
     /// How many rows come before the day's completed top-level items.
@@ -304,6 +355,18 @@ impl App {
             self.quit = true;
             return Ok(());
         }
+        // In the plan view, u and Ctrl+R step through its own changes.
+        if let Mode::Plan { plan, .. } = &self.mode
+            && plan.typing.is_none()
+            && !plan.confirm_cancel
+        {
+            match key.code {
+                KeyCode::Char('u') if !ctrl => return self.plan_step(true),
+                KeyCode::Char('r') if ctrl => return self.plan_step(false),
+                _ => {}
+            }
+        }
+        let plan_before = (matches!(self.mode, Mode::Plan { .. }) || self.plan_stash.is_some()).then(|| self.state());
         // The list's keys and the leader menu's run commands, changed by
         // keys.toml. Undo and redo aren't changes to record themselves.
         if let Some(resolved) = self.resolve(key) {
@@ -318,9 +381,11 @@ impl App {
             self.record(before);
             return Ok(());
         }
-        // The calendar's undo, which keeps its own keys.
+        // The calendar's undo, which keeps its own keys (not from the plan
+        // view, which has its own).
         if let Mode::Calendar(calendar) = &self.mode
             && calendar.adding.is_none()
+            && self.plan_stash.is_none()
         {
             match key.code {
                 KeyCode::Char('u') if !ctrl => return self.undo(),
@@ -329,8 +394,10 @@ impl App {
             }
         }
         // Any change made from the list or calendar is undoable. The notes
-        // screen records its own change when it closes, and help changes nothing.
-        let before = matches!(
+        // screen records its own change when it closes, and help changes
+        // nothing. Edits made from the plan view are part of the plan, so the
+        // plan records them when it's saved.
+        let before = (self.plan_stash.is_none() && matches!(
             self.mode,
             Mode::Normal
                 | Mode::Insert { .. }
@@ -338,13 +405,59 @@ impl App {
                 | Mode::Visual { .. }
                 | Mode::Calendar(_)
                 | Mode::Remind(_)
-        )
+        ))
             .then(|| self.state());
         self.mode_key(key)?;
         if let Some(before) = before {
             self.record(before);
         }
+        self.back_to_plan();
+        // A change in the plan view is a step to undo in it, while it's open.
+        if let Some(before) = plan_before
+            && before.snapshot != self.store.snapshot()
+            && (matches!(self.mode, Mode::Plan { .. }) || self.plan_stash.is_some())
+        {
+            self.plan_undo.push(before);
+            self.plan_redo.clear();
+        }
         Ok(())
+    }
+
+    /// Undoes the plan view's last change (`back`), or redoes it, keeping
+    /// whether the plan has changed since it opened up to date.
+    fn plan_step(&mut self, back: bool) -> io::Result<()> {
+        let (from, to) = if back { (&mut self.plan_undo, &mut self.plan_redo) } else { (&mut self.plan_redo, &mut self.plan_undo) };
+        let Some(state) = from.pop() else {
+            self.message = Some(if back { "Nothing in the plan to undo" } else { "Nothing in the plan to redo" }.into());
+            return Ok(());
+        };
+        to.push(State { snapshot: self.store.snapshot(), day: self.day, selected: self.selected });
+        self.store.restore(state.snapshot)?;
+        self.selected = state.selected;
+        self.clamp_selection();
+        let now = self.store.snapshot();
+        if let Mode::Plan { plan, before } = &mut self.mode {
+            plan.changed = before.snapshot != now;
+            if plan.on_timeline {
+                self.select_block();
+            }
+        }
+        Ok(())
+    }
+
+    /// Back to the plan view once an item added, edited or deleted from it
+    /// is done, noting that the plan changed.
+    fn back_to_plan(&mut self) {
+        if !matches!(self.mode, Mode::Normal) {
+            return;
+        }
+        let Some((mut plan, before)) = self.plan_stash.take() else { return };
+        plan.changed |= before.snapshot != self.store.snapshot();
+        let on_timeline = plan.on_timeline;
+        self.mode = Mode::Plan { plan, before };
+        if on_timeline {
+            self.select_block();
+        }
     }
 
     fn mode_key(&mut self, key: KeyEvent) -> io::Result<()> {
@@ -461,6 +574,8 @@ impl App {
             },
             // Handled with the list's keys, in `resolve`.
             Mode::Leader(_) => {}
+            Mode::Timeline { .. } => self.timeline_key(key.code),
+            Mode::Plan { .. } => self.plan_key(key)?,
             Mode::Remind(picker) => {
                 let (day, index) = (picker.day, picker.index);
                 match picker.handle_key(key.code) {
@@ -926,6 +1041,417 @@ impl App {
                 _ => self.message = Some("Workspaces are off while TODORO_FILE is set.".into()),
             },
             Command::PatchNotes => self.mode = Mode::Changelog(ChangelogView::all()),
+            Command::Timeline => self.mode = Mode::Timeline { scroll: None },
+            Command::Plan => self.open_plan(),
+        }
+        Ok(())
+    }
+
+    /// Keys on the timeline: `j`/`k` scroll an hour, `h`/`l` the day before
+    /// or after, `t` today, `p` plans the day, `Esc`/`q` back to the list.
+    fn timeline_key(&mut self, code: KeyCode) {
+        let Mode::Timeline { scroll } = &mut self.mode else { return };
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => *scroll = Some(self.timeline_top.get() + 1),
+            KeyCode::Char('k') | KeyCode::Up => *scroll = Some(self.timeline_top.get().saturating_sub(1)),
+            KeyCode::Char('h') | KeyCode::Left => {
+                *scroll = None;
+                self.change_day(-1);
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                *scroll = None;
+                self.change_day(1);
+            }
+            KeyCode::Char('t') => {
+                *scroll = None;
+                self.show_day(self.today);
+            }
+            KeyCode::Char('p') => self.open_plan(),
+            KeyCode::Char('?') => self.open_help(),
+            KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+            _ => {}
+        }
+    }
+
+    /// Opens the plan view for the day on screen, on the selected item (or
+    /// the top-level item it's under).
+    fn open_plan(&mut self) {
+        if !self.slots().iter().any(|slot| self.plannable(*slot)) {
+            self.message = Some("There's nothing open to plan on this day.".into());
+            return;
+        }
+        self.select_root();
+        let before = Box::new(self.state());
+        self.plan_undo.clear();
+        self.plan_redo.clear();
+        self.mode = Mode::Plan { plan: Plan::default(), before };
+    }
+
+    /// Whether the item at `slot` can be given a time: an open, top-level one.
+    fn plannable(&self, slot: Slot) -> bool {
+        let item = &self.store.items(slot.day)[slot.index];
+        item.depth == 0 && !item.done
+    }
+
+    /// Moves the selection from a sub-item to the top-level item it's under.
+    fn select_root(&mut self) {
+        if let Some(slot) = self.slot(self.selected) {
+            let items = self.store.items(slot.day);
+            if let Some(&root) = outline::ancestors(items, slot.index).last() {
+                self.select_stored(slot.day, root);
+            }
+        }
+    }
+
+    /// The rows of the items that are blocks on the timeline, by when they
+    /// start: what can be chosen there.
+    pub fn timeline_blocks(&self) -> Vec<usize> {
+        let mut timed: Vec<_> = self
+            .slots()
+            .iter()
+            .enumerate()
+            .filter_map(|(row, slot)| {
+                let item = &self.store.items(slot.day)[slot.index];
+                let time = item.time.filter(|time| item.depth == 0 && time.date == self.day)?;
+                Some((time.start, time.end, row))
+            })
+            .collect();
+        timed.sort();
+        timed.into_iter().map(|(_, _, row)| row).collect()
+    }
+
+    /// The blocks on the timeline as it lays them out: each one's row, its
+    /// time, and its column (overlapping blocks sit side by side).
+    fn timeline_columns(&self) -> Vec<(usize, TimeSlot, usize)> {
+        let slots = self.slots();
+        let timed: Vec<(usize, TimeSlot)> = self
+            .timeline_blocks()
+            .into_iter()
+            .filter_map(|row| Some((row, self.store.items(slots[row].day)[slots[row].index].time?)))
+            .collect();
+        timeline::place(&timed)
+            .into_iter()
+            .filter_map(|placed| timed.iter().find(|(row, _)| *row == placed.item).map(|(row, time)| (*row, *time, placed.column)))
+            .collect()
+    }
+
+    /// The block to go to from the selected one on the timeline: down or up
+    /// its column (`j`/`k`), or into the column beside it (`h`/`l`), to the
+    /// block there that overlaps it most, or else starts nearest.
+    fn timeline_step(&self, code: KeyCode) -> Option<usize> {
+        let layout = self.timeline_columns();
+        let &(_, time, column) = layout.iter().find(|(row, ..)| *row == self.selected)?;
+        let in_column = |c: usize| layout.iter().filter(move |(_, _, col)| *col == c);
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                in_column(column).filter(|(_, t, _)| t.start > time.start).min_by_key(|(_, t, _)| t.start).map(|b| b.0)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                in_column(column).filter(|(_, t, _)| t.start < time.start).max_by_key(|(_, t, _)| t.start).map(|b| b.0)
+            }
+            KeyCode::Char('h' | 'l') => {
+                let to = if code == KeyCode::Char('l') { column + 1 } else { column.checked_sub(1)? };
+                let minutes = |t: chrono::NaiveTime| i64::from(t.hour() * 60 + t.minute());
+                let overlap = |t: &TimeSlot| minutes(t.end.min(time.end)) - minutes(t.start.max(time.start));
+                let distance = |t: &TimeSlot| (minutes(t.start) - minutes(time.start)).abs();
+                in_column(to).max_by_key(|(_, t, _)| (overlap(t).max(0), -distance(t))).map(|b| b.0)
+            }
+            _ => None,
+        }
+    }
+
+    /// On the timeline, makes sure a block is selected: the selected item if
+    /// it's one, otherwise the next block after where it was, or the last.
+    /// With no blocks, back to the list. Returns whether it's on a block.
+    fn select_block(&mut self) -> bool {
+        let blocks = self.timeline_blocks();
+        if blocks.contains(&self.selected) {
+            return true;
+        }
+        match blocks.iter().find(|&&row| row > self.selected).or(blocks.last()) {
+            Some(&row) => {
+                self.selected = row;
+                true
+            }
+            None => {
+                if let Mode::Plan { plan, .. } = &mut self.mode {
+                    plan.on_timeline = false;
+                }
+                false
+            }
+        }
+    }
+
+    /// The row of the next item to plan after the selected one, if any.
+    /// Only those still without a time on the day: below the selected one,
+    /// then from the top, so none is missed.
+    fn next_plannable(&self) -> Option<usize> {
+        let slots = self.slots();
+        let untimed = |row: usize| {
+            let slot = slots[row];
+            self.plannable(slot) && !self.store.items(slot.day)[slot.index].time.is_some_and(|time| time.date == self.day)
+        };
+        (self.selected + 1..slots.len()).chain(0..self.selected).find(|&row| untimed(row))
+    }
+
+    /// Keys in the plan view. `Enter` types the selected item's start time
+    /// (nothing typed is now), then its end (nothing typed is an hour later),
+    /// and goes on to the next item, as `Tab` does without changing it; `c`
+    /// clears its time and `x` (or `d`) deletes it; `w` saves, `R` resets,
+    /// `Esc` cancels.
+    fn plan_key(&mut self, event: KeyEvent) -> io::Result<()> {
+        let code = event.code;
+        let Mode::Plan { plan, .. } = &mut self.mode else { return Ok(()) };
+        if plan.confirm_cancel {
+            match code {
+                KeyCode::Char('q') => self.close_plan(false)?,
+                KeyCode::Char('w') => self.close_plan(true)?,
+                KeyCode::Char('n') | KeyCode::Esc => plan.confirm_cancel = false,
+                _ => {}
+            }
+            return Ok(());
+        }
+        if let Some(typing) = &mut plan.typing {
+            let (Typing::Start(input) | Typing::End(_, input)) = typing;
+            match code {
+                // Back out of this item, keeping the rest.
+                KeyCode::Esc => {
+                    plan.typing = None;
+                    plan.error = None;
+                }
+                // Leave this item as it is, for the next one.
+                KeyCode::Tab => {
+                    plan.typing = None;
+                    plan.error = None;
+                    self.next_in_plan();
+                }
+                KeyCode::Enter => {
+                    let read = timeline::read_time(&input.text);
+                    let typing = match (typing, read) {
+                        (_, Err(error)) => {
+                            plan.error = Some(error);
+                            return Ok(());
+                        }
+                        // Nothing typed for the start: as the last one set ends,
+                        // or now, to the minute.
+                        (Typing::Start(_), Ok(start)) => {
+                            let start = start.unwrap_or_else(|| plan.default_start(self.now));
+                            Some(Typing::End(start, LineInput::default()))
+                        }
+                        (Typing::End(start, _), Ok(end)) => {
+                            let start = *start;
+                            let end = end.unwrap_or_else(|| timeline::an_hour_after(start));
+                            if end <= start {
+                                plan.error = Some("It has to end after it starts".into());
+                                return Ok(());
+                            }
+                            plan.changed = true;
+                            plan.last_end = Some(end);
+                            if let Some(slot) = self.slot(self.selected) {
+                                self.store.set_time(slot.day, slot.index, Some(TimeSlot { date: self.day, start, end }))?;
+                            }
+                            None
+                        }
+                    };
+                    let Mode::Plan { plan, .. } = &mut self.mode else { return Ok(()) };
+                    plan.error = None;
+                    plan.typing = typing;
+                    // From the list, on to the next item; on the timeline,
+                    // stay on the block just moved.
+                    if plan.typing.is_none() && !plan.on_timeline {
+                        self.next_in_plan();
+                    }
+                }
+                code => {
+                    input.handle_key(code);
+                    plan.error = None;
+                }
+            }
+            return Ok(());
+        }
+        // Partway through a sequence (gg, yy, za) or a count (4j): the
+        // list's keys finish it.
+        if !self.pending.is_empty() || self.count.is_some() && !matches!(code, KeyCode::Char('0'..='9')) && !plan.on_timeline {
+            return self.plan_list_key(event);
+        }
+        // On the timeline, moving follows the blocks: down and up a column,
+        // and across to the next. Only H goes back to the list.
+        if plan.on_timeline {
+            let blocks = self.timeline_blocks();
+            match code {
+                KeyCode::Char('j' | 'k' | 'h' | 'l') | KeyCode::Down | KeyCode::Up => {
+                    if let Some(row) = self.timeline_step(code) {
+                        self.selected = row;
+                    }
+                    return Ok(());
+                }
+                KeyCode::Char('g') | KeyCode::Char('G') => {
+                    let end = if code == KeyCode::Char('g') { blocks.first() } else { blocks.last() };
+                    if let Some(&row) = end {
+                        self.selected = row;
+                    }
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        let Mode::Plan { plan, .. } = &mut self.mode else { return Ok(()) };
+        match code {
+            // Over to the timeline, on the selected item (or what it's under),
+            // and back.
+            KeyCode::Char('L') if self.timeline_shown.get() => {
+                plan.on_timeline = true;
+                self.select_root();
+                if !self.select_block() {
+                    self.message = Some("Nothing's on the timeline yet: give an item a time first.".into());
+                }
+            }
+            KeyCode::Char('L') => self.message = Some("Widen the terminal to see the timeline beside the list.".into()),
+            KeyCode::Char('H') => plan.on_timeline = false,
+            KeyCode::Enter => {
+                self.select_root();
+                if let Some(slot) = self.slot(self.selected)
+                    && self.plannable(slot)
+                {
+                    plan_typing(&mut self.mode);
+                } else {
+                    self.message = Some("Only open, top-level items get a time.".into());
+                }
+            }
+            // Clear the item's time.
+            KeyCode::Char('c') => {
+                self.select_root();
+                if let Some(slot) = self.slot(self.selected)
+                    && self.store.items(slot.day)[slot.index].time.is_some()
+                {
+                    self.store.set_time(slot.day, slot.index, None)?;
+                    if let Mode::Plan { plan, .. } = &mut self.mode {
+                        plan.changed = true;
+                        // It's all day now, so not a block to be on.
+                        if plan.on_timeline {
+                            self.select_block();
+                        }
+                    }
+                }
+            }
+            // Adding, editing and deleting as on the list, typed in place,
+            // then back to the plan.
+            KeyCode::Char(c @ ('a' | 'A' | 'o' | 'O' | 'e' | 'E' | 'd' | 'x')) => {
+                let command = match c {
+                    'a' => Command::Add,
+                    'A' => Command::AddSeveral,
+                    'o' => Command::AddSub,
+                    'O' => Command::AddSubs,
+                    'e' => Command::Edit,
+                    'E' => Command::EditCleared,
+                    _ => Command::Delete,
+                };
+                if let Mode::Plan { plan, before } = std::mem::replace(&mut self.mode, Mode::Normal) {
+                    self.plan_stash = Some((plan, before));
+                }
+                self.run(command, None)?;
+                // Nothing to do it to, on an empty day: straight back.
+                self.back_to_plan();
+            }
+            // Triage, as on the list, part of the plan like its times.
+            KeyCode::Char('!') => {
+                if let Some(slot) = self.slot(self.selected) {
+                    self.store.cycle_priority(slot.day, slot.index)?;
+                    if let Mode::Plan { plan, .. } = &mut self.mode {
+                        plan.changed = true;
+                    }
+                }
+            }
+            KeyCode::Char('w') => self.close_plan(true)?,
+            // Reset: every item on the day back to all day.
+            KeyCode::Char('R') => {
+                let timed: Vec<Slot> = self
+                    .slots()
+                    .into_iter()
+                    .filter(|slot| self.store.items(slot.day)[slot.index].time.is_some_and(|time| time.date == self.day))
+                    .collect();
+                for slot in &timed {
+                    self.store.set_time(slot.day, slot.index, None)?;
+                }
+                if let Mode::Plan { plan, .. } = &mut self.mode
+                    && !timed.is_empty()
+                {
+                    plan.changed = true;
+                    plan.on_timeline = false;
+                    // Nothing to follow on from now.
+                    plan.last_end = None;
+                }
+                self.message = Some(if timed.is_empty() { "Nothing has a time to clear" } else { "Every time cleared" }.into());
+            }
+            KeyCode::Esc | KeyCode::Char('q') if plan.changed => plan.confirm_cancel = true,
+            KeyCode::Esc | KeyCode::Char('q') => self.close_plan(false)?,
+            KeyCode::Char('?') => self.open_help(),
+            // Everything else as on the list, from its keys.
+            _ => self.plan_list_key(event)?,
+        }
+        Ok(())
+    }
+
+    /// The list's keys that work in the plan view too, as `keys.toml` has
+    /// them, with counts: moving, reordering, copying and pasting,
+    /// indenting, folding, pinning, deadlines, reminders and selecting.
+    /// Those that open something come back to the plan once it's done.
+    fn plan_list_key(&mut self, event: KeyEvent) -> io::Result<()> {
+        let Some((command, count)) = self.resolve_list(Key::from_event(event)) else { return Ok(()) };
+        match command {
+            Command::Down | Command::Up | Command::First | Command::Last => self.run(command, count)?,
+            Command::MoveDown
+            | Command::MoveUp
+            | Command::Copy
+            | Command::PasteBelow
+            | Command::PasteAbove
+            | Command::Indent
+            | Command::Outdent
+            | Command::FoldToggle
+            | Command::Fold
+            | Command::Unfold
+            | Command::TogglePin
+            | Command::Deadline
+            | Command::Reminder
+            | Command::Select => {
+                if let Mode::Plan { plan, before } = std::mem::replace(&mut self.mode, Mode::Normal) {
+                    self.plan_stash = Some((plan, before));
+                }
+                self.run(command, count)?;
+                self.back_to_plan();
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// After an item's time, goes on to the next item and starts on its
+    /// time, or says it's done if that was the last.
+    fn next_in_plan(&mut self) {
+        match self.next_plannable() {
+            Some(row) => {
+                self.selected = row;
+                plan_typing(&mut self.mode);
+            }
+            None => self.message = Some("Every item has a time now. w saves the plan.".into()),
+        }
+    }
+
+    /// Leaves the plan view, keeping what was planned as one change to undo
+    /// (`save`), or putting back how it was.
+    fn close_plan(&mut self, save: bool) -> io::Result<()> {
+        let Mode::Plan { before, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else { return Ok(()) };
+        self.plan_undo.clear();
+        self.plan_redo.clear();
+        if save {
+            let changed = before.snapshot != self.store.snapshot();
+            self.record(*before);
+            self.message = Some(if changed { "Plan saved" } else { "Nothing changed" }.into());
+        } else {
+            let selected = self.selected;
+            self.store.restore(before.snapshot)?;
+            self.selected = selected;
+            self.clamp_selection();
         }
         Ok(())
     }
@@ -1142,6 +1668,8 @@ impl App {
                 self.mode = Mode::ConfirmDelete { rows };
                 return Ok(());
             }
+            // A plan is for its day, so selecting from it doesn't move items off it.
+            KeyCode::Char('H' | 'L') if self.plan_stash.is_some() => return Ok(()),
             KeyCode::Char('H' | 'L') => {
                 let delta = if code == KeyCode::Char('L') { 1 } else { -1 };
                 let Some(to) = self.day.checked_add_signed(chrono::Duration::days(delta)) else { return Ok(()) };
@@ -4847,5 +5375,583 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT)).unwrap();
         assert_eq!(items(&app)[app.selected], "milk");
+    }
+
+    fn time_of(app: &App, row: usize) -> Option<String> {
+        app.items()[row].time.map(|time| time.describe(false))
+    }
+
+    fn plan_typing_state(app: &App) -> Option<&'static str> {
+        match &app.mode {
+            Mode::Plan { plan, .. } => match &plan.typing {
+                Some(Typing::Start(_)) => Some("start"),
+                Some(Typing::End(..)) => Some("end"),
+                None => None,
+            },
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn planning_types_a_start_then_an_end_and_goes_on_to_the_next_item() {
+        let (mut app, _dir) = app_with(&["Standup", "Report", "Gym"]);
+        type_str(&mut app, " p");
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(plan_typing_state(&app), Some("end"));
+        type_str(&mut app, "9:30");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(time_of(&app, 0).as_deref(), Some("09:00–09:30"));
+        // On to the next item, ready for its start.
+        assert_eq!(app.selected, 1);
+        assert_eq!(plan_typing_state(&app), Some("start"));
+        // Enter for the end gives it an hour, on either clock.
+        type_str(&mut app, "1:15pm");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(time_of(&app, 1).as_deref(), Some("13:15–14:15"));
+        // Tab leaves it as it is; after the last, it stops.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(time_of(&app, 2), None);
+        assert_eq!(plan_typing_state(&app), None);
+        assert!(app.message.as_ref().unwrap().contains("w saves"));
+        // The day planned is the one on screen.
+        assert_eq!(app.items()[0].time.unwrap().date, today());
+    }
+
+    #[test]
+    fn a_time_that_isnt_one_or_ends_too_soon_says_so() {
+        let (mut app, _dir) = app_with(&["Standup"]);
+        type_str(&mut app, " p");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "lunch");
+        press(&mut app, KeyCode::Enter);
+        let Mode::Plan { plan, .. } = &app.mode else { panic!("planning") };
+        assert!(plan.error.is_some());
+        assert_eq!(plan_typing_state(&app), Some("start"));
+        // Typing again clears it.
+        press(&mut app, KeyCode::Backspace);
+        let Mode::Plan { plan, .. } = &app.mode else { panic!("planning") };
+        assert!(plan.error.is_none());
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_str(&mut app, "10");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9");
+        press(&mut app, KeyCode::Enter);
+        let Mode::Plan { plan, .. } = &app.mode else { panic!("planning") };
+        assert!(plan.error.as_ref().unwrap().contains("end after it starts"));
+        assert_eq!(time_of(&app, 0), None);
+        // Esc backs out of this item.
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(plan_typing_state(&app), None);
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+    }
+
+    #[test]
+    fn saving_a_plan_is_one_change_to_undo() {
+        let (mut app, _dir) = app_with(&["Standup", "Report"]);
+        type_str(&mut app, " p");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "10");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "w");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(time_of(&app, 0).as_deref(), Some("09:00–10:00"));
+        assert_eq!(time_of(&app, 1).as_deref(), Some("10:00–11:00"));
+        type_str(&mut app, "u");
+        assert_eq!((time_of(&app, 0), time_of(&app, 1)), (None, None));
+    }
+
+    #[test]
+    fn reset_clears_every_time_until_saved() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "R");
+        assert_eq!((time_of(&app, 0), time_of(&app, 1), time_of(&app, 2)), (None, None, None));
+        assert!(matches!(app.mode, Mode::Plan { .. }), "still planning");
+        // The next start is now again, not after a cleared time.
+        let Mode::Plan { plan, .. } = &app.mode else { panic!("planning") };
+        assert_eq!(plan.last_end, None);
+        // Not kept unless saved: q, q puts them back.
+        type_str(&mut app, "qq");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(time_of(&app, 0).as_deref(), Some("09:00–09:30"));
+        // Saved, it's one change to undo.
+        type_str(&mut app, " pRw");
+        assert_eq!(time_of(&app, 1), None);
+        type_str(&mut app, "u");
+        assert_eq!(time_of(&app, 1).as_deref(), Some("18:00–19:00"));
+    }
+
+    #[test]
+    fn cancelling_with_changes_asks_first_and_puts_them_back() {
+        let (mut app, _dir) = app_with(&["Standup"]);
+        type_str(&mut app, " p");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        let Mode::Plan { plan, .. } = &app.mode else { panic!("asking") };
+        assert!(plan.confirm_cancel);
+        type_str(&mut app, "n");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if !plan.confirm_cancel), "kept planning");
+        // q twice: leave without saving.
+        type_str(&mut app, "qq");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(time_of(&app, 0), None);
+        // With nothing changed, Esc just leaves.
+        type_str(&mut app, " p");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn only_open_top_level_items_get_times() {
+        let (mut app, _dir) = app_with_trip();
+        // On hotel, a sub-item: the plan starts on trip, what it's under.
+        type_str(&mut app, " p");
+        assert_eq!(app.selected, 0);
+        let (mut app, _dir) = app_with(&["done"]);
+        type_str(&mut app, "x p");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.message.as_ref().unwrap().contains("nothing open to plan"));
+    }
+
+    #[test]
+    fn the_timeline_view_moves_between_days_and_opens_the_plan() {
+        let (mut app, _dir) = app_with(&["Standup"]);
+        type_str(&mut app, " t");
+        assert!(matches!(app.mode, Mode::Timeline { scroll: None }));
+        type_str(&mut app, "l");
+        assert_eq!(app.day, today() + Days::new(1));
+        type_str(&mut app, "t");
+        assert_eq!(app.day, today());
+        type_str(&mut app, "j");
+        assert!(matches!(app.mode, Mode::Timeline { scroll: Some(1) }));
+        type_str(&mut app, "p");
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, " t");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn enter_with_no_start_typed_starts_now() {
+        let (mut app, _dir) = app_with(&["Standup"]);
+        app.now = NaiveTime::from_hms_opt(14, 7, 42).unwrap();
+        type_str(&mut app, " p");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(time_of(&app, 0).as_deref(), Some("14:07–15:07"), "now, to the minute, for an hour");
+    }
+
+    /// An app planning today: Standup 9:00, Gym 18:00, Report 9:15, and
+    /// Buy milk with no time, listed in that order.
+    fn planning_app() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(&["Standup", "Gym", "Report", "Buy milk"]);
+        let at = |h: u32, m: u32| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        for (i, start, end) in [(0, at(9, 0), at(9, 30)), (1, at(18, 0), at(19, 0)), (2, at(9, 15), at(11, 0))] {
+            app.store.set_time(today(), i, Some(TimeSlot { date: today(), start, end })).unwrap();
+        }
+        type_str(&mut app, " p");
+        (app, dir)
+    }
+
+    #[test]
+    fn capital_l_moves_into_the_timeline_where_j_and_k_go_from_block_to_block() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "L");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if plan.on_timeline));
+        assert_eq!(app.timeline_blocks(), [0, 2, 1], "by start, without Buy milk");
+        // From Standup, down its column to Gym; Report overlaps Standup, so
+        // it's in the column beside it.
+        type_str(&mut app, "j");
+        assert_eq!(items(&app)[app.selected], "Gym");
+        type_str(&mut app, "j");
+        assert_eq!(items(&app)[app.selected], "Gym", "the last");
+        type_str(&mut app, "kl");
+        assert_eq!(items(&app)[app.selected], "Report");
+        type_str(&mut app, "gk");
+        assert_eq!(items(&app)[app.selected], "Standup", "the all-day Buy milk isn't one to choose");
+        // Retiming a block stays on it, rather than going on down the list.
+        type_str(&mut app, "G");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "20");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(time_of(&app, 1).as_deref(), Some("20:00–21:00"));
+        assert_eq!(items(&app)[app.selected], "Gym");
+        assert_eq!(plan_typing_state(&app), None);
+        // H goes back to the list, where j and k go down and up it.
+        type_str(&mut app, "Hggj");
+        assert_eq!(items(&app)[app.selected], "Gym");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if !plan.on_timeline));
+    }
+
+    #[test]
+    fn capital_l_without_room_for_the_timeline_says_so() {
+        let (mut app, _dir) = planning_app();
+        app.timeline_shown.set(false);
+        type_str(&mut app, "L");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if !plan.on_timeline));
+        assert!(app.message.as_ref().unwrap().contains("Widen the terminal"));
+    }
+
+    #[test]
+    fn capital_l_lands_on_a_block_and_clearing_one_moves_off_it() {
+        let (mut app, _dir) = planning_app();
+        // From Buy milk, all day, L goes to a block.
+        type_str(&mut app, "GL");
+        assert!(app.timeline_blocks().contains(&app.selected));
+        // Clearing Gym's time makes it all day: on to another block.
+        type_str(&mut app, "G");
+        assert_eq!(items(&app)[app.selected], "Gym");
+        type_str(&mut app, "c");
+        assert_eq!(time_of(&app, 1), None);
+        assert!(app.timeline_blocks().contains(&app.selected));
+        // Clearing them all goes back to the list.
+        type_str(&mut app, "cc");
+        assert!(app.timeline_blocks().is_empty());
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if !plan.on_timeline));
+        // And with no blocks, L says so.
+        type_str(&mut app, "L");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if !plan.on_timeline));
+        assert!(app.message.as_ref().unwrap().contains("Nothing's on the timeline"));
+    }
+
+    #[test]
+    fn on_the_timeline_j_and_k_go_down_a_column_and_h_and_l_across() {
+        // 13:00–14:00 and 14:00–15:00 stack in the first column; 13:30–19:00
+        // overlaps both, so it's in the second.
+        let (mut app, _dir) = app_with(&["First", "Second", "Long", "Evening"]);
+        let at = |h: u32, m: u32| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        for (i, start, end) in [(0, at(13, 0), at(14, 0)), (1, at(14, 0), at(15, 0)), (2, at(13, 30), at(19, 0)), (3, at(20, 0), at(21, 0))] {
+            app.store.set_time(today(), i, Some(TimeSlot { date: today(), start, end })).unwrap();
+        }
+        type_str(&mut app, " pL");
+        assert_eq!(items(&app)[app.selected], "First");
+        type_str(&mut app, "j");
+        assert_eq!(items(&app)[app.selected], "Second", "down the column, past Long beside it");
+        type_str(&mut app, "j");
+        assert_eq!(items(&app)[app.selected], "Evening", "on down the first column");
+        type_str(&mut app, "j");
+        assert_eq!(items(&app)[app.selected], "Evening", "the last in it");
+        type_str(&mut app, "kk");
+        assert_eq!(items(&app)[app.selected], "First");
+        type_str(&mut app, "l");
+        assert_eq!(items(&app)[app.selected], "Long");
+        type_str(&mut app, "l");
+        assert_eq!(items(&app)[app.selected], "Long", "no column further right");
+        type_str(&mut app, "jk");
+        assert_eq!(items(&app)[app.selected], "Long", "alone in its column");
+        // Left from Long: the block beside it that overlaps it most, an
+        // hour of Second's against half an hour of First's.
+        type_str(&mut app, "h");
+        assert_eq!(items(&app)[app.selected], "Second");
+        // Left from the first column stays there; H goes back to the list.
+        type_str(&mut app, "h");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if plan.on_timeline));
+        assert_eq!(items(&app)[app.selected], "Second");
+        type_str(&mut app, "H");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if !plan.on_timeline));
+    }
+
+    #[test]
+    fn q_with_changes_asks_and_w_there_saves() {
+        let (mut app, _dir) = app_with(&["Standup"]);
+        type_str(&mut app, " p");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "q");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if plan.confirm_cancel));
+        type_str(&mut app, "w");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(time_of(&app, 0).as_deref(), Some("09:00–10:00"));
+    }
+
+    #[test]
+    fn the_next_items_start_is_where_the_last_one_ended() {
+        let (mut app, _dir) = app_with(&["Standup", "Report", "Lunch"]);
+        app.now = NaiveTime::from_hms_opt(8, 50, 0).unwrap();
+        type_str(&mut app, " p");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9:30");
+        press(&mut app, KeyCode::Enter);
+        // On to Report: Enter, Enter is 9:30 for an hour.
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(time_of(&app, 1).as_deref(), Some("09:30–10:30"));
+        // And Lunch after it, ending when typed.
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "11");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(time_of(&app, 2).as_deref(), Some("10:30–11:00"));
+    }
+
+    #[test]
+    fn bang_triages_in_the_plan_and_is_kept_only_if_saved() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "!");
+        assert_eq!(app.items()[0].priority, Some(Priority::High));
+        type_str(&mut app, "L!");
+        assert_eq!(app.items()[0].priority, Some(Priority::Medium), "on the timeline too");
+        type_str(&mut app, "qq");
+        assert_eq!(app.items()[0].priority, None, "left without saving");
+        type_str(&mut app, " p!w");
+        assert_eq!(app.items()[0].priority, Some(Priority::High));
+    }
+
+    #[test]
+    fn after_a_time_it_goes_on_only_to_items_without_one() {
+        // Standup 9:00, Gym 18:00 and Report 9:15 have times; Buy milk doesn't.
+        let (mut app, _dir) = planning_app();
+        app.store.insert(today(), 4, "Call mum".into()).unwrap();
+        // Retime Standup: on to Buy milk, past Gym and Report.
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "8");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app)[app.selected], "Buy milk");
+        assert_eq!(plan_typing_state(&app), Some("start"));
+        // Tab skips it, on to Call mum, the last without a time.
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(items(&app)[app.selected], "Call mum");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        // Then round from the top to Buy milk, which still has none.
+        assert_eq!(items(&app)[app.selected], "Buy milk");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        // Now everything has a time: it stops, rather than asking again.
+        assert_eq!(plan_typing_state(&app), None);
+        assert!(app.message.as_ref().unwrap().contains("Every item has a time"));
+    }
+
+    fn in_plan(app: &App) -> bool {
+        matches!(app.mode, Mode::Plan { .. })
+    }
+
+    #[test]
+    fn a_adds_an_item_in_the_plan_and_comes_back_to_it() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "aDentist");
+        assert!(matches!(app.mode, Mode::Insert { .. }));
+        press(&mut app, KeyCode::Enter);
+        assert!(in_plan(&app));
+        assert_eq!(items(&app), ["Standup", "Dentist", "Gym", "Report", "Buy milk"]);
+        assert_eq!(items(&app)[app.selected], "Dentist", "on the new one, ready to plan it");
+        // A keeps adding until an empty line, then back to the plan.
+        type_str(&mut app, "AOne");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Two");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(in_plan(&app));
+        assert_eq!(items(&app)[2..4], ["One", "Two"]);
+    }
+
+    #[test]
+    fn e_and_capital_e_edit_and_d_deletes_in_the_plan() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "e!");
+        press(&mut app, KeyCode::Enter);
+        assert!(in_plan(&app));
+        assert_eq!(items(&app)[0], "Standup!");
+        type_str(&mut app, "EDaily");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app)[0], "Daily");
+        assert_eq!(time_of(&app, 0).as_deref(), Some("09:00–09:30"), "its time stays");
+        // d asks, as on the list, then back to the plan; c keeps it.
+        type_str(&mut app, "d");
+        assert!(matches!(app.mode, Mode::ConfirmDelete { .. }));
+        type_str(&mut app, "c");
+        assert!(in_plan(&app));
+        assert_eq!(items(&app).len(), 4);
+        type_str(&mut app, "dd");
+        assert!(in_plan(&app));
+        assert_eq!(items(&app), ["Gym", "Report", "Buy milk"]);
+    }
+
+    #[test]
+    fn edits_in_the_plan_are_kept_or_put_back_with_it() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "aDentist");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Gdd");
+        // Leaving without saving puts back both.
+        type_str(&mut app, "qq");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["Standup", "Gym", "Report", "Buy milk"]);
+        // Saved, they're one change for u.
+        type_str(&mut app, " paDentist");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "w");
+        assert_eq!(items(&app).len(), 5);
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Standup", "Gym", "Report", "Buy milk"]);
+    }
+
+    #[test]
+    fn o_and_capital_o_add_sub_items_in_the_plan() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "oagenda");
+        press(&mut app, KeyCode::Enter);
+        assert!(in_plan(&app));
+        assert_eq!(shown(&app)[..2], ["Standup", "  agenda"]);
+        // O keeps adding under the same item until an empty line.
+        type_str(&mut app, "ggOslides");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "notes");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(in_plan(&app));
+        assert_eq!(shown(&app)[..4], ["Standup", "  agenda", "  slides", "  notes"]);
+        // Sub-items don't get a time of their own: Enter on one plans its parent.
+        type_str(&mut app, "k");
+        assert_eq!(items(&app)[app.selected], "slides");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app)[app.selected], "Standup");
+    }
+
+    #[test]
+    fn completed_items_dont_show_when_planning_or_on_the_timeline() {
+        let (mut app, _dir) = app_with(&["Standup", "Done already", "Report"]);
+        type_str(&mut app, "jx");
+        type_str(&mut app, "ggoagenda");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "oold");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "x");
+        // On the list, the completed ones still show.
+        assert_eq!(shown(&app), ["Standup", "  agenda", "    x old", "Report", "x Done already"]);
+        type_str(&mut app, " p");
+        assert_eq!(shown(&app), ["Standup", "  agenda", "Report"]);
+        type_str(&mut app, "G");
+        assert_eq!(items(&app)[app.selected], "Report", "the last is the last open one");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, " t");
+        assert_eq!(shown(&app), ["Standup", "  agenda", "Report"]);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(shown(&app).len(), 5, "back on the list, all of them");
+    }
+
+    #[test]
+    fn u_and_ctrl_r_undo_and_redo_in_the_plan() {
+        let (mut app, _dir) = planning_app();
+        // Delete Standup, then clear Gym's time.
+        type_str(&mut app, "dd");
+        assert_eq!(items(&app), ["Gym", "Report", "Buy milk"]);
+        type_str(&mut app, "c");
+        assert_eq!(time_of(&app, 0), None);
+        type_str(&mut app, "u");
+        assert_eq!(time_of(&app, 0).as_deref(), Some("18:00–19:00"));
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Standup", "Gym", "Report", "Buy milk"], "the delete undone");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if !plan.changed), "back to how it opened");
+        type_str(&mut app, "u");
+        assert!(app.message.as_ref().unwrap().contains("Nothing in the plan to undo"));
+        app.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)).unwrap();
+        assert_eq!(items(&app), ["Gym", "Report", "Buy milk"], "redone");
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if plan.changed));
+        // Saved, the whole plan is still one change on the list.
+        type_str(&mut app, "w");
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Standup", "Gym", "Report", "Buy milk"]);
+    }
+
+    #[test]
+    fn undo_in_the_plan_covers_adding_and_setting_times() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "aDentist");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "15");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(time_of(&app, 1).as_deref(), Some("15:00–16:00"));
+        type_str(&mut app, "u");
+        assert_eq!(time_of(&app, 1), None, "the time first");
+        type_str(&mut app, "u");
+        assert!(!items(&app).contains(&"Dentist"), "then the add");
+    }
+
+    #[test]
+    fn the_lists_keys_work_in_the_plan_too() {
+        // Standup, Gym, Report and Buy milk.
+        let (mut app, _dir) = planning_app();
+        // J and K reorder, with counts and sequences as on the list.
+        type_str(&mut app, "J");
+        assert_eq!(items(&app), ["Gym", "Standup", "Report", "Buy milk"]);
+        type_str(&mut app, "gg2j");
+        assert_eq!(items(&app)[app.selected], "Report");
+        // yy and p copy and paste.
+        type_str(&mut app, "yyp");
+        assert_eq!(items(&app)[..4], ["Gym", "Standup", "Report", "Report"]);
+        // > and < indent and outdent; za folds.
+        type_str(&mut app, ">");
+        assert_eq!(shown(&app)[2..4], ["Report", "  Report"]);
+        type_str(&mut app, "kza");
+        assert_eq!(shown(&app)[2], "Report+");
+        type_str(&mut app, "zoj<");
+        assert_eq!(shown(&app)[3], "Report");
+        assert!(in_plan(&app), "still planning after all of it");
+        // m pins; a sub-item can't be.
+        type_str(&mut app, "ggm");
+        assert!(app.items()[0].pinned);
+    }
+
+    #[test]
+    fn deadlines_reminders_and_selecting_from_the_plan_come_back_to_it() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "@");
+        assert!(matches!(app.mode, Mode::Calendar(_)));
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert!(in_plan(&app));
+        assert!(app.items()[0].deadline.is_some());
+        type_str(&mut app, "rd2");
+        press(&mut app, KeyCode::Enter);
+        assert!(in_plan(&app));
+        assert!(app.items()[0].reminder.is_some());
+        // V selects; d deletes the selection, then it's back to the plan.
+        type_str(&mut app, "Vjd");
+        press(&mut app, KeyCode::Char('d'));
+        assert!(in_plan(&app));
+        assert_eq!(items(&app), ["Report", "Buy milk"]);
+        // Undo in the plan brings them back.
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Standup", "Gym", "Report", "Buy milk"]);
+        // Selecting can't move items off the day being planned.
+        type_str(&mut app, "VL");
+        assert!(matches!(app.mode, Mode::Visual { .. }));
+        assert_eq!(app.day, today());
+    }
+
+    #[test]
+    fn x_deletes_in_the_plan_asking_first_and_c_clears_a_time() {
+        let (mut app, _dir) = planning_app();
+        type_str(&mut app, "c");
+        assert_eq!(time_of(&app, 0), None);
+        assert_eq!(items(&app).len(), 4, "c only clears the time");
+        type_str(&mut app, "x");
+        assert!(matches!(app.mode, Mode::ConfirmDelete { .. }), "asks first");
+        type_str(&mut app, "d");
+        assert!(in_plan(&app));
+        assert_eq!(items(&app), ["Gym", "Report", "Buy milk"]);
     }
 }

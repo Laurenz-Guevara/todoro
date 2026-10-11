@@ -17,6 +17,7 @@ mod search;
 mod setup;
 mod store;
 mod tags;
+mod timeline;
 #[cfg(test)]
 mod test_util;
 mod ui;

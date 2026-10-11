@@ -9,7 +9,7 @@ use ratatui::Frame;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use chrono::{Datelike, Days, NaiveDate};
+use chrono::{Datelike, Days, NaiveDate, Timelike};
 
 use crate::app::{App, Mode};
 use crate::calendar::{self, Calendar, Zoom};
@@ -19,13 +19,14 @@ use crate::help::Help;
 use crate::keymap::{self, Command};
 use crate::leader::Leader;
 use crate::outline;
+use crate::timeline::{self, TimeSlot, Typing};
 use crate::notes::NotesEditor;
 use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, KEYS_ABOUT, KEYS_ROW, Options, TOGGLES};
 use crate::search::{self, Hit, Search};
 use crate::setup::Setup;
 use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
-use crate::deadline::Deadline;
+use crate::deadline::{self, Deadline};
 use crate::reminder::{self, Reminder};
 use crate::viewer::Viewer;
 use crate::markdown;
@@ -42,6 +43,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Notes(editor) => draw_notes(frame, app, editor, main),
         Mode::View(viewer) => draw_view(frame, app, viewer, main),
         Mode::Calendar(calendar) => draw_calendar(frame, app, calendar, main),
+        Mode::Timeline { scroll } => {
+            let title = format!(" {} ", app.day.format("%A, %B %-d %Y"));
+            draw_timeline(frame, app, main, &title, None, *scroll);
+        }
+        Mode::Plan { .. } => draw_plan(frame, app, main),
+        // Adding, editing or deleting from the plan view keeps its layout.
+        Mode::Insert { .. } | Mode::ConfirmDelete { .. } | Mode::Visual { .. } | Mode::Remind(_) if app.plan_stash.is_some() => {
+            draw_plan(frame, app, main)
+        }
         _ => draw_list(frame, app, main),
     }
     draw_status(frame, app, status);
@@ -60,6 +70,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Tags(picker) => draw_tags(frame, app, picker),
         Mode::Remind(picker) => draw_remind(frame, app, picker),
         Mode::Leader(leader) => draw_leader(frame, app, leader, main),
+        Mode::Plan { plan, .. } if plan.confirm_cancel => draw_discard_plan(frame),
         _ => {}
     }
 
@@ -162,6 +173,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             let progress = outline::progress(items, slot.index);
             Row {
                 text: &item.text,
+                time: item.time.filter(|time| time.date == app.day),
                 depth: item.depth,
                 progress: (progress.1 > 0).then_some(progress),
                 folded: item.folded,
@@ -187,6 +199,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             let row = Row {
                 text,
+                time: None,
                 depth: place.map_or(0, |place| place.depth),
                 progress: None,
                 folded: false,
@@ -253,6 +266,11 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                 (format!("{}{bullet} ", " ".repeat(prefix_width + 2 * (depth - 1))), style, if done { crossed } else { Style::new() })
             }
         };
+        // When it's planned for on this day.
+        let time = row.time.map(|time| {
+            let style = if row.done { Style::new().fg(Color::DarkGray) } else { Style::new().fg(Color::Blue) };
+            Span::styled(format!(" {}", time.describe(app.settings.twelve_hour)), style)
+        });
         // How many of its sub-items are done, and a ▸ when they're folded away.
         let progress = row.progress.map(|(done, total)| {
             let fold = if row.folded { format!(" {FOLDED_MARKER}") } else { String::new() };
@@ -300,7 +318,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         let markers_width: usize = markers.iter().filter(|(shown, _)| *shown).map(|(_, width)| width).sum::<usize>()
             + deadline.as_ref().map_or(0, Span::width)
             + reminder.as_ref().map_or(0, Span::width)
-            + progress.as_ref().map_or(0, Span::width);
+            + progress.as_ref().map_or(0, Span::width)
+            + time.as_ref().map_or(0, Span::width);
         let text_width = (inner.width as usize).saturating_sub(lead_width + markers_width).max(1);
         let ranges = wrap_ranges(row.text, text_width);
         if let (true, Mode::Insert { input, .. }) = (row.typing, &app.mode) {
@@ -336,6 +355,9 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         let last = lines.last_mut().expect("wrap_ranges returns at least one line");
         if let Some(progress) = progress {
             last.push_span(progress);
+        }
+        if let Some(time) = time {
+            last.push_span(time);
         }
         if pinned {
             last.push_span(PINNED_MARKER.fg(Color::Cyan));
@@ -378,7 +400,12 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::new().bg(Color::Rgb(50, 50, 60)).add_modifier(Modifier::BOLD));
+        .highlight_style(if app.planning_view() {
+            // Planning, the same clear highlight as the selected block beside it.
+            Style::new().bg(BLOCK_SELECTED_BG).fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().bg(Color::Rgb(50, 50, 60)).add_modifier(Modifier::BOLD)
+        });
     frame.render_stateful_widget(list, area, &mut state);
     app.list_offset.set(state.offset());
 
@@ -443,6 +470,8 @@ struct Row<'a> {
     pinned: bool,
     deadline: Option<Deadline>,
     reminder: Option<RowReminder>,
+    /// When it's planned for on the day on screen.
+    time: Option<TimeSlot>,
     /// How deep a sub-item it is, 0 for a top-level item.
     depth: usize,
     /// How many of its direct sub-items are done, of how many, if it has any.
@@ -628,6 +657,34 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         frame.set_cursor_position(Position::new(area.x + col.min(area.width.saturating_sub(1)), area.y));
         return;
     }
+    // A time being typed in the plan view takes the bottom line too.
+    if let Mode::Plan { plan, .. } = &app.mode
+        && let Some(typing) = &plan.typing
+    {
+        let item = app.items().get(app.selected).map(|item| item.text.clone()).unwrap_or_default();
+        let (labels, input) = match typing {
+            Typing::Start(input) => {
+                let start = deadline::format_time(plan.default_start(app.now), app.settings.twelve_hour);
+                let default = if plan.last_end.is_some() { start } else { format!("now, {start}") };
+                ([format!("Start for {} (↵ for {default}): ", truncate(&item, 20)), "Start: ".into()], input)
+            }
+            Typing::End(start, input) => {
+                let hour = deadline::format_time(timeline::an_hour_after(*start), app.settings.twelve_hour);
+                ([format!("End (↵ for {hour}): "), "End: ".into()], input)
+            }
+        };
+        // The shorter label if the longer leaves no room for what's typed.
+        let room = (area.width as usize).saturating_sub(input.text.width() + 6);
+        let label = labels.iter().find(|label| label.width() <= room).unwrap_or(&labels[1]).clone();
+        let mut line = Line::from(vec![label.clone().yellow().bold(), input.text.clone().into()]);
+        if let Some(error) = &plan.error {
+            line.push_span(format!("  {error}").red());
+        }
+        frame.render_widget(line, area);
+        let col = (label.width() + input.text[..input.cursor].width()) as u16;
+        frame.set_cursor_position(Position::new(area.x + col.min(area.width.saturating_sub(1)), area.y));
+        return;
+    }
     // The list's hints name its keys as keys.toml has them, leaving out a
     // command with none.
     let normal: Vec<(String, u8)> = [
@@ -717,6 +774,17 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
         }
+        Mode::Timeline { .. } => {
+            ("TIMELINE", Color::Cyan, &[("j/k scroll", 2), ("h/l day", 3), ("p plan", 4), ("esc back", 1), ("? help", 5)])
+        }
+        Mode::Plan { plan, .. } if plan.confirm_cancel => {
+            ("PLAN", Color::Yellow, &[("w save", 3), ("q don't save", 2), ("n keep planning", 1)])
+        }
+        Mode::Plan { .. } => (
+            "PLAN",
+            Color::Yellow,
+            &[("↵ set time", 5), ("a add", 1), ("! triage", 1), ("c clear", 2), ("w save", 4), ("R reset", 0), ("esc cancel", 3)],
+        ),
         Mode::Leader(_) => ("LEADER", Color::Magenta, &[("type a key", 2), ("⌫ back", 0), ("esc cancel", 1)]),
         Mode::Remind(picker) if picker.amount.is_some() => {
             ("REMIND", Color::Yellow, &[("enter save", 2), ("esc back", 1)])
@@ -1335,6 +1403,333 @@ fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
     let col = 2 + input.text[..input.cursor].width() as u16;
     frame.set_cursor_position(Position::new(inner.x + col.min(inner.width.saturating_sub(1)), inner.y));
+}
+
+/// The narrowest screen with room for the timeline beside the list.
+const PLAN_WIDTH: u16 = 60;
+
+/// The plan view: the list, as on the main screen, with the day's timeline
+/// beside it when there's room.
+fn draw_plan(frame: &mut Frame, app: &App, area: Rect) {
+    app.timeline_shown.set(area.width >= PLAN_WIDTH);
+    if area.width < PLAN_WIDTH {
+        draw_list(frame, app, area);
+        return;
+    }
+    let [list, side] = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
+    draw_list(frame, app, list);
+    let selected = app.slots().get(app.selected).copied();
+    let on_timeline = match (&app.mode, &app.plan_stash) {
+        (Mode::Plan { plan, .. }, _) | (_, Some((plan, _))) => plan.on_timeline,
+        _ => false,
+    };
+    // The side keys go to is bright; the other is dim.
+    let title = if on_timeline { " Timeline · H list " } else { " Timeline · L to move here " };
+    draw_timeline(frame, app, side, title, selected, None);
+    if !on_timeline {
+        dim_border(frame.buffer_mut(), side);
+    } else {
+        dim_border(frame.buffer_mut(), list);
+    }
+}
+
+/// The popup asking whether to save a plan's changes before leaving, after
+/// `q` or `Esc`, like the one asking before a delete. `q` again leaves
+/// without saving.
+fn draw_discard_plan(frame: &mut Frame) {
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(50);
+    let room = (width as usize).saturating_sub(2).max(1);
+    let mut body: Vec<Line> = wrap("You've set times since opening the plan. Save them before you leave?", room, usize::MAX)
+        .into_iter()
+        .map(Line::from)
+        .collect();
+    body.push(Line::default());
+    // The keys with what they do, spaced less, then said less, to fit.
+    let choices: [(&[(&str, &str)], &str); 6] = [
+        (&[("w", "save"), ("q", "don't save"), ("n", "keep planning")], "   "),
+        (&[("w", "save"), ("q", "don't save"), ("n", "back")], "   "),
+        (&[("w", "save"), ("q", "don't save"), ("n", "back")], "  "),
+        (&[("w", "save"), ("q", "discard"), ("n", "back")], "  "),
+        (&[("w", "save"), ("q", "discard"), ("n", "no")], "  "),
+        (&[("w", ""), ("q", ""), ("n", "")], "   "),
+    ];
+    let width_of = |(keys, gap): &(&[(&str, &str)], &str)| {
+        keys.iter().map(|(key, word)| key.width() + if word.is_empty() { 0 } else { 1 + word.width() }).sum::<usize>()
+            + gap.width() * (keys.len() - 1)
+    };
+    let (keys, gap) = choices.iter().find(|choice| width_of(choice) <= room).unwrap_or(&choices[5]);
+    let mut spans = Vec::new();
+    for (i, (key, word)) in keys.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(*gap));
+        }
+        let key_style = match *key {
+            "w" => Style::new().bold().fg(Color::Green),
+            "q" => Style::new().bold().fg(Color::Red),
+            _ => Style::new().bold(),
+        };
+        spans.push(Span::styled(*key, key_style));
+        if !word.is_empty() {
+            spans.push(Span::raw(format!(" {word}")));
+        }
+    }
+    body.push(Line::from(spans).centered());
+    let title = fit_first(&[" Save your changes to the plan? ", " Save your changes? ", " Save? "], room);
+    let area = centered(screen, width, body.len() as u16 + 2);
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(Color::Yellow)).title(title.bold());
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(body).block(block), area);
+}
+
+/// Greys out the border around `area`, for the side of the plan view keys
+/// don't go to.
+fn dim_border(buffer: &mut Buffer, area: Rect) {
+    for x in area.left()..area.right() {
+        for y in [area.top(), area.bottom().saturating_sub(1)] {
+            buffer[(x, y)].set_fg(Color::DarkGray).modifier.remove(Modifier::BOLD);
+        }
+    }
+    for y in area.top()..area.bottom() {
+        for x in [area.left(), area.right().saturating_sub(1)] {
+            buffer[(x, y)].set_fg(Color::DarkGray);
+        }
+    }
+}
+
+/// Background of a block on the timeline, and of the one selected in the
+/// plan view, which is also bold so it stands out without colour.
+const BLOCK_BG: Color = Color::Rgb(45, 48, 60);
+/// The other shade of the checkerboard, so neighbouring blocks differ.
+const BLOCK_ALT_BG: Color = Color::Rgb(62, 66, 84);
+/// The selected item in the plan view, on the list and the timeline: a
+/// clear blue, unlike any block's shade, and bold too, so it shows without
+/// colour.
+const BLOCK_SELECTED_BG: Color = Color::Rgb(45, 95, 175);
+
+/// A block's background and the colour of the bar down its left: grey for
+/// every block, except a triaged item's, which takes its priority's. Each
+/// has two shades for the checkerboard; `alt` is the lighter.
+fn block_colours(priority: Option<Priority>, alt: bool) -> (Color, Color) {
+    let (dark, light, bar) = match priority {
+        Some(Priority::High) => (Color::Rgb(85, 35, 38), Color::Rgb(110, 50, 54), Color::Red),
+        Some(Priority::Medium) => (Color::Rgb(80, 68, 28), Color::Rgb(104, 89, 40), Color::Yellow),
+        Some(Priority::Low) => (Color::Rgb(35, 70, 42), Color::Rgb(48, 92, 57), Color::Green),
+        None => (BLOCK_BG, BLOCK_ALT_BG, Color::Gray),
+    };
+    (if alt { light } else { dark }, bar)
+}
+
+/// Down the left of every block, so each one's edge is clear.
+const BLOCK_EDGE: &str = "▌";
+
+/// The day on screen from top to bottom: items without a time listed as all
+/// day at the top, then the hours with each timed item as a block, and a
+/// line at the time now if it's today. `scroll` is the hour at the top, or
+/// `None` to start an hour above now (or the first block).
+fn draw_timeline(frame: &mut Frame, app: &App, area: Rect, title: &str, selected: Option<crate::app::Slot>, scroll: Option<u32>) {
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Cyan))
+        .title(Line::from(truncate(title, area.width.saturating_sub(2) as usize).bold()).centered());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.width < 10 || inner.height < 3 {
+        return;
+    }
+    let twelve = app.settings.twelve_hour;
+    // The day's top-level items, as on the list.
+    let entries: Vec<(crate::app::Slot, &Item)> = app
+        .slots()
+        .into_iter()
+        .map(|slot| (slot, &app.store.items(slot.day)[slot.index]))
+        .filter(|(_, item)| item.depth == 0)
+        .collect();
+    let timed: Vec<(usize, TimeSlot)> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, item))| item.time.filter(|time| time.date == app.day).map(|time| (i, time)))
+        .collect();
+
+    let mut y = inner.y;
+    // All day: what has no time, on as many lines as it takes, up to two.
+    // The selected one highlighted, as on the list.
+    let all_day: Vec<(String, bool)> = entries
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !timed.iter().any(|(t, _)| t == i))
+        .map(|(_, (slot, item))| {
+            let text = if item.done { format!("✓ {}", item.text) } else { item.text.clone() };
+            (text, selected == Some(*slot))
+        })
+        .collect();
+    if !all_day.is_empty() {
+        let label = "All day  ";
+        let width = inner.width as usize;
+        let room = width.saturating_sub(label.width()).max(1);
+        // Whole items to a line, on up to two lines under the label; any
+        // left over are counted at the end.
+        let mut lines: Vec<Vec<Span>> = vec![Vec::new()];
+        let mut used = 0;
+        for (n, (text, is_selected)) in all_day.iter().enumerate() {
+            let style = if *is_selected { Style::new().bg(SELECTED_BG).add_modifier(Modifier::BOLD) } else { Style::new() };
+            let gap = if used == 0 { 0 } else { 3 };
+            let left = all_day.len() - n;
+            // Keep room on the last line to say how many more there are.
+            let more = if lines.len() == 2 && left > 1 { format!(" +{} more", left - 1).width() } else { 0 };
+            if used > 0 && used + gap + text.width() + more > room {
+                if lines.len() == 2 {
+                    lines[1].push(format!(" +{left} more").dim());
+                    break;
+                }
+                lines.push(Vec::new());
+                used = 0;
+            }
+            let line = lines.last_mut().expect("a line");
+            if used > 0 {
+                line.push(" · ".dark_gray());
+                used += 3;
+            }
+            let shown = truncate(text, room.saturating_sub(used));
+            used += shown.width();
+            line.push(Span::styled(shown, style));
+        }
+        for (n, spans) in lines.into_iter().enumerate() {
+            let lead = if n == 0 { label.to_string() } else { " ".repeat(label.width()) };
+            let line = Line::from([vec![lead.dim()], spans].concat());
+            frame.render_widget(line, Rect::new(inner.x, y, inner.width, 1));
+            y += 1;
+        }
+        frame.render_widget("─".repeat(inner.width as usize).dark_gray(), Rect::new(inner.x, y, inner.width, 1));
+        y += 1;
+    }
+    if timed.is_empty() && all_day.is_empty() {
+        frame.render_widget(Line::from("Nothing on this day.").dim(), Rect::new(inner.x, y, inner.width, 1));
+        return;
+    }
+    let height = inner.bottom().saturating_sub(y) as u32;
+    if height == 0 {
+        return;
+    }
+
+    // The hours, with up to four rows for each when there's room.
+    let now = (app.day == app.today).then_some(app.now);
+    let slots: Vec<TimeSlot> = timed.iter().map(|(_, time)| *time).collect();
+    let (mut first, mut last) = timeline::hours(&slots, now);
+    // Whole rows an hour, up to four, so each hour and block is the same
+    // height; with less than one each, it scrolls.
+    let per_hour = (height / (last - first).max(1)).clamp(1, 4);
+    // Room for more hours: show them, later ones first, then earlier.
+    let fits = height / per_hour;
+    while last - first < fits && (last < 24 || first > 0) {
+        if last < 24 {
+            last += 1;
+        } else {
+            first -= 1;
+        }
+    }
+    let span = last - first;
+    let total = span * per_hour;
+    let minutes_in = |time: chrono::NaiveTime| (time.hour() * 60 + time.minute()).saturating_sub(first * 60);
+    let minute_row = |time: chrono::NaiveTime| minutes_in(time) * per_hour / 60;
+    let hour_row = |hour: u32| (hour - first) * per_hour;
+    let max_top = (total.saturating_sub(height)).div_ceil(per_hour);
+    let top_hour = match scroll {
+        Some(hour) => hour.min(max_top),
+        // An hour above the selected block, or now, or the first block.
+        None => {
+            let chosen = entries.iter().zip(0..).find(|((slot, _), _)| Some(*slot) == selected).map(|(_, i)| i);
+            let chosen = chosen.and_then(|i| timed.iter().find(|(t, _)| *t == i)).map(|(_, time)| time.start);
+            let focus = chosen.or(now).or(slots.iter().map(|slot| slot.start).min());
+            focus.map_or(0, |time| time.hour().saturating_sub(first + 1)).min(max_top)
+        }
+    };
+    app.timeline_top.set(top_hour);
+    let offset = hour_row(first + top_hour);
+    let label_width = 6u16;
+    let grid_x = inner.x + label_width;
+    let grid_width = inner.width.saturating_sub(label_width);
+    let screen_row = |row: u32| (row >= offset && row < offset + height).then(|| y + (row - offset) as u16);
+
+    // Each hour's label, with a faint line across when hours have room
+    // for one, two rows or more each.
+    for hour in first..last {
+        let Some(row_y) = screen_row(hour_row(hour)) else { continue };
+        let time = chrono::NaiveTime::from_hms_opt(hour, 0, 0).expect("an hour of the day");
+        let label = format!("{:>5} ", deadline::format_time(time, twelve));
+        frame.render_widget(Line::from(label).dark_gray(), Rect::new(inner.x, row_y, label_width, 1));
+    }
+
+    // The blocks, side by side where they overlap, in a checkerboard of two
+    // shades: each block differs from the one above or below it in its
+    // column, and from those beside it.
+    let placed_blocks = timeline::place(&timed);
+    let shade = |placed: &timeline::Placed| {
+        let start = |p: &timeline::Placed| timed.iter().find(|(i, _)| *i == p.item).map(|(_, time)| (time.start, p.item));
+        let above = placed_blocks.iter().filter(|other| other.column == placed.column && start(other) < start(placed)).count();
+        (above + placed.column) % 2 == 1
+    };
+    for placed in placed_blocks.iter().copied() {
+        let (slot, item) = entries[placed.item];
+        let time = timed.iter().find(|(i, _)| *i == placed.item).map(|(_, time)| *time).expect("placed items have times");
+        let start = minute_row(time.start);
+        let end = (minutes_in(time.end) * per_hour).div_ceil(60).max(start + 1);
+        let column_width = grid_width / placed.columns.max(1) as u16;
+        let x = grid_x + column_width * placed.column as u16;
+        let width = if placed.column + 1 == placed.columns { grid_width - column_width * placed.column as u16 } else { column_width };
+        if width == 0 {
+            continue;
+        }
+        let is_selected = selected == Some(slot);
+        let (background, edge) = block_colours(item.priority, shade(&placed));
+        let style = if item.done {
+            Style::new().bg(background).fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT)
+        } else if is_selected {
+            Style::new().bg(BLOCK_SELECTED_BG).fg(Color::White).add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().bg(background).fg(Color::White)
+        };
+        let selected_edge = if item.priority.is_some() { edge } else { Color::White };
+        let edge = Style::new().bg(style.bg.unwrap_or(BLOCK_BG)).fg(if item.done { Color::DarkGray } else if is_selected { selected_edge } else { edge });
+        let when = time.describe(twelve);
+        // The title on its first row, its time on the next if there's room,
+        // and a bar down its left, so where each block starts is clear.
+        let rows = end - start;
+        for (n, row) in (start..end).enumerate() {
+            let Some(row_y) = screen_row(row) else { continue };
+            let text = match (n, rows) {
+                (0, 1) => format!("{} {when}", item.text),
+                (0, _) => item.text.clone(),
+                (1, _) => when.clone(),
+                _ => String::new(),
+            };
+            let room = width.saturating_sub(1) as usize;
+            let shown = format!("{:<room$}", truncate(&text, room));
+            let style = if n == 1 { style.remove_modifier(Modifier::BOLD).add_modifier(Modifier::DIM) } else { style };
+            let line = Line::from(vec![Span::styled(BLOCK_EDGE, edge), Span::styled(shown, style)]);
+            frame.render_widget(line, Rect::new(x, row_y, width, 1));
+        }
+    }
+
+    // The time now, a red line right across, over the blocks too: where a
+    // block's text is in the way, the text stays, in red, so the line runs on
+    // through it and the item can still be read.
+    if let Some(now) = now
+        && let Some(row_y) = screen_row(minute_row(now))
+    {
+        let label = format!("{:>5} ", deadline::format_time(now, twelve));
+        frame.render_widget(Line::from(label).red().bold(), Rect::new(inner.x, row_y, label_width, 1));
+        let buffer = frame.buffer_mut();
+        for x in grid_x..grid_x + grid_width {
+            let cell = &mut buffer[(x, row_y)];
+            if cell.symbol().trim().is_empty() {
+                cell.set_symbol("─");
+            }
+            cell.set_fg(Color::Red);
+            cell.modifier.insert(Modifier::BOLD);
+        }
+    }
+
 }
 
 /// The `Space` popup, along the bottom of the list in `area` as in
@@ -2335,6 +2730,174 @@ mod tests {
         assert_eq!(cursor.x, 1 + 3 + 2 + "whole milk".len() as u16);
     }
 
+    fn items_on(app: &App) -> Vec<String> {
+        app.items().iter().map(|item| item.text.clone()).collect()
+    }
+
+    /// Today at 10:30, with a standup and a report planned (overlapping),
+    /// the gym in the evening, and two items with no time.
+    fn planned_app() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(&["Standup", "Write the quarterly report", "Buy milk", "Call mum", "Gym"]);
+        app.now = chrono::NaiveTime::from_hms_opt(10, 30, 0).unwrap();
+        let at = |h: u32, m: u32| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        for (i, (start, end)) in [(0, (at(9, 0), at(9, 30))), (1, (at(9, 15), at(11, 0))), (4, (at(18, 0), at(19, 0)))] {
+            app.store.set_time(today(), i, Some(TimeSlot { date: today(), start, end })).unwrap();
+        }
+        (app, dir)
+    }
+
+    #[test]
+    fn timeline_view() {
+        let (mut app, _dir) = planned_app();
+        type_str(&mut app, " t");
+        assert_snapshot!(render_sized(&app, 70, 22).backend());
+    }
+
+    #[test]
+    fn plan_view_typing_a_start() {
+        let (mut app, _dir) = planned_app();
+        type_str(&mut app, " pjjj");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "2pm");
+        let mut terminal = render_sized(&app, 100, 22);
+        assert_snapshot!(terminal.backend());
+        // The cursor is after the time typed, on the bottom line.
+        assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(("Start for Call mum (↵ for now, 10:30): ".width() + 3) as u16, 21));
+    }
+
+    #[test]
+    fn the_time_now_is_a_line_right_across_the_timeline_and_its_blocks() {
+        let (mut app, _dir) = planned_app();
+        type_str(&mut app, " p");
+        let terminal = render_sized(&app, 100, 22);
+        let buffer = terminal.backend().buffer();
+        let row = (0..22).find(|&y| (0..100).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains("10:30 ─")).unwrap();
+        // The timeline is the right half; past its label, every cell is red,
+        // including across the report's block, which keeps its text.
+        let line: Vec<&ratatui::buffer::Cell> = (50 + 1 + 6..99).map(|x| &buffer[(x, row)]).collect();
+        assert!(line.iter().all(|cell| cell.fg == Color::Red), "the whole row is red");
+        let text: String = line.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("09:15–11:00") && text.starts_with('─') && text.ends_with('─'), "{text}");
+    }
+
+    #[test]
+    fn plan_view_moving_through_the_timeline() {
+        let (mut app, _dir) = planned_app();
+        type_str(&mut app, " pLl");
+        let terminal = render_sized(&app, 100, 22);
+        assert_snapshot!(terminal.backend());
+        // From Standup, l goes to the report in the column beside it: its
+        // block is the highlighted one, and Standup's isn't.
+        let buffer = terminal.backend().buffer();
+        let row = (0..22).find(|&y| (50..100).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains("Standup")).unwrap();
+        let bg_at = |text: char| (57..100).find(|&x| buffer[(x, row)].symbol() == text.to_string()).map(|x| buffer[(x, row)].bg);
+        assert_eq!(bg_at('W'), Some(BLOCK_SELECTED_BG));
+        assert_eq!(bg_at('S'), Some(BLOCK_BG));
+        assert_eq!(items_on(&app)[app.selected], "Write the quarterly report");
+        // The list side's border is dim, as keys go to the timeline.
+        assert_eq!(buffer[(0, 0)].fg, Color::DarkGray);
+    }
+
+    #[test]
+    fn too_many_all_day_items_for_two_lines_are_counted() {
+        let (mut app, _dir) = app_with(&["milk", "eggs", "bread", "cheese", "apples", "pears", "rice", "tea"]);
+        type_str(&mut app, " t");
+        let screen = render_sized(&app, 30, 10).backend().to_string();
+        let lines: Vec<&str> = screen.lines().collect();
+        assert!(lines[1].contains("All day  milk · eggs"), "{screen}");
+        assert!(lines[2].contains("more") && !lines[3].contains("tea"), "{screen}");
+    }
+
+    #[test]
+    fn blocks_alternate_shades_and_take_their_prioritys_colour() {
+        let (mut app, _dir) = app_with(&["First", "Second", "Urgent"]);
+        let at = |h: u32| chrono::NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+        for (i, start, end) in [(0, at(13), at(14)), (1, at(14), at(15)), (2, at(16), at(17))] {
+            app.store.set_time(today(), i, Some(TimeSlot { date: today(), start, end })).unwrap();
+        }
+        app.store.cycle_priority(today(), 2).unwrap();
+        app.now = at(12);
+        type_str(&mut app, " t");
+        // Tall enough for two rows an hour.
+        let terminal = render_sized(&app, 60, 40);
+        let buffer = terminal.backend().buffer();
+        let row_of = |text: &str| (0..40).find(|&y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains(text)).unwrap();
+        let (first, second, urgent) = (row_of("First"), row_of("Second"), row_of("Urgent"));
+        assert!(second >= first + 2, "a row or more each, one after the other");
+        // Each starts with the bar, and one after another they're the two
+        // shades of the checkerboard, so it's clear where one ends.
+        let edge = (0..60).find(|&x| buffer[(x, first)].symbol() == BLOCK_EDGE).unwrap();
+        assert_eq!(buffer[(edge, second)].symbol(), BLOCK_EDGE);
+        assert_eq!(buffer[(edge + 2, first)].bg, BLOCK_BG);
+        assert_eq!(buffer[(edge + 2, second)].bg, BLOCK_ALT_BG);
+        assert_eq!(buffer[(edge + 2, second - 1)].bg, BLOCK_BG, "the first runs to just above the second");
+        // No lines across: the rows between hours are plain.
+        assert!(!(0..60).any(|x| buffer[(x, first + 1)].symbol() == "┈"));
+        // The High one is red, in the shade its place gives it.
+        let (red, bar) = block_colours(Some(Priority::High), false);
+        assert_eq!(buffer[(edge + 2, urgent)].bg, red);
+        assert_eq!(buffer[(edge, urgent)].fg, bar);
+    }
+
+    #[test]
+    fn priority_blocks_have_a_checkerboard_of_their_own() {
+        let (mut app, _dir) = app_with(&["First", "Second", "Third"]);
+        let at = |h: u32| chrono::NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+        for (i, start, end) in [(0, at(13), at(14)), (1, at(14), at(15)), (2, at(15), at(16))] {
+            app.store.set_time(today(), i, Some(TimeSlot { date: today(), start, end })).unwrap();
+            app.store.cycle_priority(today(), i).unwrap();
+        }
+        app.now = at(12);
+        type_str(&mut app, " t");
+        let terminal = render_sized(&app, 60, 40);
+        let buffer = terminal.backend().buffer();
+        let bg_of = |text: &str| {
+            let y = (0..40).find(|&y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains(text)).unwrap();
+            let x = (0..60).find(|&x| buffer[(x, y)].symbol() == &text[..1]).unwrap();
+            buffer[(x, y)].bg
+        };
+        let (dark, _) = block_colours(Some(Priority::High), false);
+        let (light, _) = block_colours(Some(Priority::High), true);
+        assert_ne!(dark, light);
+        assert_eq!([bg_of("First"), bg_of("Second"), bg_of("Third")], [dark, light, dark]);
+    }
+
+    #[test]
+    fn adding_an_item_in_the_plan_view_keeps_the_timeline_beside_it() {
+        let (mut app, _dir) = planned_app();
+        type_str(&mut app, " paDentist");
+        assert_snapshot!(render_sized(&app, 100, 14).backend());
+    }
+
+    #[test]
+    fn the_selected_item_stands_out_in_the_plan_view() {
+        let (mut app, _dir) = planned_app();
+        type_str(&mut app, " p");
+        let terminal = render_sized(&app, 100, 22);
+        let buffer = terminal.backend().buffer();
+        // Standup, selected, on the list: the same blue as its block.
+        let row = (0..22).find(|&y| (0..50).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains("Standup")).unwrap();
+        let x = (0..50).find(|&x| buffer[(x, row)].symbol() == "S").unwrap();
+        assert_eq!(buffer[(x, row)].bg, BLOCK_SELECTED_BG);
+        assert!(buffer[(x, row)].modifier.contains(Modifier::BOLD));
+        let block_row = (0..22).find(|&y| (50..100).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains("Standup")).unwrap();
+        let bx = (50..100).find(|&x| buffer[(x, block_row)].symbol() == "S").unwrap();
+        assert_eq!(buffer[(bx, block_row)].bg, BLOCK_SELECTED_BG);
+        // The main list keeps its usual highlight.
+        press(&mut app, KeyCode::Esc);
+        let terminal = render_sized(&app, 100, 22);
+        let buffer = terminal.backend().buffer();
+        assert_ne!(buffer[(4, 1)].bg, BLOCK_SELECTED_BG);
+    }
+
+    #[test]
+    fn plan_view_asking_before_throwing_changes_away() {
+        let (mut app, _dir) = planned_app();
+        type_str(&mut app, " pcq");
+        assert_snapshot!(render_sized(&app, 100, 22).backend());
+        assert_snapshot!("discarding_a_plan_at_30_columns", render_sized(&app, 30, 14).backend());
+    }
+
     #[test]
     fn empty_day() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
@@ -2766,6 +3329,15 @@ mod tests {
         shot(&app, "days before");
         press(&mut app, KeyCode::Enter);
         shot(&app, "with a reminder");
+        type_str(&mut app, " t");
+        shot(&app, "timeline");
+        type_str(&mut app, "p");
+        shot(&app, "planning");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9");
+        shot(&app, "typing a start");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
         type_str(&mut app, "l");
         shot(&app, "empty day");
         out

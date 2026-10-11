@@ -100,6 +100,8 @@ These are the default keys. You can change any of them, and the leader menu's, i
 | `Space` `o` | Options: accessibility, your own notes editor, the todoro folder |
 | `Space` `w` | Workspaces: switch, create or delete |
 | `Space` `n` | Patch notes: what changed in every release |
+| `Space` `t` | The day as a timeline, with the time now |
+| `Space` `p` | Plan the day: give items a start and end time |
 | `?` | Show all keybindings |
 | `q` / `:q` | Quit |
 
@@ -264,6 +266,34 @@ Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words m
 `↑` / `↓` (or `Ctrl+N` / `Ctrl+P`) select a result, and `Enter` goes to that item on its day. `Esc` stops typing, as in vim, so you can move through the results with `j` / `k` (`gg` / `G` to the first or last); `i` types again, and `Esc` or `q` closes the search.
 
 On a wide terminal, the results are on the left and the selected item's notes on the right, formatted as with `v`, so you can read them as you move. `Ctrl+D` / `Ctrl+U` scroll them.
+
+### Timeline and planning
+
+Any top-level item can have a start and end time on a day. Items without one are all day.
+
+`Space` `t` shows the day as a timeline: the items with no time listed as all day at the top, then the hours, with each item that has a time as a block from its start to its end, side by side where they overlap, and a red line right across at the time now. Each block has a bar down its left, and blocks alternate between two shades like a checkerboard, so you can see where one ends and the next begins. A triaged item's block takes its priority's colour instead, red, yellow or green, in two shades the same way. `j` / `k` scroll, `h` / `l` go to the day before or after, `t` back to today, `p` plans the day, and `Esc` goes back to the list.
+
+Both leave out completed items: they're about what's left to do. `Space` `p` plans the day on screen: the list, as on the main screen, with the timeline beside it on a wide enough terminal, and the plan's keys at the bottom.
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Choose an item |
+| `L` / `H` | Move into the timeline, and back to the list. There `j` / `k` go down and up a column of blocks, and `h` / `l` to the column on the left or right, to the block that overlaps most; `H` goes back to the list. The item chosen is highlighted on both. Retiming a block there stays on it, and clearing one's time moves on to another block |
+| `Enter` | Type its start time, like `9`, `9:30`, `13:00` or `1pm`, then `Enter`, or just `Enter` to start when the last item you planned ends (now, for the first); then its end and `Enter`, or just `Enter` for an hour. Then it moves on to the next item that doesn't have a time yet (below, then from the top), ready for its start, and stops once every item has one |
+| `Tab` | While typing a time: leave this item as it is, for the next one |
+| `a` / `A` | Add an item, or several, as on the list |
+| `o` / `O` | Add a sub-item, or several, under the selected item |
+| `e` / `E` | Edit the item, or edit it with its text cleared, as on the list |
+| `x` / `d` | Delete the item, asking first as on the list |
+| `u` / `Ctrl+R` | Undo / redo a change made in the plan, one at a time |
+| `J` / `K`, `yy` / `p` / `P`, `>` / `<`, `za` / `zc` / `zo`, `m`, `@`, `r`, `V`, counts | As on the list (selecting can't move items to another day here) |
+| `c` | Clear the item's time, making it all day |
+| `!` | Triage the item, as on the list: its block takes the priority's colour |
+| `w` | Save the plan |
+| `R` | Reset: clear every time on the day, so it's all day again (still only kept if you save) |
+| `Esc` / `q` | Leave. If you changed anything, a popup asks whether to save first: `w` saves, `q` leaves without saving (so `q` `q` throws the changes away), `n` keeps planning |
+
+The list shows an item's time on the day it's planned for, like `09:00–09:30`. A time belongs to that day, so a pinned item carried on to the next day is all day there until you plan it again. Saving a plan is one change for `u` to undo, including any items added, edited or deleted in it; leaving without saving puts those back too. Sub-items go inside their parent's block.
 
 ### Calendar
 
@@ -433,6 +463,8 @@ The help (`?`) shows each key with its command's name in grey. These are all the
 | `options` | Options, including accessibility |
 | `workspaces` | Workspaces: switch, create or delete |
 | `patch-notes` | Patch notes: what changed in every release |
+| `timeline` | The day as a timeline, with the time now |
+| `plan` | Plan the day: give items a start and end time |
 
 ## Your todos folder
 
@@ -454,7 +486,7 @@ If you used todoro before it had this folder, your existing todos move into your
 
 To keep everything somewhere else later, open the options (`Space` `o`), select **Todoro folder** under **Data** and press `Enter`, then type the new folder. todoro moves every workspace there. If the new folder already has a workspace with the same name, it moves nothing and tells you.
 
-Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes_file": "....md", "done": true, "pinned": true, "priority": "high" }`. An item's sub-items are in its `"items"`, written the same way, and `"folded": true` keeps them folded.
+Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes_file": "....md", "done": true, "pinned": true, "priority": "high" }`. An item's sub-items are in its `"items"`, written the same way, and `"folded": true` keeps them folded. A planned time is `"time": "2026-10-11 09:00-10:30"`.
 
 If a folder is synced between machines, don't have todoro open on two of them at once: the last one to save wins.
 

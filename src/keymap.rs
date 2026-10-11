@@ -76,6 +76,8 @@ pub enum Command {
     Options,
     Workspaces,
     PatchNotes,
+    Timeline,
+    Plan,
 }
 
 /// Every command, in the order the help and the starter file list them:
@@ -132,6 +134,8 @@ const COMMANDS: &[(Command, &str, &str, &str)] = &[
     (Command::Calendar, "calendar", "calendar", "Open the calendar"),
     (Command::Options, "options", "options", "Options, including accessibility"),
     (Command::Workspaces, "workspaces", "workspaces", "Workspaces: switch, create or delete"),
+    (Command::Timeline, "timeline", "timeline", "The day as a timeline, with the time now"),
+    (Command::Plan, "plan", "plan the day", "Plan the day: give items a start and end time"),
     (Command::PatchNotes, "patch-notes", "patch notes", "Patch notes: what changed in every release"),
 ];
 
@@ -411,6 +415,8 @@ const DEFAULT_LEADER: &[(&str, Command)] = &[
     ("o", Command::Options),
     ("w", Command::Workspaces),
     ("n", Command::PatchNotes),
+    ("t", Command::Timeline),
+    ("p", Command::Plan),
 ];
 
 const DEFAULT_GROUPS: &[(&str, &str)] = &[("s", "search")];

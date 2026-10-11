@@ -18,7 +18,6 @@ list
 
 space menu
 "╭─ Mon, Oct 5 2026 (today) ──╮"
-"│1. Buy milk                 │"
 "│╭ Space ───────────────────╮│"
 "││ Space  find items        ││"
 "││     s  +search           ││"
@@ -26,6 +25,7 @@ space menu
 "││     o  options           ││"
 "││     w  workspaces        ││"
 "││     n  patch notes       ││"
+"││     t  timeline          ││"
 "│╰──────────────────────────╯│"
 "╰──── h/l day · j/k move ────╯"
 " LEADER   type a key          "
@@ -169,6 +169,48 @@ with a reminder
 "│                            │"
 "╰──── h/l day · j/k move ────╯"
 " NORMAL   a add  ? help       "
+
+timeline
+"╭── Monday, October 5 2026 ──╮"
+"│All day  Buy milk           │"
+"│         Write the quarterl…│"
+"│────────────────────────────│"
+"│00:00 ──────────────────────│"
+"│01:00                       │"
+"│02:00                       │"
+"│03:00                       │"
+"│04:00                       │"
+"│05:00                       │"
+"╰────────────────────────────╯"
+" TIMELINE   p plan  ? help    "
+
+planning
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1. Buy milk                 │"
+"│2. Write the                │"
+"│   quarterly                │"
+"│   report for               │"
+"│   the team ◷ 17:30 ⚑ ≡     │"
+"│                            │"
+"│                            │"
+"│                            │"
+"│                            │"
+"╰──── h/l day · j/k move ────╯"
+" PLAN   ↵ set time  w save    "
+
+typing a start
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1. Buy milk                 │"
+"│2. Write the                │"
+"│   quarterly                │"
+"│   report for               │"
+"│   the team ◷ 17:30 ⚑ ≡     │"
+"│                            │"
+"│                            │"
+"│                            │"
+"│                            │"
+"╰──── h/l day · j/k move ────╯"
+"Start: 9                      "
 
 empty day
 "╭─ Tuesday, October 6 2026 ──╮"

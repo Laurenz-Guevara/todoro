@@ -1,0 +1,18 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 30, 14).backend()"
+---
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1. Standup                  │"
+"│2. Write the                │"
+"│   quarterly                │"
+"│ ╭ Save your changes? ────╮ │"
+"│3│You've set times since  │ │"
+"│4│opening the plan. Save  │ │"
+"│5│them before you leave?  │ │"
+"│ │                        │ │"
+"│ │ w save  q discard  n no│ │"
+"│ ╰────────────────────────╯ │"
+"│                            │"
+"╰──── h/l day · j/k move ────╯"
+" PLAN   w save  q don't save  "
