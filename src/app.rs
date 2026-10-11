@@ -13,6 +13,7 @@ use crate::keymap::{self, Command, Key, Keymap};
 use crate::leader::{self, Leader};
 use crate::notes::{Action, NotesEditor, Register};
 use crate::options::{self, Options, Settings, TOGGLES};
+use crate::outline;
 use crate::reminder;
 use crate::search::{self, Search};
 use crate::tags::{self, TagPicker};
@@ -32,12 +33,12 @@ struct State {
 
 pub enum Mode {
     Normal,
-    /// Typing an item at `index`. When `editing`, it replaces the existing item
-    /// there; otherwise it is inserted as a new one.
+    /// Typing an item at screen row `index`. When `editing`, it replaces the
+    /// existing item there; otherwise it's a new one, which goes at `place`.
     /// With `repeat` (from `A`), Enter adds the item and starts another below
     /// it, until Esc or Enter on an empty line. With `replacing` (from `E`),
     /// the item's text starts cleared, and leaving it empty keeps it as it was.
-    Insert { index: usize, input: LineInput, editing: bool, repeat: bool, replacing: bool },
+    Insert { index: usize, input: LineInput, editing: bool, repeat: bool, replacing: bool, place: Option<Place> },
     /// Asking whether to delete the items at these screen rows.
     ConfirmDelete { rows: Vec<usize> },
     /// Selecting several items, from the row `anchor` to the selected row.
@@ -87,6 +88,15 @@ fn with_line(command: &str, line: Option<usize>) -> String {
         Some(line) if PLUS_LINE_EDITORS.contains(&name) => format!("{command} +{}", line + 1),
         _ => command.to_string(),
     }
+}
+
+/// Where a new item goes: the day it's stored on, its index there, and how
+/// deep (0 for a top-level item, more for a sub-item).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    pub day: NaiveDate,
+    pub index: usize,
+    pub depth: usize,
 }
 
 /// Where an item on the current screen is stored.
@@ -198,15 +208,48 @@ impl App {
     /// but one can land on a past day mid-session, e.g. moved there with `<`.
     /// Then come items from later days whose reminder is due by then.
     pub fn slots(&self) -> Vec<Slot> {
-        let mut slots: Vec<Slot> = if self.day >= self.today {
+        let roots: Vec<(NaiveDate, usize)> = if self.day >= self.today {
             let carried = self.store.carried_to(self.day).into_iter();
             let reminded = self.store.reminded_on(self.day, self.today, self.now).into_iter();
-            carried.chain(reminded).map(|(day, index)| Slot { day, index }).collect()
+            carried.chain(reminded).collect()
         } else {
             Vec::new()
         };
-        slots.extend((0..self.store.items(self.day).len()).map(|index| Slot { day: self.day, index }));
+        // Each top-level item, then what shows of its sub-items.
+        let mut slots: Vec<Slot> = Vec::new();
+        for (day, index) in roots {
+            let items = self.store.items(day);
+            slots.extend(outline::visible_block(items, index).into_iter().map(|index| Slot { day, index }));
+        }
+        let items = self.store.items(self.day);
+        let mut at = 0;
+        while at < items.len() {
+            slots.extend(outline::visible_block(items, at).into_iter().map(|index| Slot { day: self.day, index }));
+            at = outline::block_end(items, at);
+        }
         slots
+    }
+
+    /// How many rows come before the day's completed top-level items.
+    pub fn open_rows(&self) -> usize {
+        self.slots()
+            .iter()
+            .position(|slot| slot.day == self.day && self.store.items(slot.day)[slot.index].depth == 0 && self.store.items(slot.day)[slot.index].done)
+            .unwrap_or(self.slots().len())
+    }
+
+    /// The row of open top-level item number `n` (the numbers on the list),
+    /// or the last row if there are fewer.
+    fn row_for_number(&self, n: usize) -> usize {
+        let open = self.open_rows();
+        let slots = self.slots();
+        slots[..open]
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| self.store.items(slot.day)[slot.index].depth == 0)
+            .map(|(row, _)| row)
+            .nth(n.saturating_sub(1))
+            .unwrap_or(slots.len().saturating_sub(1))
     }
 
     /// The items shown for the current day, in screen order.
@@ -312,9 +355,9 @@ impl App {
             Mode::Normal if self.command.is_some() => self.command_key(key.code),
             // Handled in `resolve`.
             Mode::Normal => {}
-            Mode::Insert { index, input, editing, repeat, replacing } => {
+            Mode::Insert { index, input, editing, repeat, replacing, place } => {
                 if input.handle_key(key.code) {
-                    let (index, text, editing, replacing) = (*index, input.text.trim().to_string(), *editing, *replacing);
+                    let (index, text, editing, replacing, place) = (*index, input.text.trim().to_string(), *editing, *replacing, *place);
                     let next = *repeat && key.code == KeyCode::Enter && !text.is_empty();
                     self.mode = Mode::Normal;
                     match (editing, text.is_empty()) {
@@ -328,14 +371,14 @@ impl App {
                         }
                         (false, true) => {}
                         (false, false) => {
-                            // New items belong to the day on screen, after any carried ones.
-                            let carried = self.carried();
-                            let index = index.saturating_sub(carried).min(self.store.open_count(self.day));
-                            self.add_item(self.day, index, text)?;
-                            self.selected = carried + index;
+                            let place = place.unwrap_or(Place { day: self.day, index: self.store.open_count(self.day), depth: 0 });
+                            let at = self.add_item(place, text)?;
+                            self.select_stored(place.day, at);
                             if next {
+                                // The next one goes just below, at the same level.
+                                let place = Some(Place { index: at + 1, ..place });
                                 let index = self.selected + 1;
-                                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true, replacing: false };
+                                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true, replacing: false, place };
                             }
                         }
                     }
@@ -346,9 +389,10 @@ impl App {
                     let rows = std::mem::take(rows);
                     self.mode = Mode::Normal;
                     // Deleting keeps the items to paste, as in vim, so dd then p moves one.
-                    self.register = rows.iter().map(|&row| self.items()[row].clone()).collect();
+                    self.register.clear();
                     for (day, indices) in self.group_by_day(&rows) {
-                        self.store.remove_many(day, &indices)?;
+                        let removed = self.store.remove_many(day, &indices)?;
+                        self.register.extend(removed);
                     }
                     self.selected = rows[0];
                     self.clamp_selection();
@@ -399,7 +443,7 @@ impl App {
                 }
                 calendar::Action::Add(day, text) => {
                     let index = self.store.open_count(day);
-                    self.add_item(day, index, text)?;
+                    self.add_item(Place { day, index, depth: 0 }, text)?;
                 }
                 calendar::Action::SetDeadline { day, index, deadline } => {
                     self.mode = Mode::Normal;
@@ -533,6 +577,7 @@ impl App {
                     search::Action::Close => self.mode = Mode::Normal,
                     search::Action::Open { day, index, line } => {
                         self.mode = Mode::Normal;
+                        self.reveal(day, index)?;
                         self.show_day(day);
                         self.selected = self.slots().iter().position(|slot| *slot == Slot { day, index }).unwrap_or(0);
                         // Found in its notes: open them to edit, on that line.
@@ -750,23 +795,16 @@ impl App {
     fn run(&mut self, command: Command, count: Option<usize>) -> io::Result<()> {
         let slot = self.slot(self.selected);
         let len = self.slots().len();
-        let open = self.carried() + self.store.open_count(self.day);
         let times = count.unwrap_or(1);
-        // Item N is the Nth row, which is its number for open items.
-        let row = |n: usize| n.saturating_sub(1).min(len.saturating_sub(1));
         match command {
-            Command::First => self.selected = row(count.unwrap_or(1)),
-            Command::Last => self.selected = count.map_or(len.saturating_sub(1), row),
+            Command::First => self.selected = count.map_or(0, |n| self.row_for_number(n)),
+            Command::Last => self.selected = count.map_or(len.saturating_sub(1), |n| self.row_for_number(n)),
             Command::Overdue => self.mode = Mode::Search(Box::new(Search::overdue())),
-            Command::Copy => {
-                if let Some(slot) = slot {
-                    self.register = vec![self.store.items(slot.day)[slot.index].clone()];
-                }
-            }
+            Command::Copy if len > 0 => self.register = self.copy_rows(&[self.selected]),
             Command::Leader => self.mode = Mode::Leader(Leader::default()),
             // Paste below or above the cursor, like a and its opposite.
-            Command::PasteBelow => self.paste(if self.selected < open && len > 0 { self.selected + 1 } else { open })?,
-            Command::PasteAbove => self.paste(self.selected.min(open))?,
+            Command::PasteBelow => self.paste(true)?,
+            Command::PasteAbove => self.paste(false)?,
             Command::Quit => self.quit = true,
             Command::Colon => self.command = Some(LineInput::default()),
             Command::Help => self.open_help(),
@@ -780,25 +818,43 @@ impl App {
             // Like the day keys, but taking the selected item along to that day.
             Command::MoveToPrevDay => self.move_to_day(-1)?,
             Command::MoveToNextDay => self.move_to_day(1)?,
-            // Like vim's `a`, append after the cursor. From a completed item (or an
-            // empty day), append to the end of the open items instead.
-            Command::Add => {
-                let index = if self.selected < open { self.selected + 1 } else { open };
-                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: false, replacing: false };
+            // Like vim's `a`, append after the cursor (and what's under it). From
+            // a completed item (or an empty day), append to the end of the open
+            // items instead.
+            Command::Add | Command::AddSeveral | Command::AddSub | Command::AddSubs => {
+                let (index, place) = self.new_item_place(matches!(command, Command::AddSub | Command::AddSubs))?;
+                let repeat = matches!(command, Command::AddSeveral | Command::AddSubs);
+                let input = LineInput::default();
+                self.mode = Mode::Insert { index, input, editing: false, repeat, replacing: false, place: Some(place) };
             }
-            // Like add, but Enter keeps adding items until Esc or an empty line.
-            Command::AddSeveral => {
-                let index = if self.selected < open { self.selected + 1 } else { open };
-                self.mode = Mode::Insert { index, input: LineInput::default(), editing: false, repeat: true, replacing: false };
+            Command::Indent => {
+                if let Some(slot) = slot {
+                    match self.store.indent(slot.day, slot.index)? {
+                        Some(index) => self.select_stored(slot.day, index),
+                        None => self.message = Some("There's nothing above it at its level to go under.".into()),
+                    }
+                }
+            }
+            Command::Outdent => {
+                if let Some(slot) = slot
+                    && let Some(index) = self.store.outdent(slot.day, slot.index)?
+                {
+                    self.select_stored(slot.day, index);
+                }
+            }
+            Command::FoldToggle | Command::Fold | Command::Unfold => {
+                if let Some(slot) = slot {
+                    self.fold(slot, command)?;
+                }
             }
             Command::Edit if len > 0 => {
                 let input = LineInput::new(&self.items()[self.selected].text);
-                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: false };
+                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: false, place: None };
             }
             // Edit with the text cleared, to write it again, as vim's cc.
             Command::EditCleared if len > 0 => {
                 let input = LineInput::default();
-                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: true };
+                self.mode = Mode::Insert { index: self.selected, input, editing: true, repeat: false, replacing: true, place: None };
             }
             Command::Delete if len > 0 => self.mode = Mode::ConfirmDelete { rows: vec![self.selected] },
             Command::Select if len > 0 => self.mode = Mode::Visual { anchor: self.selected },
@@ -823,7 +879,9 @@ impl App {
             // already moves on until then.
             Command::TogglePin => {
                 if let Some(slot) = slot {
-                    if self.store.items(slot.day)[slot.index].deadline.is_some() {
+                    if self.store.items(slot.day)[slot.index].depth > 0 {
+                        self.message = Some("Sub-items go where the item they're under goes: pin that instead.".into());
+                    } else if self.store.items(slot.day)[slot.index].deadline.is_some() {
                         let how = self.keymap.key_for(Command::Deadline).map_or(String::new(), |key| format!(" {key} then d removes it."));
                         self.message = Some(format!("This has a deadline, so it moves on until then.{how}"));
                     } else {
@@ -845,7 +903,7 @@ impl App {
             // Handled before running, as they aren't changes to record.
             Command::Undo | Command::Redo => {}
             // Needing an item, with none.
-            Command::Edit | Command::EditCleared | Command::Delete | Command::Select | Command::OpenNotes | Command::ViewNotes | Command::Today => {}
+            Command::Copy | Command::Edit | Command::EditCleared | Command::Delete | Command::Select | Command::OpenNotes | Command::ViewNotes | Command::Today => {}
             // Like finding files in many vim setups.
             Command::FindItems => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Items))),
             Command::SearchNotes => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Notes))),
@@ -872,11 +930,38 @@ impl App {
         Ok(())
     }
 
-    /// Stays on the item stored at `day`, `index`, wherever it shows now, if
-    /// it still shows.
+    /// Folds or unfolds the item at `slot` (`za`, `zc`, `zo`). An item with
+    /// nothing under it folds the item it's under instead, as vim closes
+    /// the fold around the cursor.
+    fn fold(&mut self, slot: Slot, command: Command) -> io::Result<()> {
+        let items = self.store.items(slot.day);
+        let has_children = outline::block_end(items, slot.index) > slot.index + 1;
+        let index = match (has_children, outline::parent(items, slot.index)) {
+            (true, _) => slot.index,
+            (false, Some(parent)) if command != Command::Unfold => parent,
+            _ => return Ok(()),
+        };
+        let folded = match command {
+            Command::Fold => true,
+            Command::Unfold => false,
+            _ => !self.store.items(slot.day)[index].folded,
+        };
+        self.store.set_folded(slot.day, index, folded)?;
+        self.select_stored(slot.day, index);
+        Ok(())
+    }
+
+    /// Stays on the item stored at `day`, `index`, wherever it shows now, or
+    /// on what it's folded under, if it still shows.
     fn select_stored(&mut self, day: NaiveDate, index: usize) {
-        if let Some(row) = self.slots().iter().position(|slot| slot.day == day && slot.index == index) {
-            self.selected = row;
+        let slots = self.slots();
+        let items = self.store.items(day);
+        let wanted = std::iter::once(index).chain(if index < items.len() { outline::ancestors(items, index) } else { Vec::new() });
+        for index in wanted {
+            if let Some(row) = slots.iter().position(|slot| slot.day == day && slot.index == index) {
+                self.selected = row;
+                break;
+            }
         }
         self.clamp_selection();
     }
@@ -903,10 +988,48 @@ impl App {
         self.mode = Mode::Calendar(Box::new(calendar));
     }
 
-    /// Adds a new item, pinned if the options say new items start pinned.
-    fn add_item(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
-        let item = Item { text, pinned: self.settings.pin_new_items, ..Item::default() };
-        self.store.insert_items(day, index, vec![item])?;
+    /// Adds a new item at `place`, pinned if it's a top-level one and the
+    /// options say new items start pinned. Returns its index.
+    fn add_item(&mut self, place: Place, text: String) -> io::Result<usize> {
+        let pinned = self.settings.pin_new_items && place.depth == 0;
+        let item = Item { text, pinned, ..Item::default() };
+        self.store.insert_at(place.day, place.index, vec![item], place.depth)
+    }
+
+    /// Where a new item typed now goes, and the row it's typed on: below
+    /// the selected item and what's under it, at its level (`a`), or as
+    /// its last sub-item (`o`). Top-level items go among the day's own open
+    /// ones, after any carried from other days.
+    fn new_item_place(&mut self, sub: bool) -> io::Result<(usize, Place)> {
+        let open = self.store.open_count(self.day);
+        let Some(slot) = self.slot(self.selected) else {
+            return Ok((0, Place { day: self.day, index: open, depth: 0 }));
+        };
+        let item = &self.store.items(slot.day)[slot.index];
+        let (depth, folded, done) = (item.depth, item.folded, item.done);
+        if sub && folded {
+            self.store.set_folded(slot.day, slot.index, false)?;
+        }
+        let items = self.store.items(slot.day);
+        let below = self.selected + outline::visible_block(items, slot.index).len();
+        let after = outline::block_end(items, slot.index);
+        Ok(match (sub, depth) {
+            (true, _) => (below, Place { day: slot.day, index: after, depth: depth + 1 }),
+            (false, 0) if slot.day != self.day => (self.carried(), Place { day: self.day, index: 0, depth: 0 }),
+            (false, 0) if done => (self.open_rows(), Place { day: self.day, index: open, depth: 0 }),
+            (false, _) => (below, Place { day: slot.day, index: after, depth }),
+        })
+    }
+
+    /// Shows the item stored at `day`, `index` if a folded item hides it.
+    fn reveal(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
+        let items = self.store.items(day);
+        if index >= items.len() || !outline::hidden(items, index) {
+            return Ok(());
+        }
+        for up in outline::ancestors(items, index) {
+            self.store.set_folded(day, up, false)?;
+        }
         Ok(())
     }
 
@@ -1014,7 +1137,7 @@ impl App {
                     self.store.update_many(day, &indices, |item| item.priority = priority)?;
                 }
             }
-            KeyCode::Char('y') => self.register = items,
+            KeyCode::Char('y') => self.register = self.copy_rows(&rows),
             KeyCode::Char('d') => {
                 self.mode = Mode::ConfirmDelete { rows };
                 return Ok(());
@@ -1029,8 +1152,7 @@ impl App {
                 }
                 self.mode = Mode::Normal;
                 self.change_day(delta);
-                self.selected = self.carried() + landed.unwrap_or(0);
-                self.clamp_selection();
+                self.select_stored(to, landed.unwrap_or(0));
                 return Ok(());
             }
             _ => return Ok(()),
@@ -1041,27 +1163,58 @@ impl App {
         Ok(())
     }
 
-    /// Pastes the register at screen position `index` on the day on screen,
-    /// after any carried items, and selects the first pasted item.
-    fn paste(&mut self, index: usize) -> io::Result<()> {
+    /// Copies of the items at screen `rows` with their sub-items, each
+    /// starting at the top level, as `yy` and `y` keep them to paste.
+    fn copy_rows(&self, rows: &[usize]) -> Vec<Item> {
+        let mut copied = Vec::new();
+        for (day, indices) in self.group_by_day(rows) {
+            let items = self.store.items(day);
+            for start in outline::outermost(items, &indices) {
+                let mut block = items[start..outline::block_end(items, start)].to_vec();
+                outline::rebase(&mut block, 0);
+                copied.extend(block);
+            }
+        }
+        copied
+    }
+
+    /// Pastes the register below the selected item and what's under it
+    /// (`below`), or above it, at its level, and selects the first pasted
+    /// item. Top-level items go among the day's own open ones, as new ones do.
+    fn paste(&mut self, below: bool) -> io::Result<()> {
         if self.register.is_empty() {
             return Ok(());
         }
-        let carried = self.carried();
-        let index = self.store.insert_items(self.day, index.saturating_sub(carried), self.register.clone())?;
-        self.selected = carried + index;
+        let register = self.register.clone();
+        let open = self.store.open_count(self.day);
+        let place = match self.slot(self.selected) {
+            None => Place { day: self.day, index: 0, depth: 0 },
+            Some(slot) => {
+                let items = self.store.items(slot.day);
+                let item = &items[slot.index];
+                let index = if below { outline::block_end(items, slot.index) } else { slot.index };
+                match item.depth {
+                    0 if slot.day != self.day => Place { day: self.day, index: 0, depth: 0 },
+                    0 if item.done => Place { day: self.day, index: open, depth: 0 },
+                    depth => Place { day: slot.day, index, depth },
+                }
+            }
+        };
+        let at = if place.depth == 0 {
+            self.store.insert_items(place.day, place.index, register)?
+        } else {
+            self.store.insert_at(place.day, place.index, register, place.depth)?
+        };
+        self.select_stored(place.day, at);
         Ok(())
     }
 
-    /// Swaps the selected item with its neighbour `delta` rows away, if both are
-    /// stored on the same day, and keeps it selected.
+    /// Moves the selected item (with what's under it) past the next item at
+    /// its level, or above the previous one, and keeps it selected.
     fn move_selected(&mut self, delta: isize) -> io::Result<()> {
-        let Some(other) = self.selected.checked_add_signed(delta) else { return Ok(()) };
-        if let (Some(a), Some(b)) = (self.slot(self.selected), self.slot(other))
-            && a.day == b.day
-            && self.store.swap(a.day, a.index, b.index)?
-        {
-            self.selected = other;
+        let Some(slot) = self.slot(self.selected) else { return Ok(()) };
+        if let Some(index) = self.store.move_sibling(slot.day, slot.index, delta > 0)? {
+            self.select_stored(slot.day, index);
         }
         Ok(())
     }
@@ -1073,7 +1226,7 @@ impl App {
         let Some(to) = self.day.checked_add_signed(chrono::Duration::days(delta)) else { return Ok(()) };
         if let Some(index) = self.store.move_to(slot.day, slot.index, to)? {
             self.change_day(delta);
-            self.selected = self.carried() + index;
+            self.select_stored(to, index);
         }
         Ok(())
     }
@@ -2478,7 +2631,8 @@ mod tests {
     #[test]
     fn the_old_keys_for_space_commands_do_nothing() {
         let (mut app, _dir) = crate::test_util::app_with_workspaces(&["Home"]);
-        for key in ['s', 'c', '#', 'o', 'W', 'N'] {
+        // o adds a sub-item now.
+        for key in ['s', 'c', '#', 'W', 'N'] {
             press(&mut app, KeyCode::Char(key));
             assert!(matches!(app.mode, Mode::Normal), "{key}");
         }
@@ -4473,5 +4627,225 @@ mod tests {
         assert!(app.start_external_edit().unwrap().is_none());
         let Mode::Options(options) = &app.mode else { panic!("still the options") };
         assert!(!options.message.as_ref().unwrap().1);
+    }
+
+    /// The rows on screen as an outline: two spaces a level, `x ` if done,
+    /// `+` after a folded item.
+    fn shown(app: &App) -> Vec<String> {
+        app.items()
+            .iter()
+            .map(|item| {
+                let fold = if item.folded { "+" } else { "" };
+                format!("{}{}{}{fold}", "  ".repeat(item.depth), if item.done { "x " } else { "" }, item.text)
+            })
+            .collect()
+    }
+
+    /// An app with "trip" (flights, hotel) and "milk" today.
+    fn app_with_trip() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(&["trip", "milk"]);
+        type_str(&mut app, "oflights");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "ohotel");
+        press(&mut app, KeyCode::Esc);
+        (app, dir)
+    }
+
+    #[test]
+    fn o_adds_a_sub_item_under_the_selected_item() {
+        let (mut app, _dir) = app_with_trip();
+        // o on flights made hotel a sub-item of flights.
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel", "milk"]);
+        assert_eq!(app.selected, 2, "on the new one");
+        // One undo step each.
+        type_str(&mut app, "u");
+        assert_eq!(shown(&app), ["trip", "  flights", "milk"]);
+    }
+
+    #[test]
+    fn a_adds_below_an_item_and_what_is_under_it_at_its_level() {
+        let (mut app, _dir) = app_with_trip();
+        type_str(&mut app, "<");
+        assert_eq!(shown(&app), ["trip", "  flights", "  hotel", "milk"]);
+        type_str(&mut app, "kapacking");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(shown(&app), ["trip", "  flights", "  packing", "  hotel", "milk"]);
+        // On a top-level item with sub-items, after all of them.
+        type_str(&mut app, "ggaafter");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(shown(&app), ["trip", "  flights", "  packing", "  hotel", "after", "milk"]);
+    }
+
+    #[test]
+    fn capital_a_keeps_adding_at_the_same_level() {
+        let (mut app, _dir) = app_with(&["trip"]);
+        type_str(&mut app, "oflights");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Ahotel");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "car");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(shown(&app), ["trip", "  flights", "  hotel", "  car"]);
+    }
+
+    #[test]
+    fn indent_and_outdent_with_the_angle_brackets() {
+        let (mut app, _dir) = app_with(&["trip", "flights", "hotel"]);
+        type_str(&mut app, "j>j>");
+        assert_eq!(shown(&app), ["trip", "  flights", "  hotel"]);
+        type_str(&mut app, ">");
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel"]);
+        assert_eq!(app.selected, 2, "it stays selected");
+        // Nothing above at its level: says so.
+        type_str(&mut app, "gg>");
+        assert!(app.message.is_some());
+        type_str(&mut app, "G<<");
+        assert_eq!(shown(&app), ["trip", "  flights", "hotel"]);
+        assert_eq!(app.selected, 2);
+    }
+
+    #[test]
+    fn x_on_an_item_completes_what_is_under_it_and_reopening_one_reopens_it() {
+        let (mut app, _dir) = app_with_trip();
+        type_str(&mut app, "ggx");
+        assert_eq!(shown(&app), ["milk", "x trip", "  x flights", "    x hotel"]);
+        type_str(&mut app, "Gx");
+        assert_eq!(shown(&app), ["milk", "trip", "  flights", "    hotel"]);
+    }
+
+    #[test]
+    fn numbers_count_top_level_items_only() {
+        let (mut app, _dir) = app_with_trip();
+        type_str(&mut app, "2G");
+        assert_eq!(items(&app)[app.selected], "milk");
+        type_str(&mut app, ":1");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn folding_hides_sub_items_and_zo_zc_za_change_it() {
+        let (mut app, _dir) = app_with_trip();
+        type_str(&mut app, "ggza");
+        assert_eq!(shown(&app), ["trip+", "milk"]);
+        type_str(&mut app, "zo");
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel", "milk"]);
+        // On an item with nothing under it, its parent folds.
+        type_str(&mut app, "jjzc");
+        assert_eq!(shown(&app), ["trip", "  flights+", "milk"]);
+        assert_eq!(app.selected, 1, "on what folded");
+        // Adding a sub-item to a folded item unfolds it.
+        type_str(&mut app, "opack");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel", "    pack", "milk"]);
+    }
+
+    #[test]
+    fn j_and_k_move_through_the_rows_and_capital_j_k_among_siblings() {
+        let (mut app, _dir) = app_with(&["trip", "flights", "hotel", "milk"]);
+        type_str(&mut app, "j>j>");
+        assert_eq!(shown(&app), ["trip", "  flights", "  hotel", "milk"]);
+        type_str(&mut app, "kJ");
+        assert_eq!(shown(&app), ["trip", "  hotel", "  flights", "milk"]);
+        assert_eq!(app.selected, 2);
+        type_str(&mut app, "J");
+        assert_eq!(shown(&app), ["trip", "  hotel", "  flights", "milk"], "not past the last under trip");
+        type_str(&mut app, "ggJ");
+        assert_eq!(shown(&app), ["milk", "trip", "  hotel", "  flights"]);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn copying_and_deleting_take_the_sub_items_along() {
+        let (mut app, _dir) = app_with_trip();
+        type_str(&mut app, "ggyyGp");
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel", "milk", "trip", "  flights", "    hotel"]);
+        type_str(&mut app, "jd");
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel", "milk", "trip"]);
+        // Pasting under a sub-item pastes at its level.
+        type_str(&mut app, "ggjp");
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel", "  flights", "    hotel", "milk", "trip"]);
+    }
+
+    #[test]
+    fn pinning_a_sub_item_says_to_pin_its_parent() {
+        let (mut app, _dir) = app_with_trip();
+        // On hotel, under flights.
+        type_str(&mut app, "m");
+        assert!(app.message.as_ref().unwrap().contains("pin that instead"));
+        assert!(!app.items()[2].pinned);
+    }
+
+    #[test]
+    fn search_shows_a_sub_item_folded_away() {
+        let (mut app, _dir) = app_with_trip();
+        type_str(&mut app, "ggza");
+        type_str(&mut app, "  hotel");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel", "milk"]);
+        assert_eq!(items(&app)[app.selected], "hotel");
+    }
+
+    #[test]
+    fn sub_items_follow_a_carried_item_and_o_adds_to_its_day() {
+        let (mut app, _dir) = app_with(&[]);
+        let yesterday = today() - Days::new(1);
+        app.store.insert(yesterday, 0, "trip".into()).unwrap();
+        app.store.toggle_pinned(yesterday, 0).unwrap();
+        type_str(&mut app, "oflights");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(shown(&app), ["trip", "  flights"]);
+        assert_eq!(app.store.items(yesterday).len(), 2, "stored with its parent");
+    }
+
+    #[test]
+    fn selecting_a_parent_and_its_sub_items_acts_on_each_once() {
+        let (mut app, _dir) = app_with_trip();
+        type_str(&mut app, "ggVjjy");
+        assert_eq!(app.register.iter().map(|item| (item.text.as_str(), item.depth)).collect::<Vec<_>>(), [("trip", 0), ("flights", 1), ("hotel", 2)]);
+        type_str(&mut app, "ggVjd");
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(shown(&app), ["milk"]);
+        assert_eq!(app.register.len(), 3, "the whole block, once");
+        type_str(&mut app, "u");
+        type_str(&mut app, "ggVjx");
+        assert_eq!(shown(&app), ["milk", "x trip", "  x flights", "    x hotel"]);
+    }
+
+    #[test]
+    fn capital_o_adds_several_sub_items_until_esc_or_an_empty_line() {
+        let (mut app, _dir) = app_with(&["trip", "milk"]);
+        type_str(&mut app, "Oflights");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "hotel");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Insert { repeat: true, .. }), "ready for the next");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal), "an empty line stops");
+        assert_eq!(shown(&app), ["trip", "  flights", "  hotel", "milk"]);
+        // On a sub-item, under that one; Esc saves and stops.
+        type_str(&mut app, "Ocompare");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(shown(&app), ["trip", "  flights", "  hotel", "    compare", "milk"]);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn shift_enter_folds_and_unfolds_and_enter_still_opens_notes() {
+        let (mut app, _dir) = app_with_trip();
+        let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        type_str(&mut app, "gg");
+        app.handle_key(shift_enter).unwrap();
+        assert_eq!(shown(&app), ["trip+", "milk"]);
+        app.handle_key(shift_enter).unwrap();
+        assert_eq!(shown(&app), ["trip", "  flights", "    hotel", "milk"]);
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Notes(_)));
+        // Shift with a letter is just the capital.
+        press(&mut app, KeyCode::Esc);
+        app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT)).unwrap();
+        assert_eq!(items(&app)[app.selected], "milk");
     }
 }

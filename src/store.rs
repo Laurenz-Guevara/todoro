@@ -7,15 +7,16 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::deadline::Deadline;
-use crate::reminder::Reminder;
 use crate::notes_files::{Conflict, NotesFiles};
+use crate::outline;
+use crate::reminder::Reminder;
 
 /// One todo entry. `notes` is longer free text shown only on the notes screen,
 /// kept in its own Markdown file named by `notes_file`. A `pinned` item moves
 /// forward to today until it is completed, and one with a `deadline` until
-/// its deadline day; others stay on their day.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(from = "RawItem", into = "RawItem")]
+/// its deadline day; others stay on their day. Sub-items follow the item
+/// they're under, one `depth` deeper (see `outline`).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Item {
     pub text: String,
     pub notes: String,
@@ -29,6 +30,11 @@ pub struct Item {
     pub deadline: Option<Deadline>,
     /// When to be reminded of it, from an earlier day.
     pub reminder: Option<Reminder>,
+    /// How many levels down it is: 0 for a top-level item, 1 for a
+    /// sub-item of one, and so on.
+    pub depth: usize,
+    /// Whether its sub-items are hidden (`za`).
+    pub folded: bool,
 }
 
 impl Item {
@@ -105,39 +111,57 @@ enum RawItem {
         /// `2d`, `3h`, `1mo`, or a day like a deadline; anything else is ignored.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reminder: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        folded: bool,
+        /// Its sub-items, written the same way.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        items: Vec<RawItem>,
     },
 }
 
-impl From<RawItem> for Item {
-    fn from(raw: RawItem) -> Self {
+/// Reads items as written, nested, into one list in outline order, each
+/// with its `depth`.
+fn flatten(raw: Vec<RawItem>, depth: usize, into: &mut Vec<Item>) {
+    for raw in raw {
         match raw {
-            RawItem::Text(text) => Item { text, ..Item::default() },
-            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder } => {
+            RawItem::Text(text) => into.push(Item { text, depth, ..Item::default() }),
+            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, items } => {
                 let deadline = deadline.as_deref().and_then(Deadline::from_stored);
                 let reminder = reminder.as_deref().and_then(Reminder::from_stored);
-                Item { text, notes, notes_file, done, pinned, priority, deadline, reminder }
+                into.push(Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, depth, folded });
+                flatten(items, depth + 1, into);
             }
         }
     }
 }
 
-impl From<Item> for RawItem {
-    fn from(item: Item) -> Self {
-        if item.notes_file.is_none()
+/// Writes a list in outline order nested, each item with its sub-items.
+fn nest(items: &[Item]) -> Vec<RawItem> {
+    let mut written = Vec::new();
+    let mut i = 0;
+    while i < items.len() {
+        let end = outline::block_end(items, i);
+        let item = items[i].clone();
+        let sub = nest(&items[i + 1..end]);
+        written.push(if item.notes_file.is_none()
             && !item.done
             && !item.pinned
             && item.priority.is_none()
             && item.deadline.is_none()
             && item.reminder.is_none()
+            && !item.folded
+            && sub.is_empty()
         {
             RawItem::Text(item.text)
         } else {
-            let Item { text, notes, notes_file, done, pinned, priority, deadline, reminder } = item;
+            let Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, .. } = item;
             let deadline = deadline.map(Deadline::to_stored);
             let reminder = reminder.map(Reminder::to_stored);
-            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder }
-        }
+            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, items: sub }
+        });
+        i = end;
     }
+    written
 }
 
 /// A copy of every item, to restore for undo.
@@ -158,15 +182,23 @@ pub struct Store {
 impl Store {
     /// Loads from `path`. A missing file is an empty store; it is created on first save.
     pub fn open(path: PathBuf) -> io::Result<Self> {
-        let mut days: BTreeMap<String, Vec<Item>> = match fs::read_to_string(&path) {
+        let raw: BTreeMap<String, Vec<RawItem>> = match fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).map_err(io::Error::other)?,
             Err(e) if e.kind() == io::ErrorKind::NotFound => BTreeMap::new(),
             Err(e) => return Err(e),
         };
-        // A hand-edited file may mix open and completed items. Stable sort keeps
-        // each group in its original order.
+        let mut days: BTreeMap<String, Vec<Item>> = raw
+            .into_iter()
+            .map(|(day, raw)| {
+                let mut items = Vec::new();
+                flatten(raw, 0, &mut items);
+                (day, items)
+            })
+            .collect();
+        // A hand-edited file may mix open and completed items, or complete an
+        // item with open sub-items. This keeps each group in its order.
         for items in days.values_mut() {
-            items.sort_by_key(|item| item.done);
+            outline::normalize(items);
         }
         // Notes from before they had files move into them now.
         let inline = days.values().flatten().any(|item| !item.notes.is_empty() && item.notes_file.is_none());
@@ -269,10 +301,20 @@ impl Store {
             if *day < today_key
                 && let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d")
             {
-                let moves = |item: &mut Item| item.roll_to(today).is_some_and(|to| to > date);
-                for item in items.extract_if(.., moves) {
-                    let to = item.roll_to(today).expect("only moving items are taken");
-                    moving.entry(to).or_default().push(item);
+                // Top-level items move, with their sub-items.
+                let moves: Vec<usize> = outline::roots(items)
+                    .into_iter()
+                    .filter(|&i| items[i].roll_to(today).is_some_and(|to| to > date))
+                    .collect();
+                let mut taken: Vec<(NaiveDate, Vec<Item>)> = Vec::new();
+                for &start in moves.iter().rev() {
+                    let to = items[start].roll_to(today).expect("only moving items are taken");
+                    let end = outline::block_end(items, start);
+                    taken.push((to, items.drain(start..end).collect()));
+                }
+                // Back in their order, after any from earlier days.
+                for (to, block) in taken.into_iter().rev() {
+                    moving.entry(to).or_default().extend(block);
                 }
             }
             !items.is_empty()
@@ -294,7 +336,11 @@ impl Store {
             .range(..key(day))
             .filter_map(|(k, items)| Some((NaiveDate::parse_from_str(k, "%Y-%m-%d").ok()?, items)))
             .flat_map(|(date, items)| {
-                items.iter().enumerate().filter(|(_, item)| item.roll_to(day) == Some(day)).map(move |(i, _)| (date, i))
+                items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| item.depth == 0 && item.roll_to(day) == Some(day))
+                    .map(move |(i, _)| (date, i))
             })
             .collect()
     }
@@ -312,7 +358,11 @@ impl Store {
         self.all()
             .filter(|(date, _)| *date > day)
             .flat_map(|(date, items)| {
-                items.iter().enumerate().filter(move |(_, item)| item.reminder_due_at(date).is_some_and(|at| at <= by)).map(move |(i, _)| (date, i))
+                items
+                    .iter()
+                    .enumerate()
+                    .filter(move |(_, item)| item.depth == 0 && item.reminder_due_at(date).is_some_and(|at| at <= by))
+                    .map(move |(i, _)| (date, i))
             })
             .collect()
     }
@@ -327,9 +377,10 @@ impl Store {
         self.save()
     }
 
-    /// How many items on `day` are not completed. They come first in `items`.
+    /// Where the completed top-level items on `day` start: the open ones,
+    /// with their sub-items, come first in `items`.
     pub fn open_count(&self, day: NaiveDate) -> usize {
-        self.items(day).iter().take_while(|item| !item.done).count()
+        boundary(self.items(day))
     }
 
     /// Every day that has items, oldest first, with its items.
@@ -348,16 +399,28 @@ impl Store {
         self.insert_items(day, index, vec![Item { text, ..Item::default() }]).map(|_| ())
     }
 
-    /// Inserts `items` at `index` as open items, keeping their notes, pin and
-    /// priority. Returns where the first one went.
+    /// Inserts `items` at `index` as open, top-level items (with any
+    /// sub-items they bring), keeping their notes, pin and priority. Returns
+    /// where the first one went.
     pub fn insert_items(&mut self, day: NaiveDate, index: usize, items: Vec<Item>) -> io::Result<usize> {
         // New items are open, so they always go among the open ones.
         let index = index.min(self.open_count(day));
+        self.insert_at(day, index, items, 0)
+    }
+
+    /// Inserts `items` exactly at `index`, open, the first of them `depth`
+    /// deep (a sub-item of what's above, at a depth over 0). Returns where
+    /// the first one ended up, as an open sub-item reopens its parents.
+    pub fn insert_at(&mut self, day: NaiveDate, index: usize, items: Vec<Item>, depth: usize) -> io::Result<usize> {
+        let mut items: Vec<Item> = items.into_iter().map(|item| Item { done: false, notes_file: None, ..item }).collect();
+        outline::rebase(&mut items, depth);
         let day_items = self.days.entry(key(day)).or_default();
+        let index = index.min(day_items.len());
         // Copies get notes files of their own.
-        day_items.splice(index..index, items.into_iter().map(|item| Item { done: false, notes_file: None, ..item }));
+        day_items.splice(index..index, items);
+        let moved = outline::normalize(day_items);
         self.save()?;
-        Ok(index)
+        Ok(moved.get(index).copied().unwrap_or(index))
     }
 
     pub fn set_text(&mut self, day: NaiveDate, index: usize, text: String) -> io::Result<()> {
@@ -374,19 +437,13 @@ impl Store {
         self.save()
     }
 
-    /// Completes an open item or reopens a completed one. Either way it moves to
-    /// the boundary between the two groups: the top of the completed items, or
-    /// the bottom of the open ones.
+    /// Completes an open item or reopens a completed one, with its
+    /// sub-items. A top-level item moves to the boundary between the two
+    /// groups: the top of the completed items, or the bottom of the open
+    /// ones. Reopening a sub-item reopens what it's under.
     pub fn toggle_done(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
-        let Some(items) = self.days.get_mut(&key(day)) else { return Ok(()) };
-        if index >= items.len() {
-            return Ok(());
-        }
-        let mut item = items.remove(index);
-        item.done = !item.done;
-        let boundary = items.iter().take_while(|item| !item.done).count();
-        items.insert(boundary, item);
-        self.save()
+        let done = !self.items(day).get(index).is_some_and(|item| item.done);
+        self.set_done_many(day, &[index], done)
     }
 
     /// Sets or clears an item's deadline. Setting one unpins it, since the
@@ -416,42 +473,25 @@ impl Store {
         self.save()
     }
 
-    /// Moves an item to another day, where it goes at the boundary between the
-    /// open and completed items, like `toggle_done`. Returns its new index.
+    /// Moves an item, with its sub-items, to another day as a top-level
+    /// item, where it goes at the boundary between the open and completed
+    /// items, like `toggle_done`. Returns its new index.
     pub fn move_to(&mut self, day: NaiveDate, index: usize, to: NaiveDate) -> io::Result<Option<usize>> {
-        let from = key(day);
-        let Some(items) = self.days.get_mut(&from) else { return Ok(None) };
-        if index >= items.len() {
-            return Ok(None);
-        }
-        let item = items.remove(index);
-        if items.is_empty() {
-            self.days.remove(&from);
-        }
-        let items = self.days.entry(key(to)).or_default();
-        let boundary = items.iter().take_while(|item| !item.done).count();
-        items.insert(boundary, item);
-        self.save()?;
-        Ok(Some(boundary))
+        self.move_many(day, &[index], to)
     }
 
-    /// Completes or reopens the items at `indices` on `day`. Like `toggle_done`,
-    /// they move to the boundary between open and completed items, keeping
-    /// their order.
+    /// Completes or reopens the items at `indices` on `day`, with their
+    /// sub-items. Like `toggle_done`, top-level ones move to the boundary
+    /// between open and completed items, keeping their order.
     pub fn set_done_many(&mut self, day: NaiveDate, indices: &[usize], done: bool) -> io::Result<()> {
         let Some(items) = self.days.get_mut(&key(day)) else { return Ok(()) };
-        let mut changed = Vec::new();
-        let mut rest = Vec::new();
-        for (i, item) in std::mem::take(items).into_iter().enumerate() {
-            if indices.contains(&i) && item.done != done {
-                changed.push(Item { done, ..item });
-            } else {
-                rest.push(item);
+        for i in outline::outermost(items, indices) {
+            let end = outline::block_end(items, i);
+            for item in &mut items[i..end] {
+                item.done = done;
             }
         }
-        let boundary = rest.iter().take_while(|item| !item.done).count();
-        rest.splice(boundary..boundary, changed);
-        *items = rest;
+        outline::normalize(items);
         self.save()
     }
 
@@ -467,52 +507,125 @@ impl Store {
         self.save()
     }
 
-    /// Removes the items at `indices` on `day` and returns them, in order.
+    /// Removes the items at `indices` on `day`, with their sub-items, and
+    /// returns them in order, each block starting at the top level, as they
+    /// would be pasted.
     pub fn remove_many(&mut self, day: NaiveDate, indices: &[usize]) -> io::Result<Vec<Item>> {
-        let k = key(day);
-        let Some(items) = self.days.get_mut(&k) else { return Ok(Vec::new()) };
-        let mut removed = Vec::new();
-        let mut kept = Vec::new();
-        for (i, item) in std::mem::take(items).into_iter().enumerate() {
-            if indices.contains(&i) { removed.push(item) } else { kept.push(item) }
+        let mut blocks = self.take_blocks(day, indices);
+        for block in &mut blocks {
+            outline::rebase(block, 0);
         }
-        if kept.is_empty() {
-            self.days.remove(&k);
-        } else {
-            *items = kept;
-        }
+        let removed = blocks.into_iter().flatten().collect();
         self.save()?;
         Ok(removed)
     }
 
-    /// Moves the items at `indices` on `day` to the day `to`, at the boundary
-    /// between its open and completed items like `move_to`, keeping their
-    /// order. Returns where the first one went.
+    /// Takes the blocks of the items at `indices` out of `day`, in order.
+    fn take_blocks(&mut self, day: NaiveDate, indices: &[usize]) -> Vec<Vec<Item>> {
+        let k = key(day);
+        let Some(items) = self.days.get_mut(&k) else { return Vec::new() };
+        let mut blocks = Vec::new();
+        for start in outline::outermost(items, indices).into_iter().rev() {
+            let end = outline::block_end(items, start);
+            blocks.push(items.drain(start..end).collect());
+        }
+        blocks.reverse();
+        if items.is_empty() {
+            self.days.remove(&k);
+        } else {
+            outline::normalize(items);
+        }
+        blocks
+    }
+
+    /// Moves the items at `indices` on `day`, with their sub-items, to the
+    /// day `to` as top-level items, at the boundary between its open and
+    /// completed items like `move_to`, keeping their order. Returns where
+    /// the first one went.
     pub fn move_many(&mut self, day: NaiveDate, indices: &[usize], to: NaiveDate) -> io::Result<Option<usize>> {
-        let mut moved = self.remove_many(day, indices)?;
-        if moved.is_empty() {
+        let mut blocks = self.take_blocks(day, indices);
+        if blocks.is_empty() {
             return Ok(None);
         }
         // Open ones first, so the completed ones stay after them.
-        moved.sort_by_key(|item| item.done);
+        blocks.sort_by_key(|block| block[0].done);
+        for block in &mut blocks {
+            outline::rebase(block, 0);
+        }
         let items = self.days.entry(key(to)).or_default();
-        let boundary = items.iter().take_while(|item| !item.done).count();
-        items.splice(boundary..boundary, moved);
+        let at = boundary(items);
+        items.splice(at..at, blocks.into_iter().flatten());
         self.save()?;
-        Ok(Some(boundary))
+        Ok(Some(at))
     }
 
-    /// Swaps two items on `day` if both are open or both completed, so the
-    /// open items always stay above the completed ones. Returns whether it did.
-    pub fn swap(&mut self, day: NaiveDate, a: usize, b: usize) -> io::Result<bool> {
-        let Some(items) = self.days.get_mut(&key(day)) else { return Ok(false) };
-        let same_group = matches!((items.get(a), items.get(b)), (Some(x), Some(y)) if x.done == y.done);
-        if !same_group || a == b {
-            return Ok(false);
+    /// Moves an item (with its sub-items) past the next item at its level
+    /// (`down`), or above the previous one, staying among the open or the
+    /// completed ones. Returns its new index, if it moved.
+    pub fn move_sibling(&mut self, day: NaiveDate, index: usize, down: bool) -> io::Result<Option<usize>> {
+        let Some(items) = self.days.get_mut(&key(day)) else { return Ok(None) };
+        if index >= items.len() {
+            return Ok(None);
         }
-        items.swap(a, b);
+        let other = if down { outline::next_sibling(items, index) } else { outline::prev_sibling(items, index) };
+        let Some(other) = other.filter(|&other| items[index].depth > 0 || items[other].done == items[index].done) else {
+            return Ok(None);
+        };
+        let (first, second) = if down { (index, other) } else { (other, index) };
+        let end = outline::block_end(items, second);
+        // The second block goes before the first.
+        items[first..end].rotate_left(second - first);
+        let moved = if down { index + (end - second) } else { other };
         self.save()?;
-        Ok(true)
+        Ok(Some(moved))
+    }
+
+    /// Makes an item (with its sub-items) a sub-item of the item above it at
+    /// its level, as its last. Returns its new index, if it could.
+    pub fn indent(&mut self, day: NaiveDate, index: usize) -> io::Result<Option<usize>> {
+        let Some(items) = self.days.get_mut(&key(day)) else { return Ok(None) };
+        if index >= items.len() || outline::prev_sibling(items, index).is_none() {
+            return Ok(None);
+        }
+        let end = outline::block_end(items, index);
+        for item in &mut items[index..end] {
+            item.depth += 1;
+        }
+        // Under an item that's folded, it would vanish: show it.
+        if let Some(parent) = outline::parent(items, index) {
+            items[parent].folded = false;
+        }
+        let moved = outline::normalize(items);
+        self.save()?;
+        Ok(Some(moved[index]))
+    }
+
+    /// Moves a sub-item (with its own sub-items) out a level, to just after
+    /// the item it was under. Returns its new index, if it moved.
+    pub fn outdent(&mut self, day: NaiveDate, index: usize) -> io::Result<Option<usize>> {
+        let Some(items) = self.days.get_mut(&key(day)) else { return Ok(None) };
+        let Some(parent) = (index < items.len()).then(|| outline::parent(items, index)).flatten() else {
+            return Ok(None);
+        };
+        let end = outline::block_end(items, index);
+        let parent_end = outline::block_end(items, parent);
+        for item in &mut items[index..end] {
+            item.depth -= 1;
+        }
+        // Past the rest of what was under the parent, so they stay there.
+        items[index..parent_end].rotate_left(end - index);
+        let at = parent_end - (end - index);
+        let moved = outline::normalize(items);
+        self.save()?;
+        Ok(Some(moved[at]))
+    }
+
+    /// Folds or unfolds an item's sub-items.
+    pub fn set_folded(&mut self, day: NaiveDate, index: usize, folded: bool) -> io::Result<()> {
+        if let Some(item) = self.item_mut(day, index) {
+            item.folded = folded;
+        }
+        self.save()
     }
 
     /// Moves an item to its next priority: none, High, Medium, Low, none.
@@ -536,9 +649,15 @@ impl Store {
         self.conflicts.extend(conflicts);
         // Write to a temp file and rename so a crash never leaves a half-written file.
         let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, serde_json::to_string_pretty(&self.days).map_err(io::Error::other)?)?;
+        let nested: BTreeMap<&String, Vec<RawItem>> = self.days.iter().map(|(day, items)| (day, nest(items))).collect();
+        fs::write(&tmp, serde_json::to_string_pretty(&nested).map_err(io::Error::other)?)?;
         fs::rename(tmp, &self.path)
     }
+}
+
+/// Where the completed top-level items start in a day's items.
+fn boundary(items: &[Item]) -> usize {
+    items.iter().position(|item| item.depth == 0 && item.done).unwrap_or(items.len())
 }
 
 fn key(day: NaiveDate) -> String {
@@ -823,7 +942,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_reorders_within_the_open_or_completed_items() {
+    fn move_sibling_reorders_within_the_open_or_completed_items() {
         let (_dir, path) = temp_path();
         let mut store = Store::open(path.clone()).unwrap();
         for (i, text) in ["a", "b", "c", "d"].into_iter().enumerate() {
@@ -832,13 +951,14 @@ mod tests {
         store.toggle_done(today(), 3).unwrap();
         store.toggle_done(today(), 2).unwrap();
         // ["a", "b", "c" (done), "d" (done)]
-        assert!(store.swap(today(), 0, 1).unwrap());
-        assert!(store.swap(today(), 2, 3).unwrap());
+        assert_eq!(store.move_sibling(today(), 0, true).unwrap(), Some(1));
+        assert_eq!(store.move_sibling(today(), 3, false).unwrap(), Some(2));
         assert_eq!(texts(&store, today()), ["b", "a", "d", "c"]);
         // Never across the boundary, past the end, or on a day with no items.
-        assert!(!store.swap(today(), 1, 2).unwrap());
-        assert!(!store.swap(today(), 3, 4).unwrap());
-        assert!(!store.swap(day(1), 0, 1).unwrap());
+        assert_eq!(store.move_sibling(today(), 1, true).unwrap(), None);
+        assert_eq!(store.move_sibling(today(), 3, true).unwrap(), None);
+        assert_eq!(store.move_sibling(today(), 0, false).unwrap(), None);
+        assert_eq!(store.move_sibling(day(1), 0, true).unwrap(), None);
         assert_eq!(texts(&Store::open(path).unwrap(), today()), ["b", "a", "d", "c"]);
     }
 
@@ -1092,6 +1212,8 @@ mod tests {
             priority: Some(Priority::High),
             deadline: Some(Deadline { date: today(), time: None }),
             reminder: Some(Reminder::Before { amount: 2, unit: crate::reminder::Unit::Days }),
+            depth: 0,
+            folded: false,
         };
         assert_eq!(store.insert_items(today(), 9, vec![copy.clone(), copy.clone()]).unwrap(), 1);
         assert_eq!(texts(&store, today()), ["a", "copy", "copy", "b"]);
@@ -1311,5 +1433,144 @@ mod tests {
         fs::write(&path, "not json").unwrap();
         assert!(Store::open(path.clone()).is_err());
         assert_eq!(fs::read_to_string(path).unwrap(), "not json");
+    }
+
+    /// A store holding `json` as its file.
+    fn store_with(json: &str) -> (tempfile::TempDir, PathBuf, Store) {
+        let (dir, path) = temp_path();
+        fs::write(&path, json).unwrap();
+        let store = Store::open(path.clone()).unwrap();
+        (dir, path, store)
+    }
+
+    /// The items on `day` as an outline: two spaces a level, `x ` if done.
+    fn outline_of(store: &Store, day: NaiveDate) -> Vec<String> {
+        store
+            .items(day)
+            .iter()
+            .map(|item| format!("{}{}{}", "  ".repeat(item.depth), if item.done { "x " } else { "" }, item.text))
+            .collect()
+    }
+
+    const TRIP: &str = r#"{ "2026-10-05": [
+        { "text": "trip", "items": ["flights", { "text": "hotel", "items": ["compare", "book"] }] },
+        "milk"
+    ] }"#;
+
+    #[test]
+    fn sub_items_are_loaded_in_outline_order_and_saved_nested() {
+        let (_dir, path, mut store) = store_with(TRIP);
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "  hotel", "    compare", "    book", "milk"]);
+        store.set_folded(today(), 2, true).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "2026-10-05": [
+                { "text": "trip", "items": ["flights", { "text": "hotel", "folded": true, "items": ["compare", "book"] }] },
+                "milk",
+            ] })
+        );
+        // And read back the same.
+        let reopened = Store::open(path).unwrap();
+        assert_eq!(outline_of(&reopened, today()), outline_of(&store, today()));
+        assert!(reopened.items(today())[2].folded);
+    }
+
+    #[test]
+    fn completing_an_item_completes_its_sub_items_and_moves_the_block() {
+        let (_dir, _path, mut store) = store_with(TRIP);
+        store.toggle_done(today(), 0).unwrap();
+        assert_eq!(outline_of(&store, today()), ["milk", "x trip", "  x flights", "  x hotel", "    x compare", "    x book"]);
+        assert_eq!(store.open_count(today()), 1);
+        // Completing a sub-item leaves it in place, and its parent open.
+        let (_dir, _path, mut store) = store_with(TRIP);
+        store.toggle_done(today(), 2).unwrap();
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "  x hotel", "    x compare", "    x book", "milk"]);
+    }
+
+    #[test]
+    fn reopening_a_sub_item_reopens_what_its_under() {
+        let (_dir, _path, mut store) = store_with(TRIP);
+        store.toggle_done(today(), 0).unwrap();
+        // ["milk", "x trip", "  x flights", "  x hotel", "    x compare", "    x book"]
+        store.toggle_done(today(), 4).unwrap();
+        assert_eq!(outline_of(&store, today()), ["milk", "trip", "  x flights", "  hotel", "    compare", "    x book"]);
+    }
+
+    #[test]
+    fn an_open_sub_item_added_under_a_completed_item_reopens_it() {
+        let (_dir, _path, mut store) = store_with(TRIP);
+        store.toggle_done(today(), 0).unwrap();
+        let at = store.insert_at(today(), 6, vec![Item { text: "pack".into(), ..Item::default() }], 1).unwrap();
+        assert_eq!(outline_of(&store, today()), ["milk", "trip", "  x flights", "  x hotel", "    x compare", "    x book", "  pack"]);
+        assert_eq!(at, 6);
+    }
+
+    #[test]
+    fn removing_and_moving_take_the_sub_items_along() {
+        let (_dir, _path, mut store) = store_with(TRIP);
+        let removed = store.remove_many(today(), &[2, 3]).unwrap();
+        // The removed block starts at the top level, ready to paste.
+        assert_eq!(removed.iter().map(|item| (item.text.as_str(), item.depth)).collect::<Vec<_>>(), [("hotel", 0), ("compare", 1), ("book", 1)]);
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "milk"]);
+        let (_dir, _path, mut store) = store_with(TRIP);
+        assert_eq!(store.move_to(today(), 2, day(1)).unwrap(), Some(0));
+        assert_eq!(outline_of(&store, day(1)), ["hotel", "  compare", "  book"]);
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "milk"]);
+    }
+
+    #[test]
+    fn sub_items_move_among_their_siblings_with_what_is_under_them() {
+        let (_dir, _path, mut store) = store_with(TRIP);
+        assert_eq!(store.move_sibling(today(), 1, true).unwrap(), Some(4));
+        assert_eq!(outline_of(&store, today()), ["trip", "  hotel", "    compare", "    book", "  flights", "milk"]);
+        assert_eq!(store.move_sibling(today(), 4, true).unwrap(), None, "the last under trip");
+        assert_eq!(store.move_sibling(today(), 1, false).unwrap(), None, "the first under trip");
+        assert_eq!(store.move_sibling(today(), 0, true).unwrap(), Some(1));
+        assert_eq!(outline_of(&store, today()), ["milk", "trip", "  hotel", "    compare", "    book", "  flights"]);
+    }
+
+    #[test]
+    fn indenting_and_outdenting() {
+        let (_dir, _path, mut store) = store_with(TRIP);
+        // milk goes under trip, as its last sub-item.
+        assert_eq!(store.indent(today(), 5).unwrap(), Some(5));
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "  hotel", "    compare", "    book", "  milk"]);
+        // The first item, or the first under its parent, has nothing to go under.
+        assert_eq!(store.indent(today(), 0).unwrap(), None);
+        assert_eq!(store.indent(today(), 1).unwrap(), None);
+        // hotel goes under flights, taking its own sub-items.
+        assert_eq!(store.indent(today(), 2).unwrap(), Some(2));
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "    hotel", "      compare", "      book", "  milk"]);
+        // Out again goes after the rest of its parent's sub-items.
+        assert_eq!(store.outdent(today(), 2).unwrap(), Some(2));
+        assert_eq!(store.outdent(today(), 3).unwrap(), Some(4));
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "  hotel", "    book", "  compare", "  milk"]);
+        assert_eq!(store.outdent(today(), 0).unwrap(), None, "already at the top");
+    }
+
+    #[test]
+    fn indenting_under_a_folded_item_unfolds_it() {
+        let (_dir, _path, mut store) = store_with(TRIP);
+        store.set_folded(today(), 0, true).unwrap();
+        store.indent(today(), 5).unwrap();
+        assert!(!store.items(today())[0].folded);
+    }
+
+    #[test]
+    fn pinned_items_carry_over_with_their_sub_items() {
+        let (_dir, _path, mut store) = store_with(
+            r#"{ "2026-10-03": [{ "text": "trip", "pinned": true, "items": ["flights", { "text": "pinned sub", "pinned": true }] }, "stays"] }"#,
+        );
+        assert_eq!(store.carried_to(today()), [(day(-2), 0)], "only the top-level item");
+        store.roll_over(today()).unwrap();
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "  pinned sub"]);
+        assert_eq!(outline_of(&store, day(-2)), ["stays"]);
+    }
+
+    #[test]
+    fn a_completed_parent_with_open_sub_items_in_the_file_is_open() {
+        let (_dir, _path, store) = store_with(r#"{ "2026-10-05": [{ "text": "trip", "done": true, "items": ["flights"] }, "milk"] }"#);
+        assert_eq!(outline_of(&store, today()), ["trip", "  flights", "milk"]);
     }
 }

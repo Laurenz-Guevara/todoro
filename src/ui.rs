@@ -18,6 +18,7 @@ use crate::store::{Item, Priority};
 use crate::help::Help;
 use crate::keymap::{self, Command};
 use crate::leader::Leader;
+use crate::outline;
 use crate::notes::NotesEditor;
 use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, KEYS_ABOUT, KEYS_ROW, Options, TOGGLES};
 use crate::search::{self, Hit, Search};
@@ -156,9 +157,14 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .slots()
         .into_iter()
         .map(|slot| {
-            let item = &app.store.items(slot.day)[slot.index];
+            let items = app.store.items(slot.day);
+            let item = &items[slot.index];
+            let progress = outline::progress(items, slot.index);
             Row {
                 text: &item.text,
+                depth: item.depth,
+                progress: (progress.1 > 0).then_some(progress),
+                folded: item.folded,
                 priority: item.priority,
                 pinned: item.pinned,
                 deadline: item.deadline,
@@ -174,13 +180,16 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     let mut selected = (!rows.is_empty()).then_some(app.selected);
-    if let Mode::Insert { index, input, editing, .. } = &app.mode {
+    if let Mode::Insert { index, input, editing, place, .. } = &app.mode {
         let text = &input.text;
         if *editing {
             rows[*index] = Row { text, typing: true, ..rows[*index] };
         } else {
             let row = Row {
                 text,
+                depth: place.map_or(0, |place| place.depth),
+                progress: None,
+                folded: false,
                 priority: None,
                 pinned: false,
                 deadline: None,
@@ -194,14 +203,17 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         selected = Some(*index);
     }
 
-    // Open items are numbered. Completed ones follow under a header row, so
-    // their list row is one more than their item index.
-    let open = rows.iter().take_while(|row| !row.done).count();
+    // Open top-level items are numbered, their sub-items indented under
+    // them. Completed ones follow under a header row, so their list row is
+    // one more than their index.
+    let open = rows.iter().position(|row| row.depth == 0 && row.done).unwrap_or(rows.len());
     let list_row = |index: usize| if index < open { index } else { index + 1 };
     let inner = block.inner(area);
+    let numbered = rows[..open].iter().filter(|row| row.depth == 0).count();
+    let completed = rows[open..].iter().filter(|row| row.depth == 0).count();
 
     // Pad numbers so text lines up once there are 10 or more open items.
-    let width = open.max(1).to_string().len();
+    let width = numbered.max(1).to_string().len();
     // With semantic icons on, triaged items get an icon after the number, and
     // the rest leave a gap so all the text lines up.
     let icons = app.settings.semantic_icons && rows.iter().any(|row| row.priority.is_some());
@@ -211,9 +223,11 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let mut heights: Vec<usize> = Vec::with_capacity(rows.len() + 1);
     // Where the typing cursor goes within its row: (line, column).
     let mut typing_cursor = (0, 0);
+    let mut typing_lead = prefix_width;
+    let mut number = 0;
     for (i, row) in rows.iter().enumerate() {
         if i == open {
-            let title = format!("── Completed ({}) ", rows.len() - open);
+            let title = format!("── Completed ({completed}) ");
             let fill = (inner.width as usize).saturating_sub(title.chars().count());
             items.push(ListItem::new(format!("{title}{}", "─".repeat(fill)).dark_gray()));
             heights.push(1);
@@ -222,13 +236,28 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         // A triaged item's number takes its priority's colour, selected or
         // not, so triaging shows the colour straight away; the row's highlight
         // shows which is selected.
-        let (prefix, prefix_style, text_style) = if row.done {
-            let crossed = Style::new().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT);
-            (format!("{:>width$}  ", "✓"), Style::new().fg(Color::DarkGray), crossed)
-        } else {
-            let number_style = row.priority.map_or(Style::new().fg(Color::DarkGray), priority_style);
-            (format!("{:>width$}. ", i + 1), number_style, Style::new())
+        // A sub-item has a bullet in place of a number, two columns further
+        // in for each level, so its text lines up under its parent's.
+        let crossed = Style::new().fg(Color::DarkGray).add_modifier(Modifier::CROSSED_OUT);
+        let number_style = row.priority.map_or(Style::new().fg(Color::DarkGray), priority_style);
+        let lead_width = prefix_width + 2 * row.depth;
+        let (prefix, prefix_style, text_style) = match (row.depth, row.done) {
+            (0, true) => (format!("{:>width$}  ", "✓"), Style::new().fg(Color::DarkGray), crossed),
+            (0, false) => {
+                number += 1;
+                (format!("{number:>width$}. "), number_style, Style::new())
+            }
+            (depth, done) => {
+                let bullet = if done { SUB_DONE } else { SUB_OPEN };
+                let style = if done { Style::new().fg(Color::DarkGray) } else { number_style };
+                (format!("{}{bullet} ", " ".repeat(prefix_width + 2 * (depth - 1))), style, if done { crossed } else { Style::new() })
+            }
         };
+        // How many of its sub-items are done, and a ▸ when they're folded away.
+        let progress = row.progress.map(|(done, total)| {
+            let fold = if row.folded { format!(" {FOLDED_MARKER}") } else { String::new() };
+            Span::styled(format!("{fold} {done}/{total}"), Style::new().fg(Color::DarkGray))
+        });
 
         // A deadline takes the pin's place, with when it's due.
         let deadline = row.deadline.map(|deadline| {
@@ -270,11 +299,13 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         let markers = [(pinned, PINNED_MARKER.width()), (row.has_notes, NOTES_MARKER.width())];
         let markers_width: usize = markers.iter().filter(|(shown, _)| *shown).map(|(_, width)| width).sum::<usize>()
             + deadline.as_ref().map_or(0, Span::width)
-            + reminder.as_ref().map_or(0, Span::width);
-        let text_width = (inner.width as usize).saturating_sub(prefix_width + markers_width).max(1);
+            + reminder.as_ref().map_or(0, Span::width)
+            + progress.as_ref().map_or(0, Span::width);
+        let text_width = (inner.width as usize).saturating_sub(lead_width + markers_width).max(1);
         let ranges = wrap_ranges(row.text, text_width);
         if let (true, Mode::Insert { input, .. }) = (row.typing, &app.mode) {
             typing_cursor = cursor_position(row.text, &ranges, input.cursor, text_width);
+            typing_lead = lead_width;
         }
 
         let mut lines: Vec<Line> = ranges
@@ -284,9 +315,9 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                 let mut spans = if n == 0 {
                     vec![Span::styled(prefix.clone(), prefix_style)]
                 } else {
-                    vec![Span::raw(" ".repeat(prefix_width))]
+                    vec![Span::raw(" ".repeat(lead_width))]
                 };
-                if n == 0 && icons {
+                if n == 0 && icons && row.depth == 0 {
                     spans.push(match row.priority {
                         Some(priority) if row.done => Span::styled(format!("{} ", priority_icon(priority)), Style::new().fg(Color::DarkGray)),
                         Some(priority) => Span::styled(format!("{} ", priority_icon(priority)), priority_style(priority)),
@@ -303,6 +334,9 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             })
             .collect();
         let last = lines.last_mut().expect("wrap_ranges returns at least one line");
+        if let Some(progress) = progress {
+            last.push_span(progress);
+        }
         if pinned {
             last.push_span(PINNED_MARKER.fg(Color::Cyan));
         }
@@ -351,7 +385,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     if let Mode::Insert { index, .. } = &app.mode {
         let (line, col) = typing_cursor;
         let row: usize = heights[state.offset()..list_row(*index)].iter().sum::<usize>() + line;
-        let cursor = Position::new(inner.x + (prefix_width + col) as u16, inner.y + row as u16);
+        let cursor = Position::new(inner.x + (typing_lead + col) as u16, inner.y + row as u16);
         frame.set_cursor_position(cursor);
         draw_tag_suggestions(frame, app, cursor);
     }
@@ -409,6 +443,11 @@ struct Row<'a> {
     pinned: bool,
     deadline: Option<Deadline>,
     reminder: Option<RowReminder>,
+    /// How deep a sub-item it is, 0 for a top-level item.
+    depth: usize,
+    /// How many of its direct sub-items are done, of how many, if it has any.
+    progress: Option<(usize, usize)>,
+    folded: bool,
     has_notes: bool,
     done: bool,
     /// The item being added or edited.
@@ -443,6 +482,13 @@ fn priority_style(priority: Priority) -> Style {
     })
 }
 
+/// The bullet of an open sub-item, and of a completed one.
+const SUB_OPEN: &str = "↳";
+const SUB_DONE: &str = "✓";
+
+/// Shown before the progress of an item whose sub-items are folded away.
+const FOLDED_MARKER: &str = "▸";
+
 /// Shown after an item on the main list when it has notes.
 const NOTES_MARKER: &str = " ≡";
 
@@ -457,7 +503,7 @@ const DEADLINE_MARKER: &str = " ◷ ";
 
 fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     let room = (area.width as usize).saturating_sub(4);
-    let title = format!("{}. {}", app.selected + 1, app.items()[app.selected].text);
+    let title = format!("{}{}", row_label(app, app.selected), app.items()[app.selected].text);
     let title = format!(" {} ", truncate(&title, room.saturating_sub(2)));
     let hint = fit_first(&[" esc/q back to list ", " esc back "], area.width.saturating_sub(2) as usize);
     let block = Block::bordered()
@@ -482,7 +528,7 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
 fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
     let room = (area.width as usize).saturating_sub(4);
     let item = app.items()[app.selected];
-    let title = format!("{}. {}", app.selected + 1, item.text);
+    let title = format!("{}{}", row_label(app, app.selected), item.text);
     let title = format!(" {} ", truncate(&title, room.saturating_sub(2)));
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -780,7 +826,7 @@ fn draw_confirm(frame: &mut Frame, app: &App, rows: &[usize]) {
     let mut body: Vec<Line> = Vec::new();
     for (n, &row) in rows.iter().enumerate() {
         let Some(item) = items.get(row) else { continue };
-        let prefix = if item.done { "✓  ".to_string() } else { format!("{}. ", row + 1) };
+        let prefix = row_label(app, row);
         let text_width = (width as usize).saturating_sub(2 + prefix.width()).max(1);
         let room = max_lines.saturating_sub(body.len());
         if room == 0 || (room == 1 && n + 1 < rows.len()) {
@@ -790,6 +836,15 @@ fn draw_confirm(frame: &mut Frame, app: &App, rows: &[usize]) {
         let indent = " ".repeat(prefix.width());
         for (i, line) in wrap(&item.text, text_width, room).into_iter().enumerate() {
             body.push(Line::from(format!("{}{line}", if i == 0 { &prefix } else { &indent })));
+        }
+        // What goes with it, so deleting a parent isn't a surprise.
+        let under = app.slots().get(row).map_or(0, |slot| {
+            let items = app.store.items(slot.day);
+            outline::block_end(items, slot.index) - slot.index - 1
+        });
+        if under > 0 && body.len() < max_lines {
+            let s = if under == 1 { "" } else { "s" };
+            body.push(Line::from(format!("{indent}and its {under} sub-item{s}")).dim());
         }
     }
     body.push(Line::default());
@@ -805,6 +860,19 @@ fn draw_confirm(frame: &mut Frame, app: &App, rows: &[usize]) {
         .title(title.bold());
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(body).block(block), area);
+}
+
+/// How the row is labelled on the list, to name it elsewhere: its number,
+/// `✓` if completed, or a bullet for a sub-item.
+fn row_label(app: &App, row: usize) -> String {
+    let items = app.items();
+    let Some(item) = items.get(row) else { return String::new() };
+    match (item.depth, item.done) {
+        (0, true) => "✓  ".into(),
+        (0, false) => format!("{}. ", items[..=row].iter().filter(|item| item.depth == 0).count()),
+        (_, true) => format!("{SUB_DONE} "),
+        (_, false) => format!("{SUB_OPEN} "),
+    }
 }
 
 /// Splits `text` into lines of at most `width` columns, breaking after spaces
@@ -1006,6 +1074,12 @@ fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) 
     }
 }
 
+/// A day's top-level items: the calendar leaves sub-items out, to keep
+/// each day short.
+fn top_level(app: &App, day: NaiveDate) -> Vec<&Item> {
+    app.store.items(day).iter().filter(|item| item.depth == 0).collect()
+}
+
 /// The days of the selected week, top to bottom, each with its items.
 fn draw_week(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
     let start = calendar::week_start(calendar.cursor);
@@ -1013,7 +1087,7 @@ fn draw_week(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
     let width = area.width as usize;
     let height = area.height as usize;
     // Show every item if they fit; otherwise give each day an equal share.
-    let needed: usize = days.iter().map(|day| 1 + app.store.items(*day).len()).sum();
+    let needed: usize = days.iter().map(|day| 1 + top_level(app, *day).len()).sum();
     let share = if needed <= height { usize::MAX } else { (height / 7).max(1) };
 
     let mut lines = Vec::new();
@@ -1022,7 +1096,7 @@ fn draw_week(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
         if day == calendar.today {
             header.push(" (today)".fg(Color::Green));
         }
-        let items = app.store.items(day);
+        let items = top_level(app, day);
         let room = share - 1;
         // With no room under the date, count the items beside it instead.
         if room == 0 && !items.is_empty() {
@@ -1089,7 +1163,7 @@ fn draw_month(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
 }
 
 fn draw_month_day(frame: &mut Frame, app: &App, calendar: &Calendar, day: NaiveDate, rect: Rect) {
-    let items = app.store.items(day);
+    let items = top_level(app, day);
     let in_month = day.month() == calendar.cursor.month();
     let mut number = Span::raw(format!("{:>2}", day.day()));
     if day == calendar.today {
@@ -2215,6 +2289,50 @@ mod tests {
         assert_eq!(buffer[(18, 7)].bg, SELECTED_BG);
         assert_ne!(buffer[(18, 6)].bg, SELECTED_BG);
         assert_snapshot!("tag_suggestions_at_30_columns", render_sized(&app, 30, 12).backend());
+    }
+
+    /// A list with sub-items: "Plan the trip" with three, one done and
+    /// one with its own, folded; and "Buy milk".
+    fn sub_items_app() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(&["Plan the trip", "Buy milk"]);
+        type_str(&mut app, "oBook flights");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "ACompare hotels near the old town and the station");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Pack");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "kocheck reviews");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "kzc");
+        type_str(&mut app, "ggjx");
+        (app, dir)
+    }
+
+    #[test]
+    fn sub_items_on_the_list() {
+        let (app, _dir) = sub_items_app();
+        assert_snapshot!(render_sized(&app, 50, 10).backend());
+        assert_snapshot!("sub_items_at_30_columns", render_sized(&app, 30, 12).backend());
+    }
+
+    #[test]
+    fn deleting_an_item_says_its_sub_items_go_too() {
+        let (mut app, _dir) = sub_items_app();
+        type_str(&mut app, "ggd");
+        assert_snapshot!(render_sized(&app, 50, 12).backend());
+    }
+
+    #[test]
+    fn typing_a_sub_item() {
+        let (mut app, _dir) = sub_items_app();
+        type_str(&mut app, "Gowhole milk");
+        let mut terminal = render_sized(&app, 50, 10);
+        assert_snapshot!(terminal.backend());
+        // The cursor is after the text, indented under its parent.
+        let cursor = terminal.get_cursor_position().unwrap();
+        let row: String = (0..50).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
+        assert!(row.contains("↳ whole milk"), "{row}");
+        assert_eq!(cursor.x, 1 + 3 + 2 + "whole milk".len() as u16);
     }
 
     #[test]

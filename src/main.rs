@@ -11,6 +11,7 @@ mod markdown;
 mod notes;
 mod notes_files;
 mod options;
+mod outline;
 mod reminder;
 mod search;
 mod setup;
@@ -28,7 +29,10 @@ use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
-use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{self, EnterAlternateScreen};
 
@@ -61,6 +65,12 @@ fn main() -> io::Result<()> {
     // Have pasted text arrive in one piece rather than as typed keys. Old
     // Windows consoles can't, and then pasting works as typing, as before.
     let _ = execute!(io::stdout(), EnableBracketedPaste);
+    // Ask for keys the plain terminal protocol can't tell apart, like
+    // Shift+Enter, where the terminal can (kitty's keyboard protocol).
+    // Windows reports them anyway.
+    let enhanced = terminal::supports_keyboard_enhancement().unwrap_or(false);
+    ENHANCED_KEYS.store(enhanced, std::sync::atomic::Ordering::Relaxed);
+    enhance_keys(true);
     let result = (|| loop {
         let Some((store, workspace)) = open(&mut terminal, &mut settings, settings_path.as_ref())? else {
             return Ok(());
@@ -85,9 +95,34 @@ fn main() -> io::Result<()> {
         // the reset deleted.
         settings = Settings::load(settings_path.as_ref(), no_color);
     })();
+    enhance_keys(false);
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
+}
+
+/// Whether the terminal reports keys like Shift+Enter apart, once asked.
+static ENHANCED_KEYS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Asks the terminal to report keys like Shift+Enter apart (`on`), or to go
+/// back to how it was. Terminals with kitty's keyboard protocol get that;
+/// every terminal also gets xterm's `modifyOtherKeys`, which is what tmux
+/// listens for with `extended-keys` on (and which others ignore if they
+/// don't know it).
+fn enhance_keys(on: bool) {
+    use std::io::Write;
+    let mut out = io::stdout();
+    if ENHANCED_KEYS.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = if on {
+            execute!(out, PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES))
+        } else {
+            execute!(out, PopKeyboardEnhancementFlags)
+        };
+    }
+    if cfg!(not(windows)) {
+        let _ = out.write_all(if on { b"\x1b[>4;1m" } else { b"\x1b[>4;0m" });
+        let _ = out.flush();
+    }
 }
 
 /// The todos opened at startup, and the workspace they're in (`None` when
@@ -180,12 +215,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
 /// Hands the terminal to the user's editor to edit `path`, and takes it back
 /// once the editor closes.
 fn edit_in(terminal: &mut ratatui::DefaultTerminal, command: &str, path: &Path) -> io::Result<ExitStatus> {
+    enhance_keys(false);
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     let status = editor_command(command, path).status();
     terminal::enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let _ = execute!(io::stdout(), EnableBracketedPaste);
+    enhance_keys(true);
     terminal.clear()?;
     status
 }

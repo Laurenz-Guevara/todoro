@@ -38,6 +38,13 @@ pub enum Command {
     MoveToNextDay,
     Add,
     AddSeveral,
+    AddSub,
+    AddSubs,
+    Indent,
+    Outdent,
+    FoldToggle,
+    Fold,
+    Unfold,
     Edit,
     EditCleared,
     ToggleDone,
@@ -88,6 +95,13 @@ const COMMANDS: &[(Command, &str, &str, &str)] = &[
     (Command::MoveToNextDay, "move-to-next-day", "move to next day", "Move the item to the next day"),
     (Command::Add, "add", "add", "Add an item below the cursor"),
     (Command::AddSeveral, "add-several", "add several", "Add several items, one after another"),
+    (Command::AddSub, "add-sub", "add sub-item", "Add a sub-item under the selected item"),
+    (Command::AddSubs, "add-several-subs", "add sub-items", "Add several sub-items under it, one after another"),
+    (Command::Indent, "indent", "indent", "Make the item a sub-item of the one above it"),
+    (Command::Outdent, "outdent", "outdent", "Move a sub-item out a level"),
+    (Command::FoldToggle, "fold-toggle", "fold / unfold", "Fold or unfold the item's sub-items"),
+    (Command::Fold, "fold", "fold", "Fold the item's sub-items away"),
+    (Command::Unfold, "unfold", "unfold", "Unfold the item's sub-items"),
     (Command::Edit, "edit", "edit", "Edit the selected item, cursor at the end"),
     (Command::EditCleared, "edit-cleared", "edit cleared", "Edit it with the text cleared"),
     (Command::ToggleDone, "toggle-done", "done", "Mark the selected item done / not done"),
@@ -151,12 +165,15 @@ impl Command {
     }
 }
 
-/// One key press: a key, and whether `Ctrl` was held. `Shift` is in the
-/// character itself (`G`, `@`).
+/// One key press: a key, and whether `Ctrl` was held, and `Shift` for keys
+/// that aren't characters (`Shift+Enter`). A character's `Shift` is in the
+/// character itself (`G`, `@`). Terminals tell `Shift+Enter` from `Enter`
+/// only with the keyboard protocol `main` asks for, where they have it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Key {
     pub code: KeyCode,
     pub ctrl: bool,
+    pub shift: bool,
 }
 
 /// Keys with names, as written in `keys.toml` (ignoring case) and as shown.
@@ -183,11 +200,16 @@ const NAMED: &[(&str, KeyCode, &str)] = &[
 
 impl Key {
     pub fn char(c: char) -> Self {
-        Self { code: KeyCode::Char(c), ctrl: false }
+        Self { code: KeyCode::Char(c), ctrl: false, shift: false }
+    }
+
+    fn new(code: KeyCode, ctrl: bool, shift: bool) -> Self {
+        Self { code, ctrl, shift: shift && !matches!(code, KeyCode::Char(_)) }
     }
 
     pub fn from_event(event: KeyEvent) -> Self {
-        Self { code: event.code, ctrl: event.modifiers.contains(KeyModifiers::CONTROL) }
+        let shift = event.modifiers.contains(KeyModifiers::SHIFT);
+        Self::new(event.code, event.modifiers.contains(KeyModifiers::CONTROL), shift)
     }
 
     /// How it's shown: `x`, `Space`, `Enter`, `Ctrl+R`, `←`.
@@ -204,17 +226,19 @@ impl Key {
                     _ => "?".into(),
                 }),
         };
-        if self.ctrl { format!("Ctrl+{base}") } else { base }
+        let shift = if self.shift { "Shift+" } else { "" };
+        if self.ctrl { format!("Ctrl+{shift}{base}") } else { format!("{shift}{base}") }
     }
 
-    /// How it's written in `keys.toml`: `x`, `space`, `ctrl+r`.
+    /// How it's written in `keys.toml`: `x`, `space`, `ctrl+r`, `shift+enter`.
     fn written(self) -> String {
         let base = match self.code {
             KeyCode::Char(c) if c != ' ' => c.to_string(),
             KeyCode::F(n) => format!("f{n}"),
             code => NAMED.iter().find(|(_, named, _)| *named == code).map_or("?", |(name, _, _)| name).to_string(),
         };
-        if self.ctrl { format!("ctrl+{base}") } else { base }
+        let shift = if self.shift { "shift+" } else { "" };
+        if self.ctrl { format!("ctrl+{shift}{base}") } else { format!("{shift}{base}") }
     }
 
     fn is_plain_char(self) -> bool {
@@ -224,26 +248,35 @@ impl Key {
 
 /// Reads keys as written in `keys.toml`: separated by spaces, each a single
 /// character (`x`, `G`, `@`), a name (`space`, `enter`, `up`, `f5`), or
-/// `ctrl+` and either. A word that isn't a name is one key per character,
-/// so `gg` is `g` then `g`.
+/// `ctrl+` and either, or `shift+` and a name (`shift+enter`). A word that
+/// isn't a name is one key per character, so `gg` is `g` then `g`.
 pub fn parse_keys(text: &str) -> Result<Vec<Key>, String> {
     let mut keys = Vec::new();
     for word in text.split_whitespace() {
-        let (ctrl, rest) = match word.to_lowercase().strip_prefix("ctrl+") {
-            Some(_) if word.len() > 5 => (true, &word[5..]),
-            _ => (false, word),
-        };
+        let (mut ctrl, mut shift, mut rest) = (false, false, word);
+        loop {
+            let lower = rest.to_lowercase();
+            if lower.starts_with("ctrl+") && rest.len() > 5 {
+                (ctrl, rest) = (true, &rest[5..]);
+            } else if lower.starts_with("shift+") && rest.len() > 6 {
+                (shift, rest) = (true, &rest[6..]);
+            } else {
+                break;
+            }
+        }
         let lower = rest.to_lowercase();
         let named = NAMED.iter().find(|(name, _, _)| *name == lower).map(|(_, code, _)| *code);
         let function = lower.strip_prefix('f').and_then(|n| n.parse::<u8>().ok()).filter(|n| (1..=12).contains(n));
-        if let Some(code) = named {
-            keys.push(Key { code, ctrl });
+        if let Some(code) = named.filter(|code| !(shift && *code == KeyCode::Char(' '))) {
+            keys.push(Key::new(code, ctrl, shift));
         } else if let Some(n) = function {
-            keys.push(Key { code: KeyCode::F(n), ctrl });
+            keys.push(Key::new(KeyCode::F(n), ctrl, shift));
+        } else if shift {
+            return Err(format!("\"{word}\" isn't a key: shift+ goes with a named key, like shift+enter; write a capital for a letter"));
         } else if ctrl {
             let mut chars = rest.chars();
             match (chars.next(), chars.next()) {
-                (Some(c), None) => keys.push(Key { code: KeyCode::Char(c.to_ascii_lowercase()), ctrl }),
+                (Some(c), None) => keys.push(Key::new(KeyCode::Char(c.to_ascii_lowercase()), ctrl, false)),
                 _ => return Err(format!("\"{word}\" isn't a key: ctrl+ takes one key, like ctrl+r")),
             }
         } else {
@@ -335,6 +368,14 @@ const DEFAULT_LIST: &[(&str, Command)] = &[
     ("L", Command::MoveToNextDay),
     ("a", Command::Add),
     ("A", Command::AddSeveral),
+    ("o", Command::AddSub),
+    ("O", Command::AddSubs),
+    (">", Command::Indent),
+    ("<", Command::Outdent),
+    ("z a", Command::FoldToggle),
+    ("shift+enter", Command::FoldToggle),
+    ("z c", Command::Fold),
+    ("z o", Command::Unfold),
     ("e", Command::Edit),
     ("E", Command::EditCleared),
     ("x", Command::ToggleDone),
@@ -420,7 +461,7 @@ fn bind(table: &mut Vec<Binding>, set: &mut Vec<Vec<Key>>, keys: Vec<Key>, comma
 
 /// The key todoro always keeps: `Ctrl+C` quits from anywhere.
 fn reserved(keys: &[Key]) -> Option<&'static str> {
-    if keys.first() == Some(&Key { code: KeyCode::Char('c'), ctrl: true }) {
+    if keys.first() == Some(&Key { code: KeyCode::Char('c'), ctrl: true, shift: false }) {
         return Some("Ctrl+C always quits");
     }
     None
@@ -493,7 +534,7 @@ impl Keymap {
         if let Some(reason) = reserved(&keys) {
             return Err(reason.into());
         }
-        if let Some(Key { code: KeyCode::Char(c @ '0'..='9'), ctrl: false }) = keys.first() {
+        if let Some(Key { code: KeyCode::Char(c @ '0'..='9'), ctrl: false, .. }) = keys.first() {
             return Err(format!("{c} is for counts, like 4j"));
         }
         let command = command_value(value)?;
@@ -575,7 +616,7 @@ pub fn starter_file() -> String {
          #\n\
          # Keys: a character (x, G, @), a name (space, enter, tab, up, down, left,\n\
          # right, home, end, pageup, pagedown, backspace, delete, esc, f1-f12),\n\
-         # or ctrl+ and one of those (ctrl+r). Separate a sequence with spaces\n\
+         # ctrl+ and one of those (ctrl+r), or shift+ and a name (shift+enter). Separate a sequence with spaces\n\
          # (\"g g\", \"s n\"). \"none\" frees a key: \"x\" = \"none\".\n\
          # Every command works on the list and in the leader menu.\n\
          # Digits are for counts (4j), and Ctrl+C always quits.\n\
@@ -637,7 +678,7 @@ mod tests {
     }
 
     fn ctrl(c: char) -> Key {
-        Key { code: KeyCode::Char(c), ctrl: true }
+        Key { code: KeyCode::Char(c), ctrl: true, shift: false }
     }
 
     #[test]
@@ -650,13 +691,16 @@ mod tests {
         assert_eq!(keys("Space s g"), [Key::char(' '), Key::char('s'), Key::char('g')]);
         assert_eq!(keys("ctrl+r"), [ctrl('r')]);
         assert_eq!(keys("Ctrl+R"), [ctrl('r')]);
-        assert_eq!(keys("enter"), [Key { code: KeyCode::Enter, ctrl: false }]);
-        assert_eq!(keys("up"), [Key { code: KeyCode::Up, ctrl: false }]);
-        assert_eq!(keys("f5"), [Key { code: KeyCode::F(5), ctrl: false }]);
-        assert_eq!(keys("ctrl+up"), [Key { code: KeyCode::Up, ctrl: true }]);
+        assert_eq!(keys("enter"), [Key::new(KeyCode::Enter, false, false)]);
+        assert_eq!(keys("up"), [Key::new(KeyCode::Up, false, false)]);
+        assert_eq!(keys("f5"), [Key::new(KeyCode::F(5), false, false)]);
+        assert_eq!(keys("ctrl+up"), [Key::new(KeyCode::Up, true, false)]);
+        assert_eq!(keys("shift+enter"), [Key::new(KeyCode::Enter, false, true)]);
+        assert_eq!(keys("Shift+Tab"), [Key::new(KeyCode::Tab, false, true)]);
+        assert_eq!(keys("ctrl+shift+up"), [Key::new(KeyCode::Up, true, true)]);
         assert_eq!(keys("@"), [Key::char('@')]);
         assert_eq!(keys("é"), [Key::char('é')]);
-        for broken in ["", "   ", "ctrl+ab"] {
+        for broken in ["", "   ", "ctrl+ab", "shift+x", "shift+space"] {
             assert!(parse_keys(broken).is_err(), "{broken:?}");
         }
     }
@@ -668,6 +712,7 @@ mod tests {
         assert_eq!(show_keys(&keys("space")), "Space");
         assert_eq!(show_keys(&keys("enter")), "Enter");
         assert_eq!(show_keys(&keys("left")), "←");
+        assert_eq!(show_keys(&keys("shift+enter")), "Shift+Enter");
         assert_eq!(show_spaced(&keys("s g")), "s g");
         assert_eq!(show_spaced(&keys("space")), "Space");
     }

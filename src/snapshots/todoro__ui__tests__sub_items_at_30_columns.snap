@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 30, 12).backend()"
+---
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1. Plan the trip 1/3        │"
+"│   ✓ Book flights           │"
+"│   ↳ Compare hotels         │"
+"│     near the old town      │"
+"│     and the station ▸ 0/1  │"
+"│   ↳ Pack                   │"
+"│2. Buy milk                 │"
+"│                            │"
+"│                            │"
+"╰──── h/l day · j/k move ────╯"
+" NORMAL   a add  ? help       "

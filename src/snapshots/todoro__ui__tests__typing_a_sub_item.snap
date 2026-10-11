@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭──────── Monday, October 5 2026 (today) ────────╮"
+"│1. Plan the trip 1/3                            │"
+"│   ✓ Book flights                               │"
+"│   ↳ Compare hotels near the old town and       │"
+"│     the station ▸ 0/1                          │"
+"│   ↳ Pack                                       │"
+"│2. Buy milk                                     │"
+"│   ↳ whole milk                                 │"
+"╰──────── h ← day · k ↑ · j ↓ · day → l ─────────╯"
+" INSERT   ←/→ move  enter/esc save                "

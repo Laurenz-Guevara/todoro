@@ -388,7 +388,7 @@ mod tests {
     #[test]
     fn single_key_search_is_case_sensitive() {
         assert_eq!(found("G"), ["List: G", "Notes: gg / G", "Viewing notes (v): gg / G", "Search: j / k, gg / G"]);
-        assert_eq!(found("O"), ["Notes: o / O"]);
+        assert_eq!(found("O"), ["List: O", "Notes: o / O"]);
         assert!(found("g").contains(&"Notes: gg / G".to_string()));
         assert!(!found("A").contains(&"List: a".to_string()));
     }

@@ -64,10 +64,15 @@ These are the default keys. You can change any of them, and the leader menu's, i
 | `gg` / `G` | Jump to the first / last item |
 | `4j` / `4k` | Move 4 items down / up (any number works) |
 | `42G` / `:42` | Go to item 42 |
-| `J` / `K` | Move the selected item down / up the list |
+| `J` / `K` | Move the selected item down / up the list (a sub-item among the others under its parent) |
 | `H` / `L` | Move the selected item to the previous / next day, and go with it |
 | `a` | Add an item below the cursor |
 | `A` | Add several items: `Enter` adds each one and starts the next, `Esc` stops |
+| `o` | Add a sub-item under the selected item |
+| `O` | Add several sub-items under it, like `A`: `Enter` adds each one and starts the next, `Esc` stops |
+| `>` / `<` | Make the item a sub-item of the one above it / move it back out a level |
+| `za` / `Shift+Enter` | Fold or unfold the item's sub-items |
+| `zc` / `zo` | Fold / unfold them |
 | `e` | Edit the selected item, with the cursor at the end |
 | `E` | Edit the selected item with its text cleared, to write it again (leaving it empty keeps it as it was) |
 | `x` | Mark the selected item done, or not done again |
@@ -117,6 +122,26 @@ Pinned items are marked with `⚲` and items that have notes with `≡`. A triag
 | `y` | Copy them, to paste with `p` |
 | `H` / `L` | Move them to the previous / next day, and go with them |
 | `Esc` / `V` | Stop selecting |
+
+### Sub-items
+
+Any item can have sub-items, and those can have their own, as deep as you like:
+
+```
+1. Plan the trip 1/3
+   ✓ Book flights
+   ↳ Hotel ▸ 0/2
+   ↳ Pack
+2. Buy milk
+```
+
+`o` adds a sub-item under the selected item, and `O` adds several, one after another, as `A` does. Or add an item as usual and press `>` to make it a sub-item of the one above it; `<` moves it back out a level, after the rest of what was under its parent. `a` adds below the selected item and everything under it, at its level, and `A` keeps adding there.
+
+A parent shows how many of its sub-items are done, like `1/3`. `x` on it completes it and everything under it, and `x` again reopens them all. Completing sub-items one by one leaves the parent open; reopening one reopens everything it's under.
+
+`za` (or `Shift+Enter`) folds an item's sub-items away, and again unfolds them; `zc` folds and `zo` unfolds. `Shift+Enter` needs a terminal that tells it apart from `Enter`: kitty, Ghostty, WezTerm, foot, Alacritty, recent iTerm2, and Windows Terminal do; elsewhere it's the same as `Enter`, and `za` always works. In tmux, turn on `extended-keys` and tell tmux your terminal has them, like `set -ag terminal-features "xterm-256color:extkeys"` for Alacritty. A folded item shows `▸`. On a sub-item with nothing under it, `za` and `zc` fold the item it's under. Searching finds sub-items too, and going to one unfolds what hides it.
+
+Sub-items go where the item they're under goes: moving, pinning, carrying over, copying or deleting an item takes them along, and `J` / `K` move a sub-item among the others under the same item. You can give a sub-item a priority, notes, a deadline or a reminder; only the top-level item decides which days they show on, and the calendar lists top-level items only.
 
 ### Completed items
 
@@ -344,7 +369,7 @@ leader = ","
 "s" = "+search"          # names the group shown after leader s
 ```
 
-- **Keys** are a character (`x`, `G`, `@`), a name (`space`, `enter`, `tab`, `backspace`, `delete`, `esc`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `f1` to `f12`), or `ctrl+` and one of those, like `ctrl+r`. Separate a sequence with spaces: `"g g"`, `"s n"`.
+- **Keys** are a character (`x`, `G`, `@`), a name (`space`, `enter`, `tab`, `backspace`, `delete`, `esc`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `f1` to `f12`), `ctrl+` and one of those, like `ctrl+r`, or `shift+` and a name, like `shift+enter` (for a letter, write the capital). Separate a sequence with spaces: `"g g"`, `"s n"`.
 - **A new key adds to the old ones**: with `"ctrl+d" = "delete"`, `d` still deletes too. To move a command, also set its old key to `"none"`.
 - **A key you set replaces any default it clashes with.** Binding `"g"` frees `gg` and `go`, since `g` would always run first. Two of your own keys that clash are reported, and the second is skipped.
 - **Every command works in both places**, so you can put `toggle-done` in the leader menu or `calendar` on a key of its own.
@@ -370,6 +395,13 @@ The help (`?`) shows each key with its command's name in grey. These are all the
 | `move-to-next-day` | Move the item to the next day |
 | `add` | Add an item below the cursor |
 | `add-several` | Add several items, one after another |
+| `add-sub` | Add a sub-item under the selected item |
+| `add-several-subs` | Add several sub-items under it, one after another |
+| `indent` | Make the item a sub-item of the one above it |
+| `outdent` | Move a sub-item out a level |
+| `fold-toggle` | Fold or unfold the item's sub-items |
+| `fold` | Fold the item's sub-items away |
+| `unfold` | Unfold the item's sub-items |
 | `edit` | Edit the selected item, cursor at the end |
 | `edit-cleared` | Edit it with the text cleared |
 | `toggle-done` | Mark the selected item done / not done |
@@ -422,7 +454,7 @@ If you used todoro before it had this folder, your existing todos move into your
 
 To keep everything somewhere else later, open the options (`Space` `o`), select **Todoro folder** under **Data** and press `Enter`, then type the new folder. todoro moves every workspace there. If the new folder already has a workspace with the same name, it moves nothing and tells you.
 
-Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes_file": "....md", "done": true, "pinned": true, "priority": "high" }`.
+Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes_file": "....md", "done": true, "pinned": true, "priority": "high" }`. An item's sub-items are in its `"items"`, written the same way, and `"folded": true` keeps them folded.
 
 If a folder is synced between machines, don't have todoro open on two of them at once: the last one to save wins.
 

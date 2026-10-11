@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 50, 10).backend()"
+---
+"╭──────── Monday, October 5 2026 (today) ────────╮"
+"│1. Plan the trip 1/3                            │"
+"│   ✓ Book flights                               │"
+"│   ↳ Compare hotels near the old town and       │"
+"│     the station ▸ 0/1                          │"
+"│   ↳ Pack                                       │"
+"│2. Buy milk                                     │"
+"│                                                │"
+"╰──────── h ← day · k ↑ · j ↓ · day → l ─────────╯"
+" NORMAL   a add  e edit  x done  d delete  ? help "
