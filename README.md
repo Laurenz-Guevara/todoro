@@ -88,6 +88,7 @@ todoro --help
 | `Space` `s` `r` | List every open item with a reminder, soonest first |
 | `Space` `s` `t` | List your tags, to show every item with one |
 | `Space` `s` `o` | Search the options |
+| `Space` `s` `k` | Search the keybindings: the same help as `?` |
 | `Space` `c` | Open the calendar |
 | `Space` `o` | Options: accessibility, your own notes editor, the todoro folder |
 | `Space` `w` | Workspaces: switch, create or delete |

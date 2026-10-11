@@ -814,6 +814,8 @@ impl App {
                 _ => self.message = Some("Workspaces are off while TODORO_FILE is set.".into()),
             },
             Command::WhatsNew => self.mode = Mode::Changelog(ChangelogView::all()),
+            // The same as ?, for those who look for it in the menu.
+            Command::Keybindings => self.open_help(),
         }
         Ok(())
     }
@@ -2338,6 +2340,7 @@ mod tests {
             (" o", "options"),
             (" w", "workspaces"),
             (" n", "changelog"),
+            (" sk", "help"),
         ] {
             app.mode = Mode::Normal;
             type_str(&mut app, keys);
@@ -2348,6 +2351,7 @@ mod tests {
                 Mode::Options(_) => "options",
                 Mode::Workspaces(_) => "workspaces",
                 Mode::Changelog(_) => "changelog",
+                Mode::Help { .. } => "help",
                 _ => "something else",
             };
             assert_eq!(mode, opened, "{keys:?}");
@@ -4231,5 +4235,18 @@ mod tests {
         press(&mut app, KeyCode::Tab);
         let Mode::Calendar(calendar) = &app.mode else { panic!("the calendar") };
         assert_eq!(calendar.adding.as_ref().unwrap().text, "#later");
+    }
+
+    #[test]
+    fn space_s_k_shows_the_help_and_esc_comes_back_to_the_list() {
+        let (mut app, _dir) = app_with(&["one"]);
+        type_str(&mut app, " sk");
+        let Mode::Help { back, .. } = &app.mode else { panic!("the help") };
+        assert!(matches!(**back, Mode::Normal));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        // ? still does the same.
+        type_str(&mut app, "?");
+        assert!(matches!(app.mode, Mode::Help { .. }));
     }
 }

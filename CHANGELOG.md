@@ -6,7 +6,7 @@ All notable changes to todoro. Each release's section is also shown on its GitHu
 
 ### Breaking
 
-- Less frequent commands have moved behind `Space`, which opens a menu of them that narrows down as you type, like which-key in Neovim: `Space` `s` `g` searches notes, `Space` `c` opens the calendar, `Space` `s` `t` lists tags (was `#`), `Space` `o` the options, `Space` `w` workspaces (was `W`) and `Space` `n` what's new (was `N`). The old keys do nothing now, to leave room for more.
+- Less frequent commands have moved behind `Space`, which opens a menu of them that narrows down as you type, like which-key in Neovim: `Space` `s` `g` searches notes, `Space` `c` opens the calendar, `Space` `s` `t` lists tags (was `#`), `Space` `o` the options, `Space` `w` workspaces (was `W`) and `Space` `n` what's new (was `N`). `Space` `s` `k` searches the keybindings, as `?` does. The old keys do nothing now, to leave room for more.
 - The searches have changed. `Space` `Space` now finds items by their text, and `Space` `s` `g` searches inside notes only. `S` is gone.
 - Deadlines are saved in your todos file. An older version of todoro would drop them if it saved the file.
 

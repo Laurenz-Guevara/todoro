@@ -47,6 +47,7 @@ pub const SECTIONS: &[Section] = &[
             ("Space s r", "List every reminder, soonest first"),
             ("Space s t", "List tags, to show the items with one"),
             ("Space s o", "Search the options"),
+            ("Space s k", "Search the keybindings: this help, as ? shows it"),
             ("Space c", "Open the calendar"),
             ("Space o", "Options, including accessibility"),
             ("Space w", "Workspaces: switch, create or delete"),

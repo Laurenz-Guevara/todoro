@@ -18,6 +18,7 @@ pub enum Command {
     Options,
     Workspaces,
     WhatsNew,
+    Keybindings,
 }
 
 /// The keys typed after `Space` (with `' '` for `Space` itself), and what
@@ -37,6 +38,7 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "sr", label: "reminders", command: Command::Reminders },
     Binding { keys: "st", label: "tags", command: Command::Tags },
     Binding { keys: "so", label: "options", command: Command::SearchOptions },
+    Binding { keys: "sk", label: "keybindings", command: Command::Keybindings },
     Binding { keys: "c", label: "calendar", command: Command::Calendar },
     Binding { keys: "o", label: "options", command: Command::Options },
     Binding { keys: "w", label: "workspaces", command: Command::Workspaces },
@@ -222,7 +224,7 @@ mod tests {
         assert_eq!(leader.handle_key(KeyCode::Char('s')), Action::Stay);
         let shown = leader.entries();
         let keys: String = shown.iter().map(|entry| entry.key).collect();
-        assert_eq!(keys, "gdrto");
+        assert_eq!(keys, "gdrtok");
         assert_eq!(shown[0], Entry { key: 'g', label: "search notes".into(), group: false });
         assert_eq!(leader.handle_key(KeyCode::Char('g')), Action::Run(Command::SearchNotes));
         let start = Leader::default().entries();
