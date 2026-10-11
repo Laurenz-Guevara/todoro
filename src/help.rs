@@ -31,6 +31,7 @@ pub const SECTIONS: &[Section] = &[
             ("m", "Pin / unpin: move to today until done"),
             ("@ / :deadline", "Set a deadline: a day, then a time or none"),
             ("go / :overdue", "List the items past their deadline"),
+            ("r / :remind", "Set a reminder, some time before or on a day"),
             ("V", "Select several items"),
             ("!", "Triage: High, Medium, Low, then none"),
             ("d", "Delete the selected item"),
@@ -167,6 +168,15 @@ pub const SECTIONS: &[Section] = &[
             ("Enter, Enter", "Just the day, with no time"),
             ("d", "Remove the deadline"),
             ("Esc", "Back to choosing the day, or cancel"),
+        ],
+    },
+    Section {
+        title: "Setting a reminder (r)",
+        bindings: &[
+            ("h / d / m", "Hours / days / months before, then type how many"),
+            ("c", "On a day: choose it on the calendar, then a time or none"),
+            ("x", "Remove the reminder"),
+            ("Esc", "Back, or cancel"),
         ],
     },
     Section {
@@ -313,7 +323,7 @@ mod tests {
 
     #[test]
     fn single_key_matches_key_names_only() {
-        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x"]);
+        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x", "Setting a reminder (r): x"]);
         assert_eq!(found("?"), ["List: ?", "Notes: ?", "Calendar: ?"]);
         assert_eq!(found("$"), ["Notes: 0 / $"]);
         assert!(found("v").contains(&"List: v".to_string()));

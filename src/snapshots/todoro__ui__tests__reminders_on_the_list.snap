@@ -1,0 +1,12 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭──────── Monday, October 5 2026 (today) ────────╮"
+"│1. Buy a birthday gift ⚑ Thu                    │"
+"│2. Call the bank ⚑ 2h                           │"
+"│3. Water plants ⚑                               │"
+"│                                                │"
+"│                                                │"
+"╰──────── h ← day · k ↑ · j ↓ · day → l ─────────╯"
+" NORMAL   a add  e edit  x done  d delete  ? help "

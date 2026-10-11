@@ -7,6 +7,7 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
 use crate::deadline::Deadline;
+use crate::reminder::Reminder;
 use crate::notes_files::{Conflict, NotesFiles};
 
 /// One todo entry. `notes` is longer free text shown only on the notes screen,
@@ -26,12 +27,20 @@ pub struct Item {
     /// When it's due. Setting one unpins the item: the deadline decides how
     /// far it moves on.
     pub deadline: Option<Deadline>,
+    /// When to be reminded of it, from an earlier day.
+    pub reminder: Option<Reminder>,
 }
 
 impl Item {
     /// Whether it's open and past its deadline, on `today` at `now`.
     pub fn is_overdue(&self, today: NaiveDate, now: chrono::NaiveTime) -> bool {
         !self.done && self.deadline.is_some_and(|deadline| deadline.is_overdue(today, now))
+    }
+
+    /// When its reminder is due, if it has one and is open, as stored on `day`.
+    pub fn reminder_due_at(&self, day: NaiveDate) -> Option<chrono::NaiveDateTime> {
+        let reminder = self.reminder.filter(|_| !self.done)?;
+        Some(reminder.due_at(day, self.deadline))
     }
 
     /// The day this item, stored on an earlier day, moves on to by `today`:
@@ -93,6 +102,9 @@ enum RawItem {
         /// `2026-10-12` or `2026-10-12 13:00`; anything else is ignored.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         deadline: Option<String>,
+        /// `2d`, `3h`, `1mo`, or a day like a deadline; anything else is ignored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reminder: Option<String>,
     },
 }
 
@@ -100,9 +112,10 @@ impl From<RawItem> for Item {
     fn from(raw: RawItem) -> Self {
         match raw {
             RawItem::Text(text) => Item { text, ..Item::default() },
-            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline } => {
+            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder } => {
                 let deadline = deadline.as_deref().and_then(Deadline::from_stored);
-                Item { text, notes, notes_file, done, pinned, priority, deadline }
+                let reminder = reminder.as_deref().and_then(Reminder::from_stored);
+                Item { text, notes, notes_file, done, pinned, priority, deadline, reminder }
             }
         }
     }
@@ -110,13 +123,19 @@ impl From<RawItem> for Item {
 
 impl From<Item> for RawItem {
     fn from(item: Item) -> Self {
-        if item.notes_file.is_none() && !item.done && !item.pinned && item.priority.is_none() && item.deadline.is_none()
+        if item.notes_file.is_none()
+            && !item.done
+            && !item.pinned
+            && item.priority.is_none()
+            && item.deadline.is_none()
+            && item.reminder.is_none()
         {
             RawItem::Text(item.text)
         } else {
-            let Item { text, notes, notes_file, done, pinned, priority, deadline } = item;
+            let Item { text, notes, notes_file, done, pinned, priority, deadline, reminder } = item;
             let deadline = deadline.map(Deadline::to_stored);
-            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline }
+            let reminder = reminder.map(Reminder::to_stored);
+            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder }
         }
     }
 }
@@ -280,6 +299,24 @@ impl Store {
             .collect()
     }
 
+    /// Where the open items from days after `day` that show on it are, as
+    /// `(day, index)`, soonest day first: ones whose reminder is due by then.
+    /// Only on today (at `now`) and later days; a reminder is about what's
+    /// coming, not what was.
+    pub fn reminded_on(&self, day: NaiveDate, today: NaiveDate, now: chrono::NaiveTime) -> Vec<(NaiveDate, usize)> {
+        if day < today {
+            return Vec::new();
+        }
+        // By now today, or at any time on a later day.
+        let by = if day == today { today.and_time(now) } else { day.and_hms_opt(23, 59, 59).expect("a valid time") };
+        self.all()
+            .filter(|(date, _)| *date > day)
+            .flat_map(|(date, items)| {
+                items.iter().enumerate().filter(move |(_, item)| item.reminder_due_at(date).is_some_and(|at| at <= by)).map(move |(i, _)| (date, i))
+            })
+            .collect()
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         Snapshot(self.days.clone())
     }
@@ -360,6 +397,14 @@ impl Store {
             if deadline.is_some() {
                 item.pinned = false;
             }
+        }
+        self.save()
+    }
+
+    /// Sets or clears an item's reminder.
+    pub fn set_reminder(&mut self, day: NaiveDate, index: usize, reminder: Option<Reminder>) -> io::Result<()> {
+        if let Some(item) = self.item_mut(day, index) {
+            item.reminder = reminder;
         }
         self.save()
     }
@@ -902,6 +947,75 @@ mod tests {
         assert_eq!(json["2026-10-05"][1], "Call");
     }
 
+    fn days_before(amount: u32) -> Reminder {
+        Reminder::Before { amount, unit: crate::reminder::Unit::Days }
+    }
+
+    fn noon() -> chrono::NaiveTime {
+        chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn reminders_are_saved_and_loaded() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(day(9), 0, "Gift".into()).unwrap();
+        store.insert(day(9), 1, "Cake".into()).unwrap();
+        store.set_reminder(day(9), 0, Some(days_before(2))).unwrap();
+        store.set_reminder(day(9), 1, Some(Reminder::On(due(3, Some((9, 0)))))).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "2026-10-14": [
+                { "text": "Gift", "reminder": "2d" },
+                { "text": "Cake", "reminder": "2026-10-08 09:00" },
+            ] })
+        );
+        let reopened = Store::open(path.clone()).unwrap();
+        assert_eq!(reopened.items(day(9))[0].reminder, Some(days_before(2)));
+        assert_eq!(reopened.items(day(9))[1].reminder, Some(Reminder::On(due(3, Some((9, 0))))));
+        // Removing it makes the item plain text again, and one that can't be
+        // read is dropped.
+        store.set_reminder(day(9), 1, None).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(json["2026-10-14"][1], "Cake");
+        fs::write(&path, r#"{ "2026-10-14": [{ "text": "Gift", "reminder": "soon" }] }"#).unwrap();
+        assert_eq!(Store::open(path).unwrap().items(day(9))[0].reminder, None);
+    }
+
+    #[test]
+    fn items_show_on_days_from_their_reminder_until_their_own() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(day(5), 0, "Gift".into()).unwrap();
+        store.insert(day(5), 1, "Card".into()).unwrap();
+        store.insert(day(9), 0, "Later".into()).unwrap();
+        store.set_reminder(day(5), 0, Some(days_before(2))).unwrap();
+        store.set_reminder(day(9), 0, Some(days_before(8))).unwrap();
+        assert!(store.reminded_on(today(), today(), noon()).is_empty(), "not yet");
+        assert_eq!(store.reminded_on(day(1), today(), noon()), [(day(9), 0)]);
+        assert_eq!(store.reminded_on(day(3), today(), noon()), [(day(5), 0), (day(9), 0)], "soonest first");
+        assert_eq!(store.reminded_on(day(4), today(), noon()), [(day(5), 0), (day(9), 0)]);
+        assert_eq!(store.reminded_on(day(5), today(), noon()), [(day(9), 0)], "on its own day it's there anyway");
+        // Not on days before today, and not once it's completed.
+        assert!(store.reminded_on(day(3), day(4), noon()).is_empty());
+        store.toggle_done(day(5), 0).unwrap();
+        assert_eq!(store.reminded_on(day(3), today(), noon()), [(day(9), 0)]);
+    }
+
+    #[test]
+    fn a_reminder_due_later_today_waits_for_its_time() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(day(1), 0, "Call".into()).unwrap();
+        // 2 hours before 1:00 tomorrow is 23:00 today.
+        store.set_deadline(day(1), 0, Some(due(1, Some((1, 0))))).unwrap();
+        store.set_reminder(day(1), 0, Some(Reminder::Before { amount: 2, unit: crate::reminder::Unit::Hours })).unwrap();
+        assert!(store.reminded_on(today(), today(), noon()).is_empty());
+        let late = chrono::NaiveTime::from_hms_opt(23, 0, 0).unwrap();
+        assert_eq!(store.reminded_on(today(), today(), late), [(day(1), 0)]);
+    }
+
     #[test]
     fn a_deadline_that_cant_be_read_is_dropped_not_an_error() {
         let (_dir, path) = temp_path();
@@ -977,6 +1091,7 @@ mod tests {
             pinned: true,
             priority: Some(Priority::High),
             deadline: Some(Deadline { date: today(), time: None }),
+            reminder: Some(Reminder::Before { amount: 2, unit: crate::reminder::Unit::Days }),
         };
         assert_eq!(store.insert_items(today(), 9, vec![copy.clone(), copy.clone()]).unwrap(), 1);
         assert_eq!(texts(&store, today()), ["a", "copy", "copy", "b"]);

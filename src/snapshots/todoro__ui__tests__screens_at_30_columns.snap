@@ -114,6 +114,48 @@ with a deadline
 "╰──── h/l day · j/k move ────╯"
 " NORMAL   a add  ? help       "
 
+choosing a reminder
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1╭ Remind me ─────────────╮ │"
+"│2│ Write the quarterly r… │ │"
+"│ │                        │ │"
+"│ │ h  hours before        │ │"
+"│ │ d  days before         │ │"
+"│ │ m  months before       │ │"
+"│ │ c  on a day…           │ │"
+"│ │                        │ │"
+"│ │ Counted back from its  │ │"
+"╰─╰────── esc cancel ──────╯─╯"
+" REMIND   esc cancel          "
+
+days before
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1. Buy milk                 │"
+"│2. Write the                │"
+"│   quarterly                │"
+"│ ╭ Days before ───────────╮ │"
+"│ │ › 2                    │ │"
+"│ │ How many days before   │ │"
+"│ │ its deadline, 17:30.   │ │"
+"│ ╰ enter save · esc back ─╯ │"
+"│                            │"
+"╰──── h/l day · j/k move ────╯"
+" REMIND   enter save  esc back"
+
+with a reminder
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1. Buy milk                 │"
+"│2. Write the                │"
+"│   quarterly                │"
+"│   report for               │"
+"│   the team ◷ 17:30 ⚑ ≡     │"
+"│                            │"
+"│                            │"
+"│                            │"
+"│                            │"
+"╰──── h/l day · j/k move ────╯"
+" NORMAL   a add  ? help       "
+
 empty day
 "╭─ Tuesday, October 6 2026 ──╮"
 "│  Nothing to do. Press a to │"

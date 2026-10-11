@@ -23,6 +23,6 @@ expression: terminal.backend()
 "│   │   m                   Pin / unpin: move to today until done          │   │"
 "│   │   @ / :deadline       Set a deadline: a day, then a time or none     │   │"
 "│   │   go / :overdue       List the items past their deadline             │   │"
-"│   │   V                   Select several items                           │   │"
+"│   │   r / :remind         Set a reminder, some time before or on a day   │   │"
 "╰───╰─────────────────────── ↑/↓ scroll · esc close ───────────────────────╯───╯"
 " HELP   type to search  ↑/↓ scroll  esc close                                   "

@@ -11,6 +11,7 @@ use crate::help::Help;
 use crate::input::LineInput;
 use crate::notes::{Action, NotesEditor, Register};
 use crate::options::{self, Options, Settings, TOGGLES};
+use crate::reminder;
 use crate::search::{self, Search};
 use crate::tags::{self, TagPicker};
 use crate::viewer::{self, Viewer};
@@ -55,6 +56,8 @@ pub enum Mode {
     Search(Box<Search>),
     /// The calendar, for planning ahead.
     Calendar(Box<Calendar>),
+    /// The `r` popup, to choose when to be reminded of the selected item.
+    Remind(reminder::Picker),
     /// The keybinding help popup, over the screen in `back`.
     Help { help: Help, back: Box<Mode> },
 }
@@ -170,9 +173,12 @@ impl App {
     /// days also show, first, the pinned items from earlier days that will have
     /// moved to them by then. Usually startup has already moved them to today,
     /// but one can land on a past day mid-session, e.g. moved there with `<`.
+    /// Then come items from later days whose reminder is due by then.
     pub fn slots(&self) -> Vec<Slot> {
         let mut slots: Vec<Slot> = if self.day >= self.today {
-            self.store.carried_to(self.day).into_iter().map(|(day, index)| Slot { day, index }).collect()
+            let carried = self.store.carried_to(self.day).into_iter();
+            let reminded = self.store.reminded_on(self.day, self.today, self.now).into_iter();
+            carried.chain(reminded).map(|(day, index)| Slot { day, index }).collect()
         } else {
             Vec::new()
         };
@@ -185,7 +191,8 @@ impl App {
         self.slots().into_iter().map(|slot| &self.store.items(slot.day)[slot.index]).collect()
     }
 
-    /// How many shown items come from earlier days.
+    /// How many shown items come from other days: earlier ones, or later
+    /// ones being reminded of.
     pub fn carried(&self) -> usize {
         self.slots().iter().take_while(|slot| slot.day != self.day).count()
     }
@@ -248,7 +255,12 @@ impl App {
         // screen records its own change when it closes, and help changes nothing.
         let before = matches!(
             self.mode,
-            Mode::Normal | Mode::Insert { .. } | Mode::ConfirmDelete { .. } | Mode::Visual { .. } | Mode::Calendar(_)
+            Mode::Normal
+                | Mode::Insert { .. }
+                | Mode::ConfirmDelete { .. }
+                | Mode::Visual { .. }
+                | Mode::Calendar(_)
+                | Mode::Remind(_)
         )
             .then(|| self.state());
         self.mode_key(key)?;
@@ -354,15 +366,41 @@ impl App {
                 calendar::Action::SetDeadline { day, index, deadline } => {
                     self.mode = Mode::Normal;
                     self.store.set_deadline(day, index, deadline)?;
-                    // Stay on the item, wherever it shows now. A deadline
-                    // before the day on screen means it no longer shows here.
-                    if let Some(row) = self.slots().iter().position(|slot| slot.day == day && slot.index == index) {
-                        self.selected = row;
-                    }
-                    self.clamp_selection();
+                    // A deadline before the day on screen means it no
+                    // longer shows here.
+                    self.select_stored(day, index);
+                }
+                calendar::Action::SetReminder { day, index, reminder } => {
+                    self.mode = Mode::Normal;
+                    self.store.set_reminder(day, index, Some(reminder))?;
+                    self.select_stored(day, index);
                 }
                 calendar::Action::Help => self.open_help(),
             },
+            Mode::Remind(picker) => {
+                let (day, index) = (picker.day, picker.index);
+                match picker.handle_key(key.code) {
+                    reminder::Action::Stay => {}
+                    reminder::Action::Close => self.mode = Mode::Normal,
+                    reminder::Action::Set(reminder) => {
+                        self.mode = Mode::Normal;
+                        self.store.set_reminder(day, index, reminder)?;
+                        self.select_stored(day, index);
+                    }
+                    reminder::Action::Calendar => {
+                        let item = &self.store.items(day)[index];
+                        let calendar = Calendar::for_reminder(
+                            (day, index),
+                            &item.text,
+                            item.reminder,
+                            self.day,
+                            self.today,
+                            self.settings.twelve_hour,
+                        );
+                        self.mode = Mode::Calendar(Box::new(calendar));
+                    }
+                }
+            }
             Mode::Changelog(view) => {
                 if view.handle_key(key) {
                     self.mode = Mode::Normal;
@@ -605,6 +643,7 @@ impl App {
                 }
             }
             KeyCode::Char('@') => self.open_deadline(),
+            KeyCode::Char('r') => self.open_reminder(),
             KeyCode::Enter if len > 0 => self.open_notes()?,
             KeyCode::Char('v') if len > 0 => {
                 // Read the notes file again, in case something else changed it.
@@ -681,6 +720,22 @@ impl App {
         Ok(())
     }
 
+    /// Stays on the item stored at `day`, `index`, wherever it shows now, if
+    /// it still shows.
+    fn select_stored(&mut self, day: NaiveDate, index: usize) {
+        if let Some(row) = self.slots().iter().position(|slot| slot.day == day && slot.index == index) {
+            self.selected = row;
+        }
+        self.clamp_selection();
+    }
+
+    /// Opens the popup to choose when to be reminded of the selected item.
+    fn open_reminder(&mut self) {
+        let Some(slot) = self.slot(self.selected) else { return };
+        let current = self.store.items(slot.day)[slot.index].reminder;
+        self.mode = Mode::Remind(reminder::Picker::new((slot.day, slot.index), current));
+    }
+
     /// Opens the year calendar to choose the selected item's deadline.
     fn open_deadline(&mut self) {
         let Some(slot) = self.slot(self.selected) else { return };
@@ -724,6 +779,7 @@ impl App {
                 match command.as_str() {
                     "q" | "q!" | "wq" | "wq!" | "x" | "x!" => self.quit = true,
                     "deadline" => self.open_deadline(),
+                    "remind" | "reminder" => self.open_reminder(),
                     "overdue" => self.mode = Mode::Search(Box::new(Search::overdue())),
                     line => {
                         if let Ok(n) = line.parse::<usize>() {
@@ -3846,5 +3902,109 @@ mod tests {
         let (mut app, _dir) = app_with(&[]);
         type_str(&mut app, "E");
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    fn days_before(amount: u32) -> reminder::Reminder {
+        reminder::Reminder::Before { amount, unit: reminder::Unit::Days }
+    }
+
+    #[test]
+    fn r_sets_a_reminder_some_days_before() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Gift"]);
+        type_str(&mut app, "jr");
+        assert!(matches!(app.mode, Mode::Remind(_)));
+        type_str(&mut app, "d3");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[1].reminder, Some(days_before(3)));
+        assert_eq!(app.selected, 1);
+        // One undo step takes it off.
+        type_str(&mut app, "u");
+        assert_eq!(app.items()[1].reminder, None);
+    }
+
+    #[test]
+    fn hours_and_months_set_reminders_too_and_x_removes_one() {
+        let (mut app, _dir) = app_with(&["Gift"]);
+        type_str(&mut app, "rh5");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[0].reminder, Some(reminder::Reminder::Before { amount: 5, unit: reminder::Unit::Hours }));
+        type_str(&mut app, "rm2");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.items()[0].reminder, Some(reminder::Reminder::Before { amount: 2, unit: reminder::Unit::Months }));
+        type_str(&mut app, "rx");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].reminder, None);
+    }
+
+    #[test]
+    fn colon_remind_does_the_same_as_r() {
+        let (mut app, _dir) = app_with(&["Gift"]);
+        type_str(&mut app, ":remind");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Remind(_)));
+    }
+
+    #[test]
+    fn r_does_nothing_on_an_empty_day() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, "r");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn esc_backs_out_of_a_reminder_without_changing_it() {
+        let (mut app, _dir) = app_with(&["Gift"]);
+        app.store.set_reminder(today(), 0, Some(days_before(2))).unwrap();
+        type_str(&mut app, "rd9");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Remind(_)), "back to choosing");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].reminder, Some(days_before(2)));
+    }
+
+    #[test]
+    fn c_chooses_a_day_to_be_reminded_on_the_calendar() {
+        let (mut app, _dir) = app_with(&["Gift"]);
+        type_str(&mut app, "rc");
+        let Mode::Calendar(calendar) = &app.mode else { panic!("the calendar") };
+        assert!(calendar.picking.as_ref().is_some_and(|picking| picking.reminder));
+        type_str(&mut app, "l");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9am");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].reminder, Some(reminder::Reminder::On(deadline(1, Some((9, 0))))));
+        assert_eq!(app.items()[0].deadline, None, "the deadline is left alone");
+    }
+
+    #[test]
+    fn an_item_shows_on_today_once_its_reminder_is_due() {
+        let (mut app, _dir) = app_with(&["Today's"]);
+        let later = today() + Days::new(3);
+        app.store.insert(later, 0, "Gift".into()).unwrap();
+        app.store.set_reminder(later, 0, Some(days_before(5))).unwrap();
+        assert_eq!(items(&app), ["Gift", "Today's"], "reminded first, after anything carried");
+        assert_eq!(app.carried(), 1);
+        // Completing it here completes it on its day, and it goes.
+        press(&mut app, KeyCode::Char('x'));
+        assert!(app.store.items(later)[0].done);
+        assert_eq!(items(&app), ["Today's"]);
+    }
+
+    #[test]
+    fn setting_a_due_reminder_brings_the_item_to_today_and_follows_it() {
+        let (mut app, _dir) = app_with(&["Today's"]);
+        let later = today() + Days::new(2);
+        app.store.insert(later, 0, "Gift".into()).unwrap();
+        type_str(&mut app, "ll");
+        assert_eq!(items(&app), ["Gift"]);
+        type_str(&mut app, "rd2");
+        press(&mut app, KeyCode::Enter);
+        // Still on its own day; on today, it now shows first.
+        assert_eq!(items(&app), ["Gift"]);
+        type_str(&mut app, "t");
+        assert_eq!(items(&app), ["Gift", "Today's"]);
     }
 }

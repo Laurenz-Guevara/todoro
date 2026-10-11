@@ -5,6 +5,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::deadline::{self, Deadline};
 use crate::input::LineInput;
+use crate::reminder::Reminder;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Zoom {
@@ -20,12 +21,15 @@ pub struct Calendar {
     pub today: NaiveDate,
     /// The item being typed for the selected date, if any.
     pub adding: Option<LineInput>,
-    /// Choosing a deadline for an item (`@`), rather than browsing.
+    /// Choosing a deadline for an item (`@`), or a day to be reminded of
+    /// it (`r` then `c`), rather than browsing.
     pub picking: Option<Picking>,
 }
 
-/// Choosing a deadline: the day with the calendar, then a time.
+/// Choosing a deadline or a reminder: the day with the calendar, then a time.
 pub struct Picking {
+    /// Whether it's for a reminder rather than a deadline.
+    pub reminder: bool,
     /// Where the item is stored.
     pub day: NaiveDate,
     pub index: usize,
@@ -58,6 +62,8 @@ pub enum Action {
     /// Set (or with `None`, remove) the deadline of the item stored at
     /// `day`, `index`.
     SetDeadline { day: NaiveDate, index: usize, deadline: Option<Deadline> },
+    /// Set the reminder of the item stored at `day`, `index`.
+    SetReminder { day: NaiveDate, index: usize, reminder: Reminder },
     Help,
 }
 
@@ -78,6 +84,7 @@ impl Calendar {
     ) -> Self {
         let start_time = current.and_then(|deadline| deadline.time).map(|time| deadline::format_time(time, twelve_hour));
         let picking = Picking {
+            reminder: false,
             day,
             index,
             item: item.to_string(),
@@ -91,6 +98,30 @@ impl Calendar {
         Self { zoom: Zoom::Year, cursor, today, adding: None, picking: Some(picking) }
     }
 
+    /// The year view, to choose a day to be reminded of the item stored at
+    /// `day`, `index`: starting on the day of its reminder if it's on one,
+    /// otherwise on `cursor`.
+    pub fn for_reminder(
+        (day, index): (NaiveDate, usize),
+        item: &str,
+        current: Option<Reminder>,
+        cursor: NaiveDate,
+        today: NaiveDate,
+        twelve_hour: bool,
+    ) -> Self {
+        let on = match current {
+            Some(Reminder::On(on)) => Some(on),
+            _ => None,
+        };
+        let mut calendar = Self::for_deadline((day, index), item, on, cursor, today, twelve_hour);
+        if let Some(picking) = &mut calendar.picking {
+            picking.reminder = true;
+            // Removing a reminder is in the reminder popup.
+            picking.had = false;
+        }
+        calendar
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
         if let Some(picking) = &mut self.picking {
             if let Some(input) = &mut picking.time {
@@ -101,14 +132,10 @@ impl Calendar {
                         picking.error = None;
                     }
                     KeyCode::Enter if input.text.trim().is_empty() => {
-                        let deadline = Deadline { date: self.cursor, time: None };
-                        return Action::SetDeadline { day: picking.day, index: picking.index, deadline: Some(deadline) };
+                        return picking.chosen(Deadline { date: self.cursor, time: None });
                     }
                     KeyCode::Enter => match deadline::parse_time(&input.text) {
-                        Some(time) => {
-                            let deadline = Deadline { date: self.cursor, time: Some(time) };
-                            return Action::SetDeadline { day: picking.day, index: picking.index, deadline: Some(deadline) };
-                        }
+                        Some(time) => return picking.chosen(Deadline { date: self.cursor, time: Some(time) }),
                         None => picking.error = Some("Type a time like 13:00, 1300, 1pm or 11:30am".into()),
                     },
                     code => {
@@ -187,6 +214,18 @@ impl Calendar {
             self.cursor.checked_add_months(Months::new(months as u32))
         };
         self.cursor = moved.unwrap_or(self.cursor);
+    }
+}
+
+impl Picking {
+    /// Sets the deadline, or the reminder, to the day and time chosen.
+    fn chosen(&self, on: Deadline) -> Action {
+        let (day, index) = (self.day, self.index);
+        if self.reminder {
+            Action::SetReminder { day, index, reminder: Reminder::On(on) }
+        } else {
+            Action::SetDeadline { day, index, deadline: Some(on) }
+        }
     }
 }
 
@@ -479,5 +518,22 @@ mod tests {
         send(&mut cal, "<cr>");
         assert_eq!(cal.picking.as_ref().unwrap().time.as_ref().unwrap().text, "11PM");
         assert_eq!(send(&mut cal, "<cr>"), set(Some(current)));
+    }
+
+    #[test]
+    fn choosing_a_day_for_a_reminder_sets_the_reminder_not_the_deadline() {
+        let mut cal = Calendar::for_reminder((date(2026, 10, 20), 1), "Gift", None, date(2026, 10, 5), date(2026, 10, 5), false);
+        assert_eq!(cal.zoom, Zoom::Year);
+        let on = Deadline { date: date(2026, 10, 7), time: Some(time(9, 0)) };
+        assert_eq!(
+            send(&mut cal, "ll<cr>9<cr>"),
+            Action::SetReminder { day: date(2026, 10, 20), index: 1, reminder: Reminder::On(on) }
+        );
+        // It starts on the reminder's day, with its time, and d removes nothing.
+        let mut cal = Calendar::for_reminder((date(2026, 10, 20), 1), "Gift", Some(Reminder::On(on)), date(2026, 10, 5), date(2026, 10, 5), false);
+        assert_eq!(cal.cursor, date(2026, 10, 7));
+        assert_eq!(send(&mut cal, "d"), Action::Stay);
+        send(&mut cal, "<cr>");
+        assert_eq!(cal.picking.as_ref().unwrap().time.as_ref().unwrap().text, "09:00");
     }
 }

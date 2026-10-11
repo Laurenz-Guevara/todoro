@@ -23,6 +23,7 @@ use crate::setup::Setup;
 use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
 use crate::deadline::Deadline;
+use crate::reminder::{self, Reminder};
 use crate::viewer::Viewer;
 use crate::markdown;
 
@@ -54,6 +55,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Changelog(view) => draw_changelog(frame, view),
         Mode::Workspaces(picker) => draw_workspaces(frame, app, picker),
         Mode::Tags(picker) => draw_tags(frame, app, picker),
+        Mode::Remind(picker) => draw_remind(frame, app, picker),
         _ => {}
     }
 
@@ -112,6 +114,19 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             block = block.title(Line::from(text.red().bold()).right_aligned());
         }
     }
+    // Reminders due today, in the same corner, from any other day. On
+    // today, they're at the top of the list.
+    let reminded = if app.day == app.today { 0 } else { app.store.reminded_on(app.today, app.today, app.now).len() };
+    if reminded > 0 {
+        let beside = (area.width as usize).saturating_sub(title.width()) / 2;
+        let overdue_width = if overdue > 0 { format!(" ⚠ {overdue} ").width() } else { 0 };
+        let long = format!(" {REMINDER_MARKER} {reminded} today · t ");
+        let short = format!(" {REMINDER_MARKER} {reminded} ");
+        let shown = [long, short].into_iter().find(|text| text.width() + overdue_width + 2 <= beside);
+        if let Some(text) = shown {
+            block = block.title(Line::from(text.yellow().bold()).right_aligned());
+        }
+    }
     // The workspace's name in the top-left corner, if it fits beside the date.
     if let Some(name) = &app.workspace {
         let name = format!(" {name} ");
@@ -123,17 +138,26 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 
     // The rows to show, with the item being typed in place of (or inserted
     // among) the saved ones, so the numbering below it is already right.
+    let now = app.today.and_time(app.now);
     let mut rows: Vec<Row> = app
-        .items()
+        .slots()
         .into_iter()
-        .map(|item| Row {
-            text: &item.text,
-            priority: item.priority,
-            pinned: item.pinned,
-            deadline: item.deadline,
-            has_notes: !item.notes.is_empty(),
-            done: item.done,
-            typing: false,
+        .map(|slot| {
+            let item = &app.store.items(slot.day)[slot.index];
+            Row {
+                text: &item.text,
+                priority: item.priority,
+                pinned: item.pinned,
+                deadline: item.deadline,
+                reminder: item.reminder.map(|reminder| RowReminder {
+                    reminder,
+                    due: item.reminder_due_at(slot.day).is_some_and(|at| at <= now),
+                    from: (slot.day > app.day).then_some(slot.day),
+                }),
+                has_notes: !item.notes.is_empty(),
+                done: item.done,
+                typing: false,
+            }
         })
         .collect();
     let mut selected = (!rows.is_empty()).then_some(app.selected);
@@ -142,7 +166,16 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         if *editing {
             rows[*index] = Row { text, typing: true, ..rows[*index] };
         } else {
-            let row = Row { text, priority: None, pinned: false, deadline: None, has_notes: false, done: false, typing: true };
+            let row = Row {
+                text,
+                priority: None,
+                pinned: false,
+                deadline: None,
+                reminder: None,
+                has_notes: false,
+                done: false,
+                typing: true,
+            };
             rows.insert(*index, row);
         }
         selected = Some(*index);
@@ -199,11 +232,32 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(text, style)
         });
         let pinned = row.pinned && deadline.is_none();
+        // A reminder: how long before while it's to come, then bold once
+        // it's due, with the day the item is on if it's from a later one.
+        let reminder = row.reminder.map(|shown| {
+            let when = match (shown.due, shown.from) {
+                (false, _) => shown.reminder.describe(app.today, app.settings.twelve_hour),
+                (true, Some(day)) if row.deadline.is_none() => {
+                    Deadline { date: day, time: None }.describe(app.today, app.settings.twelve_hour)
+                }
+                (true, _) => String::new(),
+            };
+            let text = if when.is_empty() { format!(" {REMINDER_MARKER}") } else { format!(" {REMINDER_MARKER} {when}") };
+            let style = if row.done {
+                Style::new().fg(Color::DarkGray)
+            } else if shown.due {
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(Color::Cyan)
+            };
+            Span::styled(text, style)
+        });
 
         // Wrap long text under itself, leaving room for the markers at the end.
         let markers = [(pinned, PINNED_MARKER.width()), (row.has_notes, NOTES_MARKER.width())];
         let markers_width: usize = markers.iter().filter(|(shown, _)| *shown).map(|(_, width)| width).sum::<usize>()
-            + deadline.as_ref().map_or(0, Span::width);
+            + deadline.as_ref().map_or(0, Span::width)
+            + reminder.as_ref().map_or(0, Span::width);
         let text_width = (inner.width as usize).saturating_sub(prefix_width + markers_width).max(1);
         let ranges = wrap_ranges(row.text, text_width);
         if let (true, Mode::Insert { input, .. }) = (row.typing, &app.mode) {
@@ -241,6 +295,9 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         }
         if let Some(deadline) = deadline {
             last.push_span(deadline);
+        }
+        if let Some(reminder) = reminder {
+            last.push_span(reminder);
         }
         if row.has_notes {
             last.push_span(NOTES_MARKER.dim());
@@ -288,10 +345,21 @@ struct Row<'a> {
     priority: Option<Priority>,
     pinned: bool,
     deadline: Option<Deadline>,
+    reminder: Option<RowReminder>,
     has_notes: bool,
     done: bool,
     /// The item being added or edited.
     typing: bool,
+}
+
+/// A row's reminder, as shown.
+#[derive(Clone, Copy)]
+struct RowReminder {
+    reminder: Reminder,
+    /// Whether it's due by now.
+    due: bool,
+    /// The later day the item is stored on, if it shows here for its reminder.
+    from: Option<NaiveDate>,
 }
 
 /// The icon for a priority, shown when semantic icons are on.
@@ -317,6 +385,9 @@ const NOTES_MARKER: &str = " ≡";
 
 /// Shown after a pinned item, which moves forward to today until completed.
 const PINNED_MARKER: &str = " ⚲";
+
+/// Shown after an item with a reminder, and beside how many are due today.
+const REMINDER_MARKER: &str = "⚑";
 
 /// Shown in the pin's place on an item with a deadline, before when it's due.
 const DEADLINE_MARKER: &str = " ◷ ";
@@ -518,6 +589,23 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
         }
+        Mode::Remind(picker) if picker.amount.is_some() => {
+            ("REMIND", Color::Yellow, &[("enter save", 2), ("esc back", 1)])
+        }
+        Mode::Remind(picker) if picker.current.is_some() => (
+            "REMIND",
+            Color::Yellow,
+            &[("h/d/m before", 3), ("c on a day", 2), ("x remove", 1), ("esc cancel", 4)],
+        ),
+        Mode::Remind(_) => ("REMIND", Color::Yellow, &[("h/d/m before", 3), ("c on a day", 2), ("esc cancel", 4)]),
+        Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.reminder && picking.time.is_some()) => {
+            ("REMIND", Color::Yellow, &[("enter save", 2), ("(empty: all day)", 0), ("esc back", 1)])
+        }
+        Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.reminder) => (
+            "REMIND",
+            Color::Yellow,
+            &[("↵ choose day", 3), ("y/m/w view", 0), ("esc cancel", 1), ("? help", 4)],
+        ),
         Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.time.is_some()) => {
             ("DEADLINE", Color::Yellow, &[("enter save", 2), ("(empty: no time)", 0), ("esc back", 1)])
         }
@@ -789,11 +877,12 @@ fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) 
         Some(picking) => {
             // The view's own title, like "2026" or "October 2026".
             let period = titles.last().cloned().unwrap_or_default();
+            let (what, short) = if picking.reminder { ("Remind me of", "Remind") } else { ("Deadline for", "Deadline") };
             let titles = vec![
-                format!("Deadline for {} · {}", picking.item, titles[0]),
-                format!("Deadline for {}", truncate(&picking.item, room.saturating_sub(13).max(2))),
-                format!("Deadline · {period}"),
-                "Deadline".into(),
+                format!("{what} {} · {}", picking.item, titles[0]),
+                format!("{what} {}", truncate(&picking.item, room.saturating_sub(what.width() + 1).max(2))),
+                format!("{short} · {period}"),
+                short.into(),
                 period,
             ];
             let hints: &[&str] = if picking.had {
@@ -1042,7 +1131,11 @@ fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
     let width = screen.width.saturating_sub(4).min(50);
     let room = (width as usize).saturating_sub(4);
     let example = if app.settings.twelve_hour { "like 1pm or 13:00" } else { "like 13:00 or 1pm" };
-    let help = format!("A time, {example}. Leave it empty for the whole day.");
+    let help = if picking.reminder {
+        format!("A time, {example}. Leave it empty to be reminded from the start of the day.")
+    } else {
+        format!("A time, {example}. Leave it empty for the whole day.")
+    };
     let mut lines = vec![Line::from(vec!["› ".yellow().bold(), truncate(&input.text, room.saturating_sub(2)).into()])];
     lines.extend(wrap(&help, room, usize::MAX).into_iter().map(|part| Line::from(part).dim()));
     if let Some(error) = &picking.error {
@@ -1050,9 +1143,10 @@ fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
     }
     let area = centered(screen, width, lines.len() as u16 + 2);
 
+    let what = if picking.reminder { "Remind" } else { "Due" };
     let titles = [
-        calendar.cursor.format(" Due %A %-d %B %Y ").to_string(),
-        calendar.cursor.format(" Due %a %-d %b %Y ").to_string(),
+        calendar.cursor.format(&format!(" {what} %A %-d %B %Y ")).to_string(),
+        calendar.cursor.format(&format!(" {what} %a %-d %b %Y ")).to_string(),
         calendar.cursor.format(" %a %-d %b ").to_string(),
     ];
     let title = titles.iter().find(|title| title.width() <= room + 2).cloned().unwrap_or_default();
@@ -1068,6 +1162,77 @@ fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
     let col = 2 + input.text[..input.cursor].width() as u16;
     frame.set_cursor_position(Position::new(inner.x + col.min(inner.width.saturating_sub(1)), inner.y));
+}
+
+/// The `r` popup: how long before the item to be reminded of it, or then how
+/// many hours, days or months.
+fn draw_remind(frame: &mut Frame, app: &App, picker: &reminder::Picker) {
+    let Some(item) = app.store.items(picker.day).get(picker.index) else { return };
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(50);
+    let room = (width as usize).saturating_sub(4).max(1);
+    let twelve_hour = app.settings.twelve_hour;
+    let from = reminder::counted_from(picker.day, item.deadline, app.today, twelve_hour);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let mut cursor = None;
+    if let Some((unit, input)) = &picker.amount {
+        cursor = Some(2 + input.text[..input.cursor].width());
+        lines.push(Line::from(vec!["› ".yellow().bold(), truncate(&input.text, room.saturating_sub(2)).into()]));
+        let help = format!("How many {} before {from}.", unit.name());
+        lines.extend(wrap(&help, room, usize::MAX).into_iter().map(|part| Line::from(part).dim()));
+        if let Some(error) = &picker.error {
+            lines.extend(wrap(error, room, usize::MAX).into_iter().map(|part| Line::from(part).red()));
+        }
+    } else {
+        // The keys first, so a short screen cuts off the explanation instead.
+        lines.push(Line::from(truncate(&item.text, room)).bold());
+        lines.push(Line::default());
+        let mut choices = vec![("h", "hours before"), ("d", "days before"), ("m", "months before"), ("c", "on a day…")];
+        if picker.current.is_some() {
+            choices.push(("x", "remove the reminder"));
+        }
+        for (key, what) in choices {
+            lines.push(Line::from(vec![format!("{key}  ").yellow().bold(), truncate(what, room.saturating_sub(3)).into()]));
+        }
+        lines.push(Line::default());
+        if let Some(current) = picker.current {
+            let now = format!("Reminds you {}.", current.explain(app.today, twelve_hour));
+            lines.extend(wrap(&now, room, usize::MAX).into_iter().map(|part| Line::from(part).cyan()));
+        }
+        let counted = format!("Counted back from {from}.");
+        lines.extend(wrap(&counted, room, usize::MAX).into_iter().map(|part| Line::from(part).dim()));
+    }
+    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let area = centered(screen, width, height);
+
+    let title = match &picker.amount {
+        Some((unit, _)) => {
+            let long = match unit {
+                reminder::Unit::Hours => " Hours before ",
+                reminder::Unit::Days => " Days before ",
+                reminder::Unit::Months => " Months before ",
+            };
+            fit_first(&[long, " Before "], room + 2).to_string()
+        }
+        None => fit_first(&[" Remind me ", " Remind "], room + 2).to_string(),
+    };
+    let hint = match &picker.amount {
+        Some(_) => fit_first(&[" enter save · esc back ", " enter "], room + 2),
+        None => fit_first(&[" esc cancel ", " esc "], room + 2),
+    };
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Yellow))
+        .title(title.bold())
+        .title_bottom(Line::from(hint).centered().dim())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    if let Some(col) = cursor {
+        frame.set_cursor_position(Position::new(inner.x + (col as u16).min(inner.width.saturating_sub(1)), inner.y));
+    }
 }
 
 /// The narrowest search that has room for a preview of the selected item.
@@ -2241,6 +2406,12 @@ mod tests {
         shot(&app, "a deadline's time");
         press(&mut app, KeyCode::Enter);
         shot(&app, "with a deadline");
+        type_str(&mut app, "r");
+        shot(&app, "choosing a reminder");
+        type_str(&mut app, "d2");
+        shot(&app, "days before");
+        press(&mut app, KeyCode::Enter);
+        shot(&app, "with a reminder");
         type_str(&mut app, "l");
         shot(&app, "empty day");
         out
@@ -2328,6 +2499,77 @@ mod tests {
         type_str(&mut app, "go");
         let screen = render_sized(&app, 60, 8).backend().to_string();
         assert!(screen.contains(" Overdue ") && screen.contains("Nothing is overdue"), "{screen}");
+    }
+
+    /// Today at 12:00: one item due later today with a reminder still to
+    /// come, one with a reminder already due, and one from three days on
+    /// that's here because its reminder is due.
+    fn reminders_app() -> (App, tempfile::TempDir) {
+        use crate::reminder::{Reminder, Unit};
+        let (mut app, dir) = app_with(&["Call the bank", "Water plants"]);
+        app.now = chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap();
+        app.store.set_reminder(today(), 0, Some(Reminder::Before { amount: 2, unit: Unit::Hours })).unwrap();
+        app.store.set_reminder(today(), 1, Some(Reminder::Before { amount: 1, unit: Unit::Days })).unwrap();
+        let later = today() + chrono::Days::new(3);
+        app.store.insert(later, 0, "Buy a birthday gift".into()).unwrap();
+        app.store.set_reminder(later, 0, Some(Reminder::Before { amount: 5, unit: Unit::Days })).unwrap();
+        (app, dir)
+    }
+
+    #[test]
+    fn reminders_on_the_list() {
+        let (app, _dir) = reminders_app();
+        let terminal = render_sized(&app, 50, 8);
+        assert_snapshot!(terminal.backend());
+        // A due reminder is bold, so it still stands out without colour.
+        let buffer = terminal.backend().buffer();
+        let due = (0..50).map(|x| &buffer[(x, 1)]).find(|cell| cell.symbol() == "⚑").unwrap();
+        assert!(due.modifier.contains(Modifier::BOLD));
+        let to_come = (0..50).map(|x| &buffer[(x, 2)]).find(|cell| cell.symbol() == "⚑").unwrap();
+        assert!(!to_come.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn reminders_due_today_show_in_the_corner_on_other_days() {
+        let (mut app, _dir) = reminders_app();
+        let corner = |app: &App, width: u16| render_sized(app, width, 8).backend().to_string().lines().next().unwrap().to_string();
+        // Not on today, where they're on the list.
+        assert!(!corner(&app, 90).contains('⚑'), "{}", corner(&app, 90));
+        type_str(&mut app, "h");
+        assert!(corner(&app, 90).contains("⚑ 1 today · t"), "{}", corner(&app, 90));
+        assert!(corner(&app, 50).contains("⚑ 1 "), "{}", corner(&app, 50));
+        assert!(!corner(&app, 30).contains('⚑'), "{}", corner(&app, 30));
+    }
+
+    #[test]
+    fn choosing_a_reminder() {
+        let (mut app, _dir) = reminders_app();
+        type_str(&mut app, "r");
+        assert_snapshot!(render_sized(&app, 60, 16).backend());
+    }
+
+    #[test]
+    fn typing_how_many_before() {
+        let (mut app, _dir) = reminders_app();
+        type_str(&mut app, "jjrdx");
+        press(&mut app, KeyCode::Enter);
+        let mut terminal = render_sized(&app, 60, 16);
+        assert_snapshot!(terminal.backend());
+        let cursor = terminal.get_cursor_position().unwrap();
+        let row: String = (0..60).map(|x| terminal.backend().buffer()[(x, cursor.y)].symbol().to_string()).collect();
+        assert!(row.contains("› x"), "{row}");
+    }
+
+    #[test]
+    fn choosing_a_day_to_be_reminded() {
+        let (mut app, _dir) = reminders_app();
+        type_str(&mut app, "rc");
+        let screen = render_sized(&app, 80, 24).backend().to_string();
+        assert!(screen.contains("Remind me of Buy a birthday gift"), "{screen}");
+        assert!(screen.contains("REMIND"), "{screen}");
+        press(&mut app, KeyCode::Enter);
+        let screen = render_sized(&app, 80, 24).backend().to_string();
+        assert!(screen.contains("Remind Mon"), "{screen}");
     }
 
     #[test]

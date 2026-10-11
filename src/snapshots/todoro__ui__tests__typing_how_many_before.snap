@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Buy a birthday gift ⚑ Thu                              │"
+"│2. Call the bank ⚑ 2h                                     │"
+"│3. Water plants ⚑                                         │"
+"│                                                          │"
+"│                                                          │"
+"│    ╭ Days before ───────────────────────────────────╮    │"
+"│    │ › x                                            │    │"
+"│    │ How many days before its day, today.           │    │"
+"│    │ Type how many days, from 1 to 999              │    │"
+"│    ╰──────────── enter save · esc back ─────────────╯    │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" REMIND   enter save  esc back                              "

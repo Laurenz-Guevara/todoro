@@ -114,6 +114,48 @@ with a deadline
 "╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
 " NORMAL   a add  e edit  x done  ? help "
 
+choosing a reminder
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│1╭ Remind me ───────────────────────╮ │"
+"│2│ Write the quarterly report for … │ │"
+"│ │                                  │ │"
+"│ │ h  hours before                  │ │"
+"│ │ d  days before                   │ │"
+"│ │ m  months before                 │ │"
+"│ │ c  on a day…                     │ │"
+"│ │                                  │ │"
+"│ │ Counted back from its deadline,  │ │"
+"╰─╰─────────── esc cancel ───────────╯─╯"
+" REMIND   h/d/m before  esc cancel      "
+
+days before
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│1. Buy milk                           │"
+"│2. Write the quarterly                │"
+"│   report for the team ◷ 17:30 ≡      │"
+"│ ╭ Days before ─────────────────────╮ │"
+"│ │ › 2                              │ │"
+"│ │ How many days before its         │ │"
+"│ │ deadline, 17:30.                 │ │"
+"│ ╰───── enter save · esc back ──────╯ │"
+"│                                      │"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" REMIND   enter save  esc back          "
+
+with a reminder
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│1. Buy milk                           │"
+"│2. Write the quarterly                │"
+"│   report for the team ◷ 17:30 ⚑ ≡    │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
+" NORMAL   a add  e edit  x done  ? help "
+
 empty day
 "╭────── Tuesday, October 6 2026 ───────╮"
 "│Nothing to do. Press a to add an item.│"

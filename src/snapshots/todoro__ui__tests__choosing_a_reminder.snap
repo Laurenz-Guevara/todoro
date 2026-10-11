@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 16).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Buy a birthday gift ⚑ Thu                              │"
+"│2. C╭ Remind me ─────────────────────────────────────╮    │"
+"│3. W│ Buy a birthday gift                            │    │"
+"│    │                                                │    │"
+"│    │ h  hours before                                │    │"
+"│    │ d  days before                                 │    │"
+"│    │ m  months before                               │    │"
+"│    │ c  on a day…                                   │    │"
+"│    │ x  remove the reminder                         │    │"
+"│    │                                                │    │"
+"│    │ Reminds you 5 days before.                     │    │"
+"│    │ Counted back from its day, Thu.                │    │"
+"│    ╰────────────────── esc cancel ──────────────────╯    │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" REMIND   h/d/m before  c on a day  x remove  esc cancel    "

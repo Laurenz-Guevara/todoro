@@ -72,6 +72,7 @@ todoro --help
 | `m` | Pin or unpin the selected item, so it moves to the next day until done |
 | `@` / `:deadline` | Set a deadline on the selected item |
 | `go` / `:overdue` | List the items past their deadline |
+| `r` / `:remind` | Set a reminder on the selected item |
 | `!` | Triage the selected item: High, Medium, Low, then no priority again |
 | `d` | Delete the selected item (asks to confirm) |
 | `yy` | Copy the selected item |
@@ -133,6 +134,14 @@ An item with a deadline shows `◷` and when it's due where the pin would be, li
 Whenever something is overdue, the top-right corner of the list says how many, like `⚠ 2 overdue · go`, on whichever day you're looking at. `go` (or `:overdue`) lists them, most recently due first, with their notes beside them on a wide terminal; `Enter` goes to one.
 
 A deadline works like a pin that stops: the item moves on to today and shows on the days ahead, up to its deadline day, and not after. If you don't finish it in time, it stays on its deadline day, in red, rather than following you. Setting a deadline unpins an item, since the deadline decides how far it moves on; to pin it again, remove the deadline first.
+
+### Reminders
+
+`r` (or `:remind`) sets a reminder on the selected item, usually one on a later day. Press `h`, `d` or `m` and type how many hours, days or months before you want reminding, then press `Enter`. Or press `c` to choose a day on the calendar, then type a time, or press `Enter` for the start of the day. `x` removes a reminder, and `Esc` backs out.
+
+Hours count back from the item's deadline, or from the end of its day if it has no deadline or no time, so `2` hours before an item on Friday reminds you at 22:00 on Friday. Days and months count back whole days and start at the beginning of the day, so you have all of it: `2` days before Friday reminds you from the start of Wednesday.
+
+Once a reminder is due, the item also shows at the top of today's list until its own day, with `⚑` and the day it's on, like `⚑ Fri`. Before then, the item shows `⚑` and how long before it you'll be reminded, like `⚑ 2d`. On other days, the top-right corner says how many reminders are due today, like `⚑ 2 today · t`. Completing an item stops its reminder.
 
 ### Insert mode
 

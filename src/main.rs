@@ -9,6 +9,7 @@ mod markdown;
 mod notes;
 mod notes_files;
 mod options;
+mod reminder;
 mod search;
 mod setup;
 mod store;

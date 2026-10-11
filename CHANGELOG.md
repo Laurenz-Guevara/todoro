@@ -18,6 +18,12 @@ Deadlines:
 - When something is overdue, the top-right corner of the list says so. `go` (or `:overdue`) lists what's overdue.
 - A new 12-hour clock option shows times like `11PM` instead of `23:00`.
 
+Reminders:
+
+- `r` (or `:remind`) sets a reminder on an item: `h`, `d` or `m` and a number for hours, days or months before, or `c` to choose a day on the calendar. `x` removes it.
+- Hours count back from the deadline, or from the end of the item's day. Days and months start at the beginning of the day, so you have all of it.
+- Once a reminder is due, the item shows at the top of today's list with `⚑` until its own day. On other days, the top-right corner says how many are due.
+
 Search:
 
 - `Space` `Space` finds items by their text, on any day. With nothing typed, it lists every item, so you can browse them.
