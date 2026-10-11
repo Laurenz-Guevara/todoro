@@ -172,7 +172,7 @@ pub const SECTIONS: &[Section] = &[
             ("J / K, yy, p / P", "Move, copy and paste, as on the list"),
             ("> / <, za", "Indent / outdent, fold (zc, zo too)"),
             ("m / @ / r", "Pin, deadline, reminder"),
-            ("V", "Select several (not to another day)"),
+            ("v / V", "Select several (not to another day)"),
             ("c", "Clear the item's time"),
             ("x / d", "Delete the item, asking first"),
             ("!", "Triage: High, Medium, Low, then none"),
@@ -417,7 +417,7 @@ mod tests {
         assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x", "Setting a reminder (r): x", "Planning the day (Space p): x / d"]);
         assert_eq!(found("?"), ["List: ?", "Notes: ?", "Calendar: ?"]);
         assert_eq!(found("$"), ["Notes: 0 / $"]);
-        assert!(found("v").contains(&"List: v".to_string()));
+        assert!(found("v").contains(&"List: V / v".to_string()));
         assert!(found("v").contains(&"Viewing notes (v): Esc / q / v".to_string()));
     }
 

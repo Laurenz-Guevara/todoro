@@ -393,7 +393,7 @@ const DEFAULT_LIST: &[(&str, Command)] = &[
     ("p", Command::PasteBelow),
     ("P", Command::PasteAbove),
     ("V", Command::Select),
-    ("v", Command::ViewNotes),
+    ("v", Command::Select),
     ("enter", Command::OpenNotes),
     ("u", Command::Undo),
     ("ctrl+r", Command::Redo),
@@ -415,6 +415,7 @@ const DEFAULT_LEADER: &[(&str, Command)] = &[
     ("o", Command::Options),
     ("w", Command::Workspaces),
     ("n", Command::PatchNotes),
+    ("v", Command::ViewNotes),
     ("t", Command::Timeline),
     ("p", Command::Plan),
 ];

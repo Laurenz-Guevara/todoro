@@ -84,9 +84,8 @@ These are the default keys. You can change any of them, and the leader menu's, i
 | `d` | Delete the selected item (asks to confirm) |
 | `yy` | Copy the selected item |
 | `p` / `P` | Paste the copied (or last deleted) item below / above the cursor |
-| `V` | Select several items |
+| `V` / `v` | Select several items |
 | `Enter` | Edit the selected item's notes, in your own editor if you've set one |
-| `v` | View the selected item's notes, formatted |
 | `u` / `Ctrl+R` | Undo / redo a change to the list |
 | `Space` | Open the menu of the commands below |
 | `Space` `Space` | Find items by their text, on any day |
@@ -100,6 +99,7 @@ These are the default keys. You can change any of them, and the leader menu's, i
 | `Space` `o` | Options: accessibility, your own notes editor, the todoro folder |
 | `Space` `w` | Workspaces: switch, create or delete |
 | `Space` `n` | Patch notes: what changed in every release |
+| `Space` `v` | View the selected item's notes, formatted |
 | `Space` `t` | The day as a timeline, with the time now |
 | `Space` `p` | Plan the day: give items a start and end time |
 | `?` | Show all keybindings |
@@ -202,7 +202,7 @@ With `A`, `Enter` adds the item and starts a new one below it, so you can type a
 
 To use your own editor instead, open the options (`Space` `o`) and set the notes editor to its command, like `nvim`, `hx` or `code --wait`. `Enter` then opens the item's Markdown file in it, and todoro picks up what you saved when it closes. Leave the command empty to go back to todoro's editor.
 
-`v` on an item shows its notes formatted, for reading: headings, lists and task lists (`- [ ]` and `- [x]`), quotes, code, tables, links and **bold** or *italic* text.
+`Space` `v` on an item shows its notes formatted, for reading: headings, lists and task lists (`- [ ]` and `- [x]`), quotes, code, tables, links and **bold** or *italic* text.
 
 | Key | Action |
 |---|---|
@@ -265,7 +265,7 @@ Type a few letters in order, like `dntst` for "Dentist at 3pm"; separate words m
 
 `↑` / `↓` (or `Ctrl+N` / `Ctrl+P`) select a result, and `Enter` goes to that item on its day. `Esc` stops typing, as in vim, so you can move through the results with `j` / `k` (`gg` / `G` to the first or last); `i` types again, and `Esc` or `q` closes the search.
 
-On a wide terminal, the results are on the left and the selected item's notes on the right, formatted as with `v`, so you can read them as you move. `Ctrl+D` / `Ctrl+U` scroll them.
+On a wide terminal, the results are on the left and the selected item's notes on the right, formatted as with `Space` `v`, so you can read them as you move. `Ctrl+D` / `Ctrl+U` scroll them.
 
 ### Timeline and planning
 
@@ -286,7 +286,7 @@ Both leave out completed items: they're about what's left to do. `Space` `p` pla
 | `e` / `E` | Edit the item, or edit it with its text cleared, as on the list |
 | `x` / `d` | Delete the item, asking first as on the list |
 | `u` / `Ctrl+R` | Undo / redo a change made in the plan, one at a time |
-| `J` / `K`, `yy` / `p` / `P`, `>` / `<`, `za` / `zc` / `zo`, `m`, `@`, `r`, `V`, counts | As on the list (selecting can't move items to another day here) |
+| `J` / `K`, `yy` / `p` / `P`, `>` / `<`, `za` / `zc` / `zo`, `m`, `@`, `r`, `v` / `V`, counts | As on the list (selecting can't move items to another day here) |
 | `c` | Clear the item's time, making it all day |
 | `!` | Triage the item, as on the list: its block takes the priority's colour |
 | `w` | Save the plan |

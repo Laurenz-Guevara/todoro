@@ -1624,7 +1624,7 @@ impl App {
         let items: Vec<Item> = rows.iter().map(|&row| self.items()[row].clone()).collect();
         let groups = self.group_by_day(&rows);
         match code {
-            KeyCode::Esc | KeyCode::Char('V') => {}
+            KeyCode::Esc | KeyCode::Char('V' | 'v') => {}
             KeyCode::Char('j') | KeyCode::Down => {
                 self.selected = (self.selected + 1).min(len - 1);
                 return Ok(());
@@ -4208,7 +4208,7 @@ mod tests {
     fn v_views_the_notes_and_esc_goes_back() {
         let (mut app, _dir) = app_with(&["Buy milk", "Call Sam"]);
         app.store.set_notes(today(), 1, "# Trip".into()).unwrap();
-        type_str(&mut app, "jv");
+        type_str(&mut app, "j v");
         assert!(matches!(app.mode, Mode::View(_)));
         // Keys that change things on the list do nothing here.
         type_str(&mut app, "xdp");
@@ -4219,14 +4219,14 @@ mod tests {
             press(&mut app, close);
             assert!(matches!(app.mode, Mode::Normal));
             assert_eq!(app.selected, 1);
-            type_str(&mut app, "v");
+            type_str(&mut app, " v");
         }
     }
 
     #[test]
     fn v_on_an_empty_list_does_nothing() {
         let (mut app, _dir) = app_with(&[]);
-        type_str(&mut app, "v");
+        type_str(&mut app, " v");
         assert!(matches!(app.mode, Mode::Normal));
     }
 
@@ -4235,14 +4235,14 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         app.store.set_notes(today(), 0, "oat".into()).unwrap();
         std::fs::write(app.store.notes_dir().join("buy-milk.md"), "soy").unwrap();
-        type_str(&mut app, "v");
+        type_str(&mut app, " v");
         assert_eq!(app.items()[0].notes, "soy");
     }
 
     #[test]
     fn editing_from_the_viewer_comes_back_to_it() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "vi");
+        type_str(&mut app, " vi");
         let Mode::Notes(editor) = &app.mode else { panic!("the notes screen") };
         assert!(!editor.insert, "in normal mode, as from the list");
         type_str(&mut app, "ioat");
@@ -4264,7 +4264,7 @@ mod tests {
     fn editing_from_the_viewer_in_your_own_editor_comes_back_to_it() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         app.settings.editor = Some("nvim".into());
-        type_str(&mut app, "ve");
+        type_str(&mut app, " ve");
         let (_, path) = app.start_external_edit().unwrap().unwrap();
         std::fs::write(&path, "# Shopping").unwrap();
         app.finish_external_edit(ok()).unwrap();
@@ -4281,7 +4281,7 @@ mod tests {
     #[test]
     fn help_from_the_viewer_goes_back_to_it() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "v?");
+        type_str(&mut app, " v?");
         assert!(matches!(app.mode, Mode::Help { .. }));
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::View(_)));
@@ -5891,6 +5891,17 @@ mod tests {
     }
 
     #[test]
+    fn v_selects_on_the_list_and_space_v_views_the_notes() {
+        let (mut app, _dir) = app_with(&["one", "two"]);
+        type_str(&mut app, "v");
+        assert!(matches!(app.mode, Mode::Visual { .. }));
+        type_str(&mut app, "v");
+        assert!(matches!(app.mode, Mode::Normal), "v again stops, as V does");
+        type_str(&mut app, " v");
+        assert!(matches!(app.mode, Mode::View(_)));
+    }
+
+    #[test]
     fn the_lists_keys_work_in_the_plan_too() {
         // Standup, Gym, Report and Buy milk.
         let (mut app, _dir) = planning_app();
@@ -5928,8 +5939,8 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(in_plan(&app));
         assert!(app.items()[0].reminder.is_some());
-        // V selects; d deletes the selection, then it's back to the plan.
-        type_str(&mut app, "Vjd");
+        // v selects; d deletes the selection, then it's back to the plan.
+        type_str(&mut app, "vjd");
         press(&mut app, KeyCode::Char('d'));
         assert!(in_plan(&app));
         assert_eq!(items(&app), ["Report", "Buy milk"]);
@@ -5937,7 +5948,7 @@ mod tests {
         type_str(&mut app, "u");
         assert_eq!(items(&app), ["Standup", "Gym", "Report", "Buy milk"]);
         // Selecting can't move items off the day being planned.
-        type_str(&mut app, "VL");
+        type_str(&mut app, "vL");
         assert!(matches!(app.mode, Mode::Visual { .. }));
         assert_eq!(app.day, today());
     }

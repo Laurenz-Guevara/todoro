@@ -25,7 +25,7 @@ space menu
 "││     o  options                     ││"
 "││     w  workspaces                  ││"
 "││     n  patch notes                 ││"
-"││     t  timeline                    ││"
+"││     v  view notes                  ││"
 "│╰────────────────────────────────────╯│"
 "╰─── h ← day · k ↑ · j ↓ · day → l ────╯"
 " LEADER   type a key  ⌫ back  esc cancel"

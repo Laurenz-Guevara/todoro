@@ -3313,7 +3313,7 @@ mod tests {
         shot(&app, "help");
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
-        type_str(&mut app, "v");
+        type_str(&mut app, " v");
         shot(&app, "viewing notes");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "@");
@@ -3349,7 +3349,7 @@ mod tests {
     fn viewing_notes() {
         let (mut app, _dir) = app_with(&["Plan the offsite"]);
         app.store.set_notes(app.day, 0, RICH_NOTES.into()).unwrap();
-        type_str(&mut app, "v");
+        type_str(&mut app, " v");
         assert_snapshot!(render_sized(&app, 60, 40).backend());
     }
 
@@ -3357,7 +3357,7 @@ mod tests {
     fn viewing_notes_scrolled() {
         let (mut app, _dir) = app_with(&["Plan the offsite"]);
         app.store.set_notes(app.day, 0, RICH_NOTES.into()).unwrap();
-        type_str(&mut app, "v");
+        type_str(&mut app, " v");
         render_sized(&app, 60, 16);
         type_str(&mut app, "G");
         assert_snapshot!(render_sized(&app, 60, 16).backend());
@@ -3366,7 +3366,7 @@ mod tests {
     #[test]
     fn viewing_an_item_without_notes() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, "v");
+        type_str(&mut app, " v");
         assert_snapshot!(render_sized(&app, 50, 8).backend());
     }
 
