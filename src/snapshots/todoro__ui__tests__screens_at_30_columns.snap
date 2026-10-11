@@ -18,11 +18,11 @@ list
 
 space menu
 "╭─ Mon, Oct 5 2026 (today) ──╮"
+"│1. Buy milk                 │"
 "│╭ Space ───────────────────╮│"
 "││ Space  find items        ││"
 "││     s  +search           ││"
 "││     c  calendar          ││"
-"││     t  tags              ││"
 "││     o  options           ││"
 "││     w  workspaces        ││"
 "││     n  what's new        ││"

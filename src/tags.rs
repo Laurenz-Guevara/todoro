@@ -1,4 +1,4 @@
-//! `#tags` written in items' text, and the `#` popup that lists them.
+//! `#tags` written in items' text, and the popup that lists them (`Space s t`).
 
 use std::cell::Cell;
 use std::ops::Range;

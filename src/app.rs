@@ -2259,7 +2259,7 @@ mod tests {
             ("  ", "search"),
             (" sg", "search"),
             (" c", "calendar"),
-            (" t", "tags"),
+            (" st", "tags"),
             (" o", "options"),
             (" w", "workspaces"),
             (" n", "changelog"),
@@ -2673,11 +2673,11 @@ mod tests {
     }
 
     #[test]
-    fn space_t_lists_tags_and_enter_shows_items_with_one() {
+    fn space_s_t_lists_tags_and_enter_shows_items_with_one() {
         let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home"]);
         let later = today() + chrono::Duration::days(5);
         app.store.insert(later, 0, "Send #Work report".into()).unwrap();
-        type_str(&mut app, " t");
+        type_str(&mut app, " st");
         assert!(matches!(app.mode, Mode::Tags(_)));
         // Most used first: work (2), then budget and home (1 each).
         press(&mut app, KeyCode::Enter);
@@ -2693,7 +2693,7 @@ mod tests {
     #[test]
     fn a_tags_items_can_be_narrowed_by_typing() {
         let (mut app, _dir) = app_with(&["Call #work", "Email #work"]);
-        type_str(&mut app, " t");
+        type_str(&mut app, " st");
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "email");
         press(&mut app, KeyCode::Enter);
@@ -2703,10 +2703,10 @@ mod tests {
     #[test]
     fn esc_or_hash_closes_the_tag_list() {
         let (mut app, _dir) = app_with(&["#a"]);
-        type_str(&mut app, " t");
+        type_str(&mut app, " st");
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
-        type_str(&mut app, " t#");
+        type_str(&mut app, " st#");
         assert!(matches!(app.mode, Mode::Normal));
     }
 

@@ -3082,14 +3082,14 @@ mod tests {
     #[test]
     fn tag_list() {
         let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home", "Send #work report"]);
-        type_str(&mut app, " tj");
+        type_str(&mut app, " stj");
         assert_snapshot!(render_sized(&app, 60, 12).backend());
     }
 
     #[test]
     fn tag_list_when_there_are_none() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
-        type_str(&mut app, " t");
+        type_str(&mut app, " st");
         assert_snapshot!(render_sized(&app, 40, 10).backend());
     }
 
@@ -3098,7 +3098,7 @@ mod tests {
         let (mut app, _dir) = app_with(&["Call #work about the #budget", "Water the plants #home"]);
         let later = app.day + chrono::Duration::days(5);
         app.store.insert(later, 0, "Send #Work report".into()).unwrap();
-        type_str(&mut app, " t");
+        type_str(&mut app, " st");
         press(&mut app, KeyCode::Enter);
         assert_snapshot!(render_sized(&app, 60, 12).backend());
     }

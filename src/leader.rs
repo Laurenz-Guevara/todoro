@@ -35,9 +35,9 @@ pub const BINDINGS: &[Binding] = &[
     Binding { keys: "sg", label: "search notes", command: Command::SearchNotes },
     Binding { keys: "sd", label: "deadlines", command: Command::Deadlines },
     Binding { keys: "sr", label: "reminders", command: Command::Reminders },
+    Binding { keys: "st", label: "tags", command: Command::Tags },
     Binding { keys: "so", label: "options", command: Command::SearchOptions },
     Binding { keys: "c", label: "calendar", command: Command::Calendar },
-    Binding { keys: "t", label: "tags", command: Command::Tags },
     Binding { keys: "o", label: "options", command: Command::Options },
     Binding { keys: "w", label: "workspaces", command: Command::Workspaces },
     Binding { keys: "n", label: "what's new", command: Command::WhatsNew },
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(leader.handle_key(KeyCode::Char('s')), Action::Stay);
         let shown = leader.entries();
         let keys: String = shown.iter().map(|entry| entry.key).collect();
-        assert_eq!(keys, "gdro");
+        assert_eq!(keys, "gdrto");
         assert_eq!(shown[0], Entry { key: 'g', label: "search notes".into(), group: false });
         assert_eq!(leader.handle_key(KeyCode::Char('g')), Action::Run(Command::SearchNotes));
         let start = Leader::default().entries();

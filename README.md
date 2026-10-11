@@ -86,9 +86,9 @@ todoro --help
 | `Space` `s` `g` | Search inside every item's notes |
 | `Space` `s` `d` | List every open item with a deadline, soonest first |
 | `Space` `s` `r` | List every open item with a reminder, soonest first |
+| `Space` `s` `t` | List your tags, to show every item with one |
 | `Space` `s` `o` | Search the options |
 | `Space` `c` | Open the calendar |
-| `Space` `t` | List your tags, to show every item with one |
 | `Space` `o` | Options: accessibility, your own notes editor, the todoro folder |
 | `Space` `w` | Workspaces: switch, create or delete |
 | `Space` `n` | What's new: the notes for every release |
@@ -216,7 +216,7 @@ You can paste text from elsewhere straight into notes, in either mode: it goes i
 
 ### Tags
 
-Write `#words` in an item to tag it, like "Call #work about the #budget". Tags are coloured on the list and ignore case, so `#Work` and `#work` are the same tag. `Space` `t` lists every tag with how many items have it; pick one with `j` / `k` and press `Enter` to see all its items across every day, where you can type to narrow them down and press `Enter` to go to one.
+Write `#words` in an item to tag it, like "Call #work about the #budget". Tags are coloured on the list and ignore case, so `#Work` and `#work` are the same tag. `Space` `s` `t` lists every tag with how many items have it; pick one with `j` / `k` and press `Enter` to see all its items across every day, where you can type to narrow them down and press `Enter` to go to one.
 
 ### Search
 
