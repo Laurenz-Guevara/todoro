@@ -62,6 +62,8 @@ pub const SECTIONS: &[Section] = &[
             ("Home / End", "Jump to the start / end of the line"),
             ("Backspace / Delete", "Delete before / under the cursor"),
             ("Enter / Esc", "Save"),
+            ("Tab", "Complete the #tag being typed"),
+            ("↑ / ↓", "Choose among the tags suggested"),
         ],
     },
     Section {

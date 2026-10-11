@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: terminal.backend()
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Read the book #later                                   │"
+"│2. Plan the #launch party                                 │"
+"│3. Tidy up #later                                         │"
+"│4. Call the bank #la                                      │"
+"│               ╭────────────╮                             │"
+"│               │ #later   2 │                             │"
+"│               │ #launch  1 │                             │"
+"│               ╰────────────╯                             │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" INSERT   tab complete tag  ↑/↓ choose  enter save as typed "

@@ -159,6 +159,8 @@ Adding or editing an item puts you in insert mode.
 | `Home` / `End` | Jump to the start / end of the line |
 | `Backspace` / `Delete` | Delete before / under the cursor |
 | `Enter` / `Esc` | Save |
+| `Tab` | Complete the `#tag` being typed |
+| `↑` / `↓` | Choose among the tags suggested (also `Ctrl+N` / `Ctrl+P`) |
 
 Saving a new item with no text discards it. Clearing all the text from an existing item and saving asks whether to delete it.
 
@@ -217,6 +219,8 @@ You can paste text from elsewhere straight into notes, in either mode: it goes i
 ### Tags
 
 Write `#words` in an item to tag it, like "Call #work about the #budget". Tags are coloured on the list and ignore case, so `#Work` and `#work` are the same tag. `Space` `s` `t` lists every tag with how many items have it; pick one with `j` / `k` and press `Enter` to see all its items across every day, where you can type to narrow them down and press `Enter` to go to one.
+
+While you type a tag in an item, the tags you've already used that start with what you've typed show under it, most used first: type `#l` and `#later` appears. `Tab` fills in the highlighted one, and `↑` / `↓` choose another. `Enter` saves the item as you typed it, so `#l` stays `#l`. Typing just `#` lists every tag. It works when adding items in the calendar too.
 
 ### Search
 

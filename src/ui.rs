@@ -47,7 +47,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match &app.mode {
         Mode::ConfirmDelete { rows } => draw_confirm(frame, app, rows),
         Mode::Help { help, .. } => draw_help(frame, help),
-        Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, calendar),
+        Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, app, calendar),
         Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.time.is_some()) => {
             draw_deadline_time(frame, app, calendar)
         }
@@ -337,8 +337,55 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     if let Mode::Insert { index, .. } = &app.mode {
         let (line, col) = typing_cursor;
         let row: usize = heights[state.offset()..list_row(*index)].iter().sum::<usize>() + line;
-        frame.set_cursor_position(Position::new(inner.x + (prefix_width + col) as u16, inner.y + row as u16));
+        let cursor = Position::new(inner.x + (prefix_width + col) as u16, inner.y + row as u16);
+        frame.set_cursor_position(cursor);
+        draw_tag_suggestions(frame, app, cursor);
     }
+}
+
+/// How many tag suggestions show at once.
+const TAG_SUGGESTIONS: usize = 5;
+
+/// The tags that could complete the `#tag` being typed, in a box under the
+/// cursor (or above it, without room below), the selected one highlighted.
+fn draw_tag_suggestions(frame: &mut Frame, app: &App, cursor: Position) {
+    let suggestions = app.tag_suggestions();
+    if suggestions.is_empty() {
+        return;
+    }
+    let screen = frame.area();
+    let selected = app.tag_choice.min(suggestions.len() - 1);
+    // Scroll so the selected one is always shown.
+    let first = (selected + 1).saturating_sub(TAG_SUGGESTIONS);
+    let shown = &suggestions[first..suggestions.len().min(first + TAG_SUGGESTIONS)];
+    let count_width = shown.iter().map(|(_, count)| count.to_string().len()).max().unwrap_or(1);
+    let room = (screen.width as usize).saturating_sub(4 + 2 + count_width).max(2);
+    let name_width = shown.iter().map(|(name, _)| name.width() + 1).max().unwrap_or(1).min(room);
+    let lines: Vec<Line> = shown
+        .iter()
+        .enumerate()
+        .map(|(i, (name, count))| {
+            let name = truncate(&format!("#{name}"), name_width);
+            let line = Line::from(vec![
+                format!(" {name:<name_width$}").into(),
+                format!("  {count:>count_width$} ").dim(),
+            ]);
+            if first + i == selected { line.bg(SELECTED_BG).bold() } else { line }
+        })
+        .collect();
+    // Borders, a space each side, and two between the name and the count.
+    let width = (name_width + count_width + 6) as u16;
+    let height = lines.len() as u16 + 2;
+    // Under the cursor, lined up with the #, or above it without room.
+    let typed = app.typing_tag_width() as u16;
+    // The # is just before what was typed; the border and a space come before it.
+    let x = cursor.x.saturating_sub(typed + 3).min(screen.width.saturating_sub(width));
+    let below = cursor.y + 1;
+    let y = if below + height <= screen.height.saturating_sub(1) { below } else { cursor.y.saturating_sub(height) };
+    let area = Rect::new(x, y, width.min(screen.width), height.min(screen.height));
+    let block = Block::bordered().border_type(BorderType::Rounded).border_style(Style::new().fg(Color::Magenta));
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// One item row on the main list.
@@ -529,6 +576,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Color::Blue,
             &[("a add", 4), ("e edit", 2), ("x done", 3), ("d delete", 1), ("↵ notes", 0), ("? help", 5)],
         ),
+        Mode::Insert { .. } if !app.tag_suggestions().is_empty() => {
+            ("INSERT", Color::Green, &[("tab complete tag", 3), ("↑/↓ choose", 1), ("enter save as typed", 2)])
+        }
         Mode::Insert { repeat: true, .. } => {
             ("INSERT", Color::Green, &[("←/→ move", 1), ("enter add & next", 3), ("esc done", 2)])
         }
@@ -587,6 +637,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
         Mode::Search(_) => {
             ("SEARCH", Color::Yellow, &[("j/k select", 3), ("↵ go to item", 2), ("i type", 1), ("esc close", 4)])
+        }
+        Mode::Calendar(calendar) if calendar.adding.is_some() && !app.tag_suggestions().is_empty() => {
+            ("ADD", Color::Green, &[("tab complete tag", 3), ("↑/↓ choose", 1), ("enter save as typed", 2)])
         }
         Mode::Calendar(calendar) if calendar.adding.is_some() => {
             ("ADD", Color::Green, &[("enter/esc save", 1), ("(empty discards)", 0)])
@@ -1102,7 +1155,7 @@ fn item_style(item: &Item) -> Style {
 }
 
 /// The popup for typing an item to add to the calendar's selected day.
-fn draw_adding(frame: &mut Frame, calendar: &Calendar) {
+fn draw_adding(frame: &mut Frame, app: &App, calendar: &Calendar) {
     let Some(input) = &calendar.adding else { return };
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(50);
@@ -1123,7 +1176,9 @@ fn draw_adding(frame: &mut Frame, calendar: &Calendar) {
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
-    frame.set_cursor_position(Position::new(inner.x + col as u16, inner.y + line as u16));
+    let cursor = Position::new(inner.x + col as u16, inner.y + line as u16);
+    frame.set_cursor_position(cursor);
+    draw_tag_suggestions(frame, app, cursor);
 }
 
 /// The time for a deadline, typed once its day is chosen.
@@ -2083,6 +2138,26 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom"]);
         type_str(&mut app, " s");
         assert_snapshot!(render_sized(&app, 70, 12).backend());
+    }
+
+    #[test]
+    fn tag_suggestions_while_typing() {
+        let (mut app, _dir) = app_with(&["Read the book #later", "Plan the #launch party", "Tidy up #later"]);
+        type_str(&mut app, "GaCall the bank #la");
+        press(&mut app, KeyCode::Down);
+        let mut terminal = render_sized(&app, 60, 12);
+        assert_snapshot!(terminal.backend());
+        // The cursor stays in the item being typed.
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert_eq!(cursor, Position::new(1 + 3 + 17, 4));
+        // After ↓, the second suggestion is the highlighted one, lined up
+        // under the # being typed.
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(18, 4)].symbol(), "#");
+        assert_eq!(buffer[(18, 7)].symbol(), "#");
+        assert_eq!(buffer[(18, 7)].bg, SELECTED_BG);
+        assert_ne!(buffer[(18, 6)].bg, SELECTED_BG);
+        assert_snapshot!("tag_suggestions_at_30_columns", render_sized(&app, 30, 12).backend());
     }
 
     #[test]

@@ -41,6 +41,7 @@ Notes:
 
 Items:
 
+- Typing a `#tag` suggests the tags you've already used that start with it. `Tab` fills in the highlighted one, `↑` and `↓` choose another, and `Enter` keeps what you typed.
 - `E` edits an item with its text cleared, to write it again. Leaving it empty keeps the item as it was.
 
 Options:

@@ -140,6 +140,8 @@ pub struct App {
     external: Option<External>,
     /// Whether editing was started from the viewer, to go back to it after.
     view_after_edit: bool,
+    /// Which tag suggestion is selected while typing a `#tag`.
+    pub tag_choice: usize,
 }
 
 impl App {
@@ -169,6 +171,7 @@ impl App {
             notes_register: None,
             external: None,
             view_after_edit: false,
+            tag_choice: 0,
         }
     }
 
@@ -274,6 +277,9 @@ impl App {
     }
 
     fn mode_key(&mut self, key: KeyEvent) -> io::Result<()> {
+        if self.complete_tag(key) {
+            return Ok(());
+        }
         match &mut self.mode {
             Mode::Normal if self.command.is_some() => self.command_key(key.code),
             Mode::Normal => self.normal_key(key.code)?,
@@ -712,6 +718,75 @@ impl App {
         self.selected = 0;
         self.clamp_selection();
         Ok(())
+    }
+
+    /// The item being typed, on the list or in the calendar, if any.
+    fn typing(&self) -> Option<&LineInput> {
+        match &self.mode {
+            Mode::Insert { input, .. } => Some(input),
+            Mode::Calendar(calendar) => calendar.adding.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn typing_mut(&mut self) -> Option<&mut LineInput> {
+        match &mut self.mode {
+            Mode::Insert { input, .. } => Some(input),
+            Mode::Calendar(calendar) => calendar.adding.as_mut(),
+            _ => None,
+        }
+    }
+
+    /// How wide the name of the `#tag` being typed is so far, to line the
+    /// suggestions up under it.
+    pub fn typing_tag_width(&self) -> usize {
+        use unicode_width::UnicodeWidthStr;
+        self.typing().and_then(|input| tags::typing_tag(&input.text, input.cursor)).map_or(0, |(_, typed)| typed.width())
+    }
+
+    /// Tags to complete the `#tag` being typed with, most used first.
+    pub fn tag_suggestions(&self) -> Vec<(String, usize)> {
+        let Some(input) = self.typing() else { return Vec::new() };
+        match tags::typing_tag(&input.text, input.cursor) {
+            Some((_, typed)) => tags::suggestions(&self.store, typed),
+            None => Vec::new(),
+        }
+    }
+
+    /// Keys for the tag suggestions while typing a `#tag`: `Tab` fills in
+    /// the selected one, and `↑`/`↓` (or `Ctrl+N`/`Ctrl+P`) choose. Returns
+    /// whether the key was used; any other key types as usual, and `Enter`
+    /// keeps the tag as typed.
+    fn complete_tag(&mut self, key: KeyEvent) -> bool {
+        let suggestions = self.tag_suggestions();
+        if suggestions.is_empty() {
+            self.tag_choice = 0;
+            return false;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let last = suggestions.len() - 1;
+        match key.code {
+            KeyCode::Up => self.tag_choice = self.tag_choice.saturating_sub(1),
+            KeyCode::Char('p') if ctrl => self.tag_choice = self.tag_choice.saturating_sub(1),
+            KeyCode::Down => self.tag_choice = (self.tag_choice + 1).min(last),
+            KeyCode::Char('n') if ctrl => self.tag_choice = (self.tag_choice + 1).min(last),
+            KeyCode::Tab => {
+                let name = suggestions[self.tag_choice.min(last)].0.clone();
+                self.tag_choice = 0;
+                if let Some(input) = self.typing_mut()
+                    && let Some((start, _)) = tags::typing_tag(&input.text, input.cursor)
+                {
+                    input.text.replace_range(start..input.cursor, &name);
+                    input.cursor = start + name.len();
+                }
+            }
+            _ => {
+                // Typing changes what's suggested, so start from the top.
+                self.tag_choice = 0;
+                return false;
+            }
+        }
+        true
     }
 
     /// Carries out a command chosen from the `Space` popup.
@@ -4096,5 +4171,65 @@ mod tests {
         type_str(&mut app, " o");
         let Mode::Options(options) = &app.mode else { panic!("the options") };
         assert!(!options.searching);
+    }
+
+    #[test]
+    fn tab_completes_a_tag_being_typed() {
+        let (mut app, _dir) = app_with(&["Read #later", "Ship #launch"]);
+        type_str(&mut app, "aCall #l");
+        assert_eq!(app.tag_suggestions().len(), 2);
+        press(&mut app, KeyCode::Tab);
+        let Mode::Insert { input, .. } = &app.mode else { panic!("still typing") };
+        assert_eq!(input.text, "Call #later");
+        assert_eq!(input.cursor, input.text.len());
+        assert!(app.tag_suggestions().is_empty(), "typed in full");
+        type_str(&mut app, " soon");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app)[1], "Call #later soon");
+    }
+
+    #[test]
+    fn enter_keeps_a_tag_as_typed() {
+        let (mut app, _dir) = app_with(&["Read #later"]);
+        type_str(&mut app, "aCall #l");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app)[1], "Call #l");
+    }
+
+    #[test]
+    fn arrows_choose_which_tag_tab_fills_in() {
+        let (mut app, _dir) = app_with(&["#later", "#later", "#launch"]);
+        type_str(&mut app, "a#la");
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.tag_choice, 1, "stops at the last");
+        app.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL)).unwrap();
+        app.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)).unwrap();
+        press(&mut app, KeyCode::Tab);
+        let Mode::Insert { input, .. } = &app.mode else { panic!("still typing") };
+        assert_eq!(input.text, "#launch");
+    }
+
+    #[test]
+    fn tab_does_nothing_without_a_tag_to_complete() {
+        let (mut app, _dir) = app_with(&["#later"]);
+        type_str(&mut app, "aplain");
+        press(&mut app, KeyCode::Tab);
+        let Mode::Insert { input, .. } = &app.mode else { panic!("still typing") };
+        assert_eq!(input.text, "plain");
+        // On the list, Tab does nothing either.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Tab);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn tags_complete_in_the_calendar_too() {
+        let (mut app, _dir) = app_with(&["Read #later"]);
+        type_str(&mut app, " ca#lat");
+        press(&mut app, KeyCode::Tab);
+        let Mode::Calendar(calendar) = &app.mode else { panic!("the calendar") };
+        assert_eq!(calendar.adding.as_ref().unwrap().text, "#later");
     }
 }

@@ -36,6 +36,34 @@ pub fn find_tags(text: &str) -> Vec<(Range<usize>, String)> {
     tags
 }
 
+/// Whether `c` can be part of a tag's name.
+fn is_tag_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '-' || c == '_'
+}
+
+/// The tag being typed at `cursor` in `text`, if the cursor is at the end
+/// of one: where its name starts (just after the `#`), and the name so far,
+/// which is empty just after a `#`.
+pub fn typing_tag(text: &str, cursor: usize) -> Option<(usize, &str)> {
+    if text[cursor..].chars().next().is_some_and(is_tag_char) {
+        return None;
+    }
+    let before = &text[..cursor];
+    let start = before.char_indices().rev().take_while(|(_, c)| is_tag_char(*c)).last().map_or(cursor, |(i, _)| i);
+    let hash = before[..start].strip_suffix('#')?;
+    if hash.chars().next_back().is_some_and(|c| !c.is_whitespace()) {
+        return None;
+    }
+    Some((start, &text[start..cursor]))
+}
+
+/// The tags already used that start with `typed` (ignoring case), most used
+/// first, to complete it with. A tag typed in full isn't suggested again.
+pub fn suggestions(store: &Store, typed: &str) -> Vec<(String, usize)> {
+    let typed = typed.to_lowercase();
+    all_tags(store).into_iter().filter(|(name, _)| name.starts_with(&typed) && *name != typed).collect()
+}
+
 /// Whether `text` has the tag `name` (given in lower case, without the `#`).
 pub fn has_tag(text: &str, name: &str) -> bool {
     find_tags(text).iter().any(|(_, tag)| tag == name)
@@ -161,5 +189,36 @@ mod tests {
         assert_eq!(press(KeyCode::Char('#')), Action::Close);
         assert_eq!(press(KeyCode::Esc), Action::Close);
         assert_eq!(TagPicker::default().handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), &[]), Action::Stay);
+    }
+
+    #[test]
+    fn the_tag_being_typed_is_the_one_the_cursor_ends() {
+        fn at_end(text: &str) -> Option<(usize, &str)> {
+            typing_tag(text, text.len())
+        }
+        assert_eq!(at_end("Call #l"), Some((6, "l")));
+        assert_eq!(at_end("#lat"), Some((1, "lat")));
+        assert_eq!(at_end("Call #"), Some((6, "")), "just after a #");
+        assert_eq!(at_end("#côté"), Some((1, "côté")));
+        assert_eq!(at_end("issue#4"), None, "not at the start of a word");
+        assert_eq!(at_end("Call #later "), None, "finished with a space");
+        assert_eq!(at_end("plain text"), None);
+        // Only at the end of the tag, not in its middle.
+        assert_eq!(typing_tag("#later", 2), None);
+        assert_eq!(typing_tag("#lat stuff", 4), Some((1, "lat")));
+    }
+
+    #[test]
+    fn suggestions_start_with_what_was_typed_most_used_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("todos.json")).unwrap();
+        for (i, text) in ["#later one", "#Later two", "#launch", "#work"].into_iter().enumerate() {
+            store.insert(crate::test_util::today(), i, text.into()).unwrap();
+        }
+        assert_eq!(suggestions(&store, "la"), [("later".to_string(), 2), ("launch".to_string(), 1)]);
+        assert_eq!(suggestions(&store, "LAT"), [("later".to_string(), 2)], "ignoring case");
+        assert_eq!(suggestions(&store, "").len(), 3, "every tag after a lone #");
+        assert!(suggestions(&store, "later").is_empty(), "typed in full");
+        assert!(suggestions(&store, "x").is_empty());
     }
 }
