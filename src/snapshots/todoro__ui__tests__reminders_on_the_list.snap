@@ -9,4 +9,4 @@ expression: terminal.backend()
 "│                                                │"
 "│                                                │"
 "╰──────── h ← day · k ↑ · j ↓ · day → l ─────────╯"
-" NORMAL   a add  e edit  x done  d delete  ? help "
+" NORMAL   a add  e edit  x done  ? help           "

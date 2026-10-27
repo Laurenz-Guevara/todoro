@@ -689,6 +689,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     // command with none.
     let normal: Vec<(String, u8)> = [
         (Command::Add, "add", 4),
+        (Command::AddSub, "add sub-item", 1),
         (Command::Edit, "edit", 2),
         (Command::ToggleDone, "done", 3),
         (Command::Delete, "delete", 1),
