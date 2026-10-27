@@ -169,7 +169,7 @@ An item with a deadline shows `◷` and when it's due where the pin would be, li
 
 Whenever something is overdue, the top-right corner of the list says how many, like `⚠ 2 overdue · go`, on whichever day you're looking at. `go` (or `:overdue`) lists them, most recently due first, with their notes beside them on a wide terminal; `Enter` goes to one.
 
-A deadline works like a pin that stops: the item moves on to today and shows on the days ahead, up to its deadline day, and not after. If you don't finish it in time, it stays on its deadline day, in red, rather than following you. Setting a deadline unpins an item, since the deadline decides how far it moves on; to pin it again, remove the deadline first.
+A deadline works like a pin that stops: the item moves on to today and shows on the days ahead up to its deadline day, and not after. If you don't finish it in time, it keeps coming to today's list, in red and counted in the corner, but never shows on the days ahead. Setting a deadline unpins an item, as it moves on anyway.
 
 ### Reminders
 

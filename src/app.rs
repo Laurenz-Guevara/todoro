@@ -241,7 +241,7 @@ impl App {
     /// Then come items from later days whose reminder is due by then.
     pub fn slots(&self) -> Vec<Slot> {
         let roots: Vec<(NaiveDate, usize)> = if self.day >= self.today {
-            let carried = self.store.carried_to(self.day).into_iter();
+            let carried = self.store.carried_to(self.day, self.today).into_iter();
             let reminded = self.store.reminded_on(self.day, self.today, self.now).into_iter();
             carried.chain(reminded).collect()
         } else {
@@ -4472,6 +4472,22 @@ mod tests {
         assert_eq!(items(&app), ["Report"], "on its deadline day");
         type_str(&mut app, "l");
         assert!(items(&app).is_empty(), "gone after it");
+    }
+
+    #[test]
+    fn an_overdue_item_is_on_todays_list_but_not_the_days_ahead() {
+        let (mut app, _dir) = app_with(&["Today's"]);
+        let days_ago = today() - Days::new(3);
+        app.store.insert(days_ago, 0, "Report".into()).unwrap();
+        let due = crate::deadline::Deadline { date: days_ago + Days::new(1), time: None };
+        app.store.set_deadline(days_ago, 0, Some(due)).unwrap();
+        assert_eq!(items(&app), ["Report", "Today's"]);
+        assert!(app.items()[0].is_overdue(today(), app.now));
+        type_str(&mut app, "l");
+        assert!(items(&app).is_empty(), "overdue, it doesn't follow you ahead");
+        // And startup moves it to today, as it does pinned items.
+        app.store.roll_over(today()).unwrap();
+        assert_eq!(app.store.items(today())[0].text, "Report");
     }
 
     #[test]

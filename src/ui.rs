@@ -125,8 +125,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .border_type(BorderType::Rounded)
         .title(title.clone().centered())
         .title_bottom(Line::from(hint).centered().dim());
-    // How many items are overdue in the top-right corner, wherever you are,
-    // since they stay on their deadline day rather than following you.
+    // How many items are overdue in the top-right corner, wherever you are:
+    // they're on today's list, but this shows on any day.
     let overdue = app.store.overdue_count(app.today, app.now);
     if overdue > 0 {
         let beside = (area.width as usize).saturating_sub(title.width()) / 2;

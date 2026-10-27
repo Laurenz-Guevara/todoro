@@ -1,6 +1,7 @@
 //! Deadlines on items (`@`): a day, and optionally a time on it. An open
-//! item with a deadline moves on to today like a pinned one, up to its
-//! deadline day, and stays there once that's passed.
+//! item with a deadline moves on to today like a pinned one, and once it's
+//! overdue it keeps doing so, in red, until it's done; it shows on the days
+//! ahead only up to its deadline day.
 
 use chrono::{Datelike, NaiveDate, NaiveTime, Timelike};
 
@@ -32,12 +33,6 @@ impl Deadline {
     /// lasts all day.
     pub fn is_overdue(self, today: NaiveDate, now: NaiveTime) -> bool {
         self.date < today || (self.date == today && self.time.is_some_and(|time| time < now))
-    }
-
-    /// The day an open item stored on an earlier day moves on to, by `today`:
-    /// today, or its deadline day once that's passed.
-    pub fn roll_to(self, today: NaiveDate) -> NaiveDate {
-        self.date.min(today)
     }
 
     /// How it's shown beside an item, counting days from `today`: just the
@@ -193,11 +188,5 @@ mod tests {
         for broken in ["", "soon", "2026-13-01", "2026-10-12 25:00", "2026-10-12 1pm"] {
             assert_eq!(Deadline::from_stored(broken), None, "{broken}");
         }
-    }
-
-    #[test]
-    fn items_roll_on_to_today_but_not_past_their_deadline() {
-        assert_eq!(on(3, None).roll_to(today()), today());
-        assert_eq!(on(-2, None).roll_to(today()), on(-2, None).date);
     }
 }

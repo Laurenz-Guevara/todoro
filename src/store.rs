@@ -53,16 +53,19 @@ impl Item {
     }
 
     /// The day this item, stored on an earlier day, moves on to by `today`:
-    /// today if it's pinned, or up to its deadline day. `None` if it stays
-    /// where it is (completed, or neither pinned nor due).
+    /// today if it's pinned or has a deadline, overdue or not, so what's
+    /// late is always in front of you. `None` if it stays where it is
+    /// (completed, or neither pinned nor due).
     pub fn roll_to(&self, today: NaiveDate) -> Option<NaiveDate> {
-        if self.done {
-            return None;
-        }
-        match self.deadline {
-            Some(deadline) => Some(deadline.roll_to(today)),
-            None => self.pinned.then_some(today),
-        }
+        (!self.done && (self.pinned || self.deadline.is_some())).then_some(today)
+    }
+
+    /// Whether this item, stored on an earlier day, shows on `day` too: if
+    /// it's pinned, or has a deadline and `day` is no later than it, or no
+    /// later than `today` (so an overdue item is on today's list, but not
+    /// on the days ahead).
+    pub fn shows_on(&self, day: NaiveDate, today: NaiveDate) -> bool {
+        !self.done && (self.pinned || self.deadline.is_some_and(|deadline| day <= deadline.date || day <= today))
     }
 }
 
@@ -303,8 +306,8 @@ impl Store {
     /// forward until completed. Everything else stays on its day.
     pub fn roll_over(&mut self, today: NaiveDate) -> io::Result<()> {
         let today_key = key(today);
-        // Where each moving item goes: today, or its deadline day if that's
-        // passed. Oldest first, so they keep their order.
+        // Where each moving item goes: today. Oldest first, so they keep
+        // their order.
         let mut moving: BTreeMap<NaiveDate, Vec<Item>> = BTreeMap::new();
         self.days.retain(|day, items| {
             if *day < today_key
@@ -338,9 +341,9 @@ impl Store {
     }
 
     /// Where the open items from days before `day` that show on it are, as
-    /// `(day, index)`, oldest day first: pinned ones, and ones due on `day` or
-    /// later. These are what `roll_over` would move to `day`.
-    pub fn carried_to(&self, day: NaiveDate) -> Vec<(NaiveDate, usize)> {
+    /// `(day, index)`, oldest day first: pinned ones, ones due on `day` or
+    /// later, and on `today` overdue ones (`Item::shows_on`).
+    pub fn carried_to(&self, day: NaiveDate, today: NaiveDate) -> Vec<(NaiveDate, usize)> {
         self.days
             .range(..key(day))
             .filter_map(|(k, items)| Some((NaiveDate::parse_from_str(k, "%Y-%m-%d").ok()?, items)))
@@ -348,7 +351,7 @@ impl Store {
                 items
                     .iter()
                     .enumerate()
-                    .filter(|(_, item)| item.depth == 0 && item.roll_to(day) == Some(day))
+                    .filter(|(_, item)| item.depth == 0 && item.shows_on(day, today))
                     .map(move |(i, _)| (date, i))
             })
             .collect()
@@ -953,9 +956,9 @@ mod tests {
         insert_pinned(&mut store, today(), "done");
         store.toggle_done(today(), 2).unwrap();
         insert_pinned(&mut store, day(2), "later");
-        assert_eq!(store.carried_to(day(2)), [(day(-1), 0), (today(), 1)]);
-        assert_eq!(store.carried_to(day(3)), [(day(-1), 0), (today(), 1), (day(2), 0)]);
-        assert!(store.carried_to(day(-1)).is_empty());
+        assert_eq!(store.carried_to(day(2), today()), [(day(-1), 0), (today(), 1)]);
+        assert_eq!(store.carried_to(day(3), today()), [(day(-1), 0), (today(), 1), (day(2), 0)]);
+        assert!(store.carried_to(day(-1), today()).is_empty());
     }
 
     #[test]
@@ -1180,37 +1183,41 @@ mod tests {
         let mut store = Store::open(path).unwrap();
         store.insert(today(), 0, "Report".into()).unwrap();
         store.set_deadline(today(), 0, Some(due(2, Some((9, 0))))).unwrap();
-        assert_eq!(store.carried_to(day(1)), [(today(), 0)]);
-        assert_eq!(store.carried_to(day(2)), [(today(), 0)], "on its deadline day");
-        assert!(store.carried_to(day(3)).is_empty(), "not after it");
+        assert_eq!(store.carried_to(day(1), today()), [(today(), 0)]);
+        assert_eq!(store.carried_to(day(2), today()), [(today(), 0)], "on its deadline day");
+        assert!(store.carried_to(day(3), today()).is_empty(), "not after it");
+        // Overdue by then, it shows on today, but still not on the days ahead.
+        assert_eq!(store.carried_to(day(3), day(3)), [(today(), 0)]);
+        assert!(store.carried_to(day(4), day(3)).is_empty());
         // Once done, it stays on its day.
         store.toggle_done(today(), 0).unwrap();
-        assert!(store.carried_to(day(1)).is_empty());
+        assert!(store.carried_to(day(1), today()).is_empty());
     }
 
     #[test]
-    fn roll_over_moves_items_with_a_deadline_to_today_or_their_deadline_day() {
+    fn roll_over_moves_items_with_a_deadline_to_today_overdue_or_not() {
         let (_dir, path) = temp_path();
         let mut store = Store::open(path).unwrap();
         // Due later: moves to today, like a pinned item.
         store.insert(day(-3), 0, "due later".into()).unwrap();
         store.set_deadline(day(-3), 0, Some(due(2, None))).unwrap();
-        // Due yesterday: moves only as far as yesterday, and stays there.
+        // Overdue since yesterday, or since before the day it's on: today too,
+        // so what's late is in front of you.
         store.insert(day(-3), 1, "due yesterday".into()).unwrap();
         store.set_deadline(day(-3), 1, Some(due(-1, Some((17, 0))))).unwrap();
-        // Due before the day it's on: stays put.
         store.insert(day(-2), 0, "due before".into()).unwrap();
         store.set_deadline(day(-2), 0, Some(due(-5, None))).unwrap();
         store.insert(day(-3), 2, "plain".into()).unwrap();
+        store.insert(day(-3), 3, "done".into()).unwrap();
+        store.set_deadline(day(-3), 3, Some(due(-4, None))).unwrap();
+        store.toggle_done(day(-3), 3).unwrap();
         store.roll_over(today()).unwrap();
-        assert_eq!(texts(&store, today()), ["due later"]);
-        assert_eq!(texts(&store, day(-1)), ["due yesterday"]);
-        assert_eq!(texts(&store, day(-2)), ["due before"]);
-        assert_eq!(texts(&store, day(-3)), ["plain"]);
-        // Nothing more moves on later days.
+        assert_eq!(texts(&store, today()), ["due later", "due yesterday", "due before"], "oldest day first");
+        assert!(store.items(day(-1)).is_empty());
+        assert_eq!(texts(&store, day(-3)), ["plain", "done"], "the rest stay");
+        // They keep moving until done.
         store.roll_over(day(1)).unwrap();
-        assert_eq!(texts(&store, day(-1)), ["due yesterday"]);
-        assert_eq!(texts(&store, day(1)), ["due later"]);
+        assert_eq!(texts(&store, day(1)), ["due later", "due yesterday", "due before"]);
     }
 
     #[test]
@@ -1580,7 +1587,7 @@ mod tests {
         let (_dir, _path, mut store) = store_with(
             r#"{ "2026-10-03": [{ "text": "trip", "pinned": true, "items": ["flights", { "text": "pinned sub", "pinned": true }] }, "stays"] }"#,
         );
-        assert_eq!(store.carried_to(today()), [(day(-2), 0)], "only the top-level item");
+        assert_eq!(store.carried_to(today(), today()), [(day(-2), 0)], "only the top-level item");
         store.roll_over(today()).unwrap();
         assert_eq!(outline_of(&store, today()), ["trip", "  flights", "  pinned sub"]);
         assert_eq!(outline_of(&store, day(-2)), ["stays"]);
