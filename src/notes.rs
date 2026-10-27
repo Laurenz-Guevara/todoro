@@ -241,6 +241,7 @@ impl NotesEditor {
         // step when insert mode ends, with everything typed in it.
         let before = self.snapshot();
         let action = self.normal_key(key, ctrl);
+        self.update_cursor_style();
         if self.insert {
             self.insert_before = Some(before);
         } else {
@@ -349,6 +350,12 @@ impl NotesEditor {
             self.count = None;
             return Action::Stay;
         }
+        // After r, any character replaces, digits included.
+        if self.pending == Some('r') {
+            self.pending = None;
+            let times = self.count.take().unwrap_or(1);
+            return self.replace(c, times);
+        }
         // Digits build a count for the next command, as in vim: 4j moves down
         // four lines and 42G goes to line 42. A 0 only counts after another digit.
         if c.is_ascii_digit() && (c != '0' || self.count.is_some()) {
@@ -374,11 +381,15 @@ impl NotesEditor {
                 self.operator = Some(Operator { op: c, count, prefix: None });
                 Action::Stay
             }
-            // Short for d$, c$, yy, cl and cc, as in vim.
+            // Short for d$, c$, yy and cc, as in vim.
             (_, 'D') => self.operator_key(Operator { op: 'd', count, prefix: None }, '$', None),
             (_, 'C') => self.operator_key(Operator { op: 'c', count, prefix: None }, '$', None),
             (_, 'Y') => self.operator_key(Operator { op: 'y', count, prefix: None }, 'y', None),
-            (_, 's') => self.operator_key(Operator { op: 'c', count, prefix: None }, 'l', None),
+            (_, 'r') => {
+                self.pending = Some('r');
+                self.count = count;
+                Action::Stay
+            }
             (_, 'S') => self.operator_key(Operator { op: 'c', count, prefix: None }, 'c', None),
             (_, ':') => {
                 self.command = Some(LineInput::default());
@@ -560,6 +571,25 @@ impl NotesEditor {
             }
         }
         Some(((row, start), (row, end)))
+    }
+
+    /// Replaces `times` characters from the cursor with `c`, staying in normal
+    /// mode on the last of them (`r`, `3rx`). Like vim, it does nothing if
+    /// the line doesn't have that many left.
+    fn replace(&mut self, c: char, times: usize) -> Action {
+        let (row, col) = self.position();
+        if col + times > self.line_len() {
+            return Action::Stay;
+        }
+        let mut lines = self.textarea.lines().to_vec();
+        let line: String = lines[row]
+            .chars()
+            .enumerate()
+            .map(|(i, old)| if (col..col + times).contains(&i) { c } else { old })
+            .collect();
+        lines[row] = line;
+        self.set_lines(lines, (row, col + times - 1));
+        Action::Stay
     }
 
     /// Carries out operator `op` on the text from `start` up to `end`.
@@ -856,6 +886,7 @@ impl NotesEditor {
         self.operator = None;
         self.count = None;
         self.textarea.insert_str(&text);
+        self.update_cursor_style();
         // Back onto the last character pasted, as after leaving insert mode.
         self.back();
         self.clamp();
@@ -910,8 +941,10 @@ impl NotesEditor {
         self.update_cursor_style();
     }
 
+    /// A block cursor in normal mode, and an underline while typing or
+    /// waiting for `r`'s replacement, as in vim.
     fn update_cursor_style(&mut self) {
-        let modifier = if self.insert { Modifier::UNDERLINED } else { Modifier::REVERSED };
+        let modifier = if self.insert || self.pending == Some('r') { Modifier::UNDERLINED } else { Modifier::REVERSED };
         self.textarea.set_cursor_style(Style::new().add_modifier(modifier));
     }
 
@@ -1868,7 +1901,58 @@ mod tests {
         assert_eq!(after_keys("one two", 3, "cwx<esc>").0, "onextwo", "on a blank, like dw");
         assert_eq!(after_keys("one two three", 4, "C!<esc>").0, "one !");
         assert_eq!(after_keys("one two", 4, "ciwsix<esc>").0, "one six");
-        assert_eq!(after_keys("abc", 0, "sx<esc>").0, "xbc");
+    }
+
+    #[test]
+    fn r_replaces_the_character_and_stays_in_normal_mode() {
+        let mut ed = editor("cat");
+        send(&mut ed, "rb");
+        assert_eq!(ed.notes(), "bat");
+        assert!(!ed.insert);
+        assert_eq!(cursor(&ed), (0, 0));
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "cat", "one undo step");
+        // Digits and command keys are replacements after r, not counts or commands.
+        assert_eq!(after_keys("abc", 1, "r5"), ("a5c".into(), (0, 1)));
+        assert_eq!(after_keys("abc", 1, "rd"), ("adc".into(), (0, 1)));
+        assert_eq!(after_keys("abc", 0, "r "), (" bc".into(), (0, 0)));
+        assert_eq!(after_keys("café", 3, "re"), ("cafe".into(), (0, 3)), "multibyte");
+    }
+
+    #[test]
+    fn a_count_before_r_replaces_that_many_if_there_are_enough() {
+        assert_eq!(after_keys("abcdef", 1, "3rx"), ("axxxef".into(), (0, 3)));
+        assert_eq!(after_keys("abc", 1, "5rx"), ("abc".into(), (0, 1)), "too few left");
+        assert_eq!(after_keys("", 0, "rx"), ("".into(), (0, 0)), "on an empty line");
+    }
+
+    #[test]
+    fn the_cursor_is_an_underline_while_waiting_for_rs_character() {
+        let underlined = |ed: &NotesEditor| ed.textarea.cursor_style().add_modifier.contains(Modifier::UNDERLINED);
+        let mut ed = editor("abc");
+        assert!(!underlined(&ed), "a block in normal mode");
+        send(&mut ed, "r");
+        assert!(underlined(&ed));
+        send(&mut ed, "x");
+        assert!(!underlined(&ed), "a block again once replaced");
+        send(&mut ed, "r<esc>");
+        assert!(!underlined(&ed), "or cancelled");
+        send(&mut ed, "r");
+        ed.paste_text("z");
+        assert!(!underlined(&ed), "or pasted over");
+    }
+
+    #[test]
+    fn esc_after_r_cancels_it() {
+        let mut ed = editor("abc");
+        assert_eq!(send(&mut ed, "r<esc>"), Action::Stay);
+        send(&mut ed, "x");
+        assert_eq!(ed.notes(), "bc", "x deletes as usual");
+    }
+
+    #[test]
+    fn s_does_nothing() {
+        assert_eq!(after_keys("abc", 0, "sx"), ("bc".into(), (0, 0)), "only the x acts");
     }
 
     #[test]

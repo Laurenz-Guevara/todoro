@@ -246,7 +246,7 @@ In normal mode:
 | `diw` / `daw` | Delete the word under the cursor (`aw` takes the blanks after it too); `ciw`, `yiw` and the rest work the same way |
 | `D` / `C` | Delete / change to the end of the line |
 | `cc` / `S` | Change the whole line, keeping its indent |
-| `s` | Change the character under the cursor |
+| `r` | Replace the character under the cursor with the next one you type, staying in normal mode (`3rx` replaces three) |
 | `p` / `P` | Paste below / above (also into another item's notes) |
 | `v` | Select text by moving the cursor; then `y` copies it, `d` cuts it, `J` / `K` move its lines down / up, and `Esc` cancels |
 | `V` | Select whole lines; `j` / `k` extend the selection, `J` / `K` move the lines, `y` copies them, `d` deletes them, and `Esc` deselects |

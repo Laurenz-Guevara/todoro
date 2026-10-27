@@ -57,7 +57,7 @@ pub const SECTIONS: &[Section] = &[
             ("diw / daw", "Delete the word (aw with its blanks); also c and y"),
             ("D / C", "Delete / change to the end of the line"),
             ("cc / S", "Change the whole line, keeping its indent"),
-            ("s", "Change the character under the cursor"),
+            ("r", "Replace the character under the cursor with the next one typed"),
             ("p / P", "Paste below / above"),
             ("v", "Select text: then y copies, d cuts, J / K move its lines"),
             ("V", "Select whole lines; j / k extend, J / K move them"),
