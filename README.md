@@ -239,7 +239,14 @@ In normal mode:
 | `o` / `O` | Open a new line below / above |
 | `x` | Delete the character under the cursor |
 | `dd` | Delete the line, keeping it to paste |
-| `yy` | Copy the line (it flashes briefly to show it's copied) |
+| `yy` / `Y` | Copy the line (it flashes briefly to show it's copied) |
+| `d` + motion | Delete as far as the motion goes: `dw`, `de`, `db`, `d0`, `d^`, `d$`, `dh`, `dl`, or whole lines with `dj`, `dk`, `dG`, `dgg`. Counts work either side, like `2dw` or `d3w` |
+| `c` + motion | Change: delete as `d` does, then type. `cw` stops at the end of the word, as in vim |
+| `y` + motion | Copy as far as the motion goes, like `yw` or `y$` |
+| `diw` / `daw` | Delete the word under the cursor (`aw` takes the blanks after it too); `ciw`, `yiw` and the rest work the same way |
+| `D` / `C` | Delete / change to the end of the line |
+| `cc` / `S` | Change the whole line, keeping its indent |
+| `s` | Change the character under the cursor |
 | `p` / `P` | Paste below / above (also into another item's notes) |
 | `v` | Select text by moving the cursor; then `y` copies it, `d` cuts it, `J` / `K` move its lines down / up, and `Esc` cancels |
 | `V` | Select whole lines; `j` / `k` extend the selection, `J` / `K` move the lines, `y` copies them, `d` deletes them, and `Esc` deselects |

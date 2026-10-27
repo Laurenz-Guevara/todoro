@@ -13,8 +13,10 @@ use crate::ui::VISUAL_BG;
 pub struct NotesEditor {
     pub textarea: TextArea<'static>,
     pub insert: bool,
-    /// First key of a two-key command (`gg`, `dd`) waiting for its second key.
+    /// First key of a two-key command (`gg`) waiting for its second key.
     pending: Option<char>,
+    /// An operator (`d`, `c`, `y`) waiting for what it acts on.
+    operator: Option<Operator>,
     /// A count typed before a command, like the 4 in `4j`.
     count: Option<usize>,
     /// The `:` command being typed, if any.
@@ -59,6 +61,30 @@ pub struct Register {
     pub linewise: bool,
 }
 
+/// An operator typed and waiting for its motion, as in vim: `d` deletes,
+/// `c` changes (deletes, then types) and `y` copies. Typing it again (`dd`)
+/// acts on whole lines.
+#[derive(Clone, Copy, Debug)]
+struct Operator {
+    op: char,
+    /// The count typed before the operator, as the 2 in `2dw`.
+    count: Option<usize>,
+    /// `i` or `a` for a text object (`diw`), or `g` for `dgg`.
+    prefix: Option<char>,
+}
+
+/// What kind of character this is, for words: blanks, word characters
+/// (letters, digits and `_`), or punctuation.
+fn class(c: char) -> u8 {
+    if c.is_whitespace() {
+        0
+    } else if c.is_alphanumeric() || c == '_' {
+        1
+    } else {
+        2
+    }
+}
+
 /// The text and cursor at one point, for undo.
 #[derive(Clone, PartialEq)]
 struct Snapshot {
@@ -82,6 +108,7 @@ impl NotesEditor {
             textarea: TextArea::default(),
             insert: false,
             pending: None,
+            operator: None,
             count: None,
             command: None,
             register: None,
@@ -198,11 +225,13 @@ impl NotesEditor {
         match key.code {
             KeyCode::Char('u') if !ctrl && self.visual.is_none() => {
                 self.pending = None;
+                self.operator = None;
                 self.undo();
                 return Action::Stay;
             }
             KeyCode::Char('r') if ctrl && self.visual.is_none() => {
                 self.pending = None;
+                self.operator = None;
                 self.redo();
                 return Action::Stay;
             }
@@ -285,8 +314,12 @@ impl NotesEditor {
 
     fn command_key(&mut self, key: KeyEvent, ctrl: bool) -> Action {
         let KeyCode::Char(c) = key.code else {
-            self.pending = None;
+            // Any other key cancels an unfinished command, Esc included.
+            let unfinished = self.pending.take().is_some() | self.operator.take().is_some();
             let times = self.count.take().unwrap_or(1);
+            if unfinished && key.code == KeyCode::Esc {
+                return Action::Stay;
+            }
             return match key.code {
                 KeyCode::Esc => Action::Close,
                 // Ctrl+arrows go to the start of a word (like b) or its end (like e).
@@ -312,6 +345,7 @@ impl NotesEditor {
         // Ignore Ctrl combinations other than undo and redo, so Ctrl+U doesn't act like u.
         if ctrl {
             self.pending = None;
+            self.operator = None;
             self.count = None;
             return Action::Stay;
         }
@@ -324,17 +358,28 @@ impl NotesEditor {
         }
         let count = self.count.take();
         let times = count.unwrap_or(1);
+        if let Some(operator) = self.operator.take() {
+            return self.operator_key(operator, c, count);
+        }
 
         match (self.pending.take(), c) {
             (Some('g'), 'g') => self.go_to_line(count.unwrap_or(1)),
-            (Some('d'), 'd') => self.delete_lines(self.textarea.cursor().0, times),
-            (Some('y'), 'y') => self.yank_lines(self.textarea.cursor().0, times),
-            (_, 'g' | 'd' | 'y') => {
+            (_, 'g') => {
                 self.pending = Some(c);
-                // Keep the count for the second key, as in 3dd.
+                // Keep the count for the second key, as in 3gg.
                 self.count = count;
                 Action::Stay
             }
+            (_, 'd' | 'c' | 'y') => {
+                self.operator = Some(Operator { op: c, count, prefix: None });
+                Action::Stay
+            }
+            // Short for d$, c$, yy, cl and cc, as in vim.
+            (_, 'D') => self.operator_key(Operator { op: 'd', count, prefix: None }, '$', None),
+            (_, 'C') => self.operator_key(Operator { op: 'c', count, prefix: None }, '$', None),
+            (_, 'Y') => self.operator_key(Operator { op: 'y', count, prefix: None }, 'y', None),
+            (_, 's') => self.operator_key(Operator { op: 'c', count, prefix: None }, 'l', None),
+            (_, 'S') => self.operator_key(Operator { op: 'c', count, prefix: None }, 'c', None),
             (_, ':') => {
                 self.command = Some(LineInput::default());
                 Action::Stay
@@ -398,6 +443,217 @@ impl NotesEditor {
             }
             _ => Action::Stay,
         }
+    }
+
+    /// The key after an operator: a motion (`dw`, `c$`), the operator again
+    /// for whole lines (`dd`, `3yy`), or a text object (`diw`, `caw`). Counts
+    /// before the operator and the motion multiply, as in vim (`2d3w`).
+    fn operator_key(&mut self, mut operator: Operator, c: char, count: Option<usize>) -> Action {
+        let given = operator.count.or(count).map(|_| operator.count.unwrap_or(1) * count.unwrap_or(1));
+        let times = given.unwrap_or(1);
+        let op = operator.op;
+        let (row, _) = self.position();
+        let last = self.textarea.lines().len() - 1;
+        match (operator.prefix, c) {
+            (None, 'i' | 'a' | 'g') => {
+                operator.prefix = Some(c);
+                operator.count = given;
+                self.operator = Some(operator);
+                Action::Stay
+            }
+            (Some('g'), 'g') => {
+                let to = given.map_or(0, |n| n.saturating_sub(1).min(last));
+                self.lines_op(op, to.min(row), row.abs_diff(to) + 1)
+            }
+            (Some('i' | 'a'), 'w') => match self.word_object(operator.prefix == Some('a')) {
+                Some((start, end)) => self.apply(op, start, end),
+                None => Action::Stay,
+            },
+            (Some(_), _) => Action::Stay,
+            (None, c) if c == op => self.lines_op(op, row, times),
+            (None, 'j') => self.lines_op(op, row, times + 1),
+            (None, 'k') => {
+                let from = row.saturating_sub(times);
+                self.lines_op(op, from, row - from + 1)
+            }
+            (None, 'G') => {
+                let to = given.map_or(last, |n| n.saturating_sub(1).min(last));
+                self.lines_op(op, to.min(row), row.abs_diff(to) + 1)
+            }
+            (None, motion) => match self.motion_range(op, motion, times) {
+                Some((start, end)) => self.apply(op, start, end),
+                None => Action::Stay,
+            },
+        }
+    }
+
+    /// Where an operator with `motion` acts, from the cursor: a start and an
+    /// end just past the last character, which can be on another line.
+    fn motion_range(&mut self, op: char, motion: char, times: usize) -> Option<((usize, usize), (usize, usize))> {
+        let start = self.position();
+        let (row, col) = start;
+        let len = self.line_len();
+        let range = match motion {
+            // cw on a word changes to its end, like ce, but not past it.
+            'w' if op == 'c' && self.char_at(start).is_some_and(|c| !c.is_whitespace()) => {
+                let end = self.run_end(start);
+                self.textarea.move_cursor(CursorMove::Jump(row as u16, (end - 1) as u16));
+                let end = self.after(CursorMove::WordEnd, times - 1);
+                (start, (end.0, end.1 + 1))
+            }
+            'w' => {
+                let to = self.after(CursorMove::WordForward, times);
+                // The last word on a line ends at the line's end, not at the
+                // next line's first word; and with no word after, it ends at
+                // the line's end too.
+                let end = if to == start {
+                    (row, len)
+                } else if to.0 > row && to.1 <= self.first_non_blank_col(to.0) {
+                    (to.0 - 1, self.textarea.lines()[to.0 - 1].chars().count())
+                } else {
+                    to
+                };
+                (start, end)
+            }
+            'e' => {
+                let to = self.after(CursorMove::WordEnd, times);
+                (start, (to.0, (to.1 + 1).min(self.textarea.lines()[to.0].chars().count())))
+            }
+            'b' => (self.after(CursorMove::WordBack, times), start),
+            '0' => ((row, 0), start),
+            '^' | '_' => {
+                let first = self.first_non_blank_col(row);
+                ((row, first.min(col)), (row, first.max(col)))
+            }
+            '$' => (start, (row, len)),
+            'h' => ((row, col.saturating_sub(times)), start),
+            'l' => (start, (row, (col + times).min(len))),
+            _ => return None,
+        };
+        Some(range)
+    }
+
+    /// The word under the cursor (`iw`), or with the blanks after it, or
+    /// before it if none follow (`aw`). On blanks, `iw` is the blanks and
+    /// `aw` adds the word after them.
+    fn word_object(&self, around: bool) -> Option<((usize, usize), (usize, usize))> {
+        let (row, col) = self.position();
+        let chars: Vec<char> = self.textarea.lines()[row].chars().collect();
+        let here = class(*chars.get(col)?);
+        let mut start = col;
+        while start > 0 && class(chars[start - 1]) == here {
+            start -= 1;
+        }
+        let mut end = self.run_end((row, col));
+        if around {
+            let blank = |i: usize| chars.get(i).is_some_and(|c| c.is_whitespace());
+            if here == 0 {
+                end = self.run_end((row, end));
+            } else if blank(end) {
+                while blank(end) {
+                    end += 1;
+                }
+            } else {
+                while start > 0 && blank(start - 1) {
+                    start -= 1;
+                }
+            }
+        }
+        Some(((row, start), (row, end)))
+    }
+
+    /// Carries out operator `op` on the text from `start` up to `end`.
+    fn apply(&mut self, op: char, start: (usize, usize), end: (usize, usize)) -> Action {
+        let text = self.text_between(start, end);
+        if !text.is_empty() {
+            self.register = Some(Register { text, linewise: false });
+        }
+        if op == 'y' {
+            if start < end {
+                self.flash = Some((start.0..=end.0, Instant::now()));
+            }
+            self.textarea.move_cursor(CursorMove::Jump(start.0 as u16, start.1 as u16));
+            self.clamp();
+            return Action::Stay;
+        }
+        let mut lines = self.textarea.lines().to_vec();
+        let before: String = lines[start.0].chars().take(start.1).collect();
+        let after: String = lines[end.0].chars().skip(end.1).collect();
+        lines.splice(start.0..=end.0, [before + &after]);
+        // Changing types where the text was.
+        if op == 'c' {
+            self.set_insert(true);
+        }
+        self.set_lines(lines, start);
+        Action::Stay
+    }
+
+    /// Operator `op` on `count` whole lines from `row`: `dd` deletes them,
+    /// `yy` copies them, and `cc` replaces them with one line to type on,
+    /// keeping the first one's indent.
+    fn lines_op(&mut self, op: char, row: usize, count: usize) -> Action {
+        match op {
+            'd' => self.delete_lines(row, count),
+            'y' => {
+                let col = if row == self.position().0 { self.col() } else { 0 };
+                self.textarea.move_cursor(CursorMove::Jump(row as u16, col as u16));
+                self.yank_lines(row, count);
+                self.clamp();
+                Action::Stay
+            }
+            _ => {
+                let mut lines = self.textarea.lines().to_vec();
+                let end = (row + count).min(lines.len());
+                let indent: String = lines[row].chars().take_while(|c| c.is_whitespace()).collect();
+                let removed: Vec<String> = lines.splice(row..end, [indent.clone()]).collect();
+                self.register = Some(Register { text: removed.join("\n"), linewise: true });
+                self.set_insert(true);
+                self.set_lines(lines, (row, indent.chars().count()));
+                Action::Stay
+            }
+        }
+    }
+
+    /// The text from `start` up to (not including) `end`, with `\n` between lines.
+    fn text_between(&self, start: (usize, usize), end: (usize, usize)) -> String {
+        let lines = self.textarea.lines();
+        (start.0..=end.0)
+            .map(|row| {
+                let from = if row == start.0 { start.1 } else { 0 };
+                let to = if row == end.0 { end.1 } else { usize::MAX };
+                lines[row].chars().skip(from).take(to.saturating_sub(from)).collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Where the cursor would be after moving `times` times with `m`, leaving it
+    /// there.
+    fn after(&mut self, m: CursorMove, times: usize) -> (usize, usize) {
+        for _ in 0..times {
+            self.textarea.move_cursor(m);
+        }
+        self.position()
+    }
+
+    /// Just past the run of characters of the same kind as the one at `at`.
+    fn run_end(&self, (row, col): (usize, usize)) -> usize {
+        let chars: Vec<char> = self.textarea.lines()[row].chars().collect();
+        let Some(&here) = chars.get(col) else { return col };
+        col + chars[col..].iter().take_while(|&&c| class(c) == class(here)).count()
+    }
+
+    fn char_at(&self, (row, col): (usize, usize)) -> Option<char> {
+        self.textarea.lines()[row].chars().nth(col)
+    }
+
+    fn first_non_blank_col(&self, row: usize) -> usize {
+        self.textarea.lines()[row].chars().take_while(|c| c.is_whitespace()).count()
+    }
+
+    fn position(&self) -> (usize, usize) {
+        let cursor = self.textarea.cursor();
+        (cursor.0, cursor.1)
     }
 
     /// Runs a `:` command: a line number to go to it, `:q` (or `:wq`, `:x`)
@@ -597,6 +853,7 @@ impl NotesEditor {
         }
         let before = self.snapshot();
         self.pending = None;
+        self.operator = None;
         self.count = None;
         self.textarea.insert_str(&text);
         // Back onto the last character pasted, as after leaving insert mode.
@@ -1520,9 +1777,143 @@ mod tests {
     #[test]
     fn an_unfinished_command_is_cancelled_by_the_next_key() {
         let mut ed = editor("one\ntwo");
-        send(&mut ed, "dj");
+        send(&mut ed, "dzj");
         assert_eq!(ed.notes(), "one\ntwo");
         assert_eq!(cursor(&ed), (1, 0));
+    }
+
+    /// The notes and cursor after `keys`, from `text` with the cursor at `col`
+    /// on the first line.
+    fn after_keys(text: &str, col: usize, keys: &str) -> (String, (usize, usize)) {
+        let mut ed = editor(text);
+        ed.textarea.move_cursor(CursorMove::Jump(0, col as u16));
+        send(&mut ed, keys);
+        (ed.textarea.lines().join("\n"), cursor(&ed))
+    }
+
+    #[test]
+    fn d_with_a_motion_deletes_as_far_as_it_goes() {
+        assert_eq!(after_keys("one two three", 0, "dw"), ("two three".into(), (0, 0)));
+        assert_eq!(after_keys("one two three", 4, "de"), ("one  three".into(), (0, 4)));
+        assert_eq!(after_keys("one two three", 8, "db"), ("one three".into(), (0, 4)));
+        assert_eq!(after_keys("one two three", 4, "d$"), ("one ".into(), (0, 3)));
+        assert_eq!(after_keys("one two three", 4, "D"), ("one ".into(), (0, 3)));
+        assert_eq!(after_keys("  one two", 6, "d0"), ("two".into(), (0, 0)));
+        assert_eq!(after_keys("  one two", 6, "d^"), ("  two".into(), (0, 2)));
+        assert_eq!(after_keys("abcdef", 2, "2dl"), ("abef".into(), (0, 2)));
+        assert_eq!(after_keys("abcdef", 2, "dh"), ("acdef".into(), (0, 1)));
+    }
+
+    #[test]
+    fn dw_on_a_lines_last_word_stops_at_the_line_end() {
+        assert_eq!(after_keys("one two\nthree", 4, "dw"), ("one \nthree".into(), (0, 3)));
+        assert_eq!(after_keys("last", 0, "dw"), ("".into(), (0, 0)), "with nothing after");
+        // A count can carry on to the next line.
+        assert_eq!(after_keys("a b\nc d", 0, "3dw"), ("d".into(), (0, 0)));
+    }
+
+    #[test]
+    fn counts_before_the_operator_and_motion_multiply() {
+        let text = "a b c d e f g";
+        assert_eq!(after_keys(text, 0, "2dw").0, "c d e f g");
+        assert_eq!(after_keys(text, 0, "d2w").0, "c d e f g");
+        assert_eq!(after_keys(text, 0, "2d2w").0, "e f g");
+    }
+
+    #[test]
+    fn d_with_j_k_g_and_capital_g_deletes_whole_lines() {
+        let text = "1\n2\n3\n4\n5";
+        let on = |row: usize, keys: &str| {
+            let mut ed = editor(text);
+            ed.textarea.move_cursor(CursorMove::Jump(row as u16, 0));
+            send(&mut ed, keys);
+            ed.notes()
+        };
+        assert_eq!(on(1, "dj"), "1\n4\n5");
+        assert_eq!(on(1, "2dj"), "1\n5");
+        assert_eq!(on(2, "dk"), "1\n4\n5");
+        assert_eq!(on(2, "dG"), "1\n2");
+        assert_eq!(on(2, "dgg"), "4\n5");
+        assert_eq!(on(1, "d4G"), "1\n5");
+    }
+
+    #[test]
+    fn iw_and_aw_act_on_the_word_under_the_cursor() {
+        assert_eq!(after_keys("one two three", 5, "diw"), ("one  three".into(), (0, 4)));
+        assert_eq!(after_keys("one two three", 5, "daw"), ("one three".into(), (0, 4)));
+        // At the line's end, aw takes the blanks before the word instead.
+        assert_eq!(after_keys("one two", 5, "daw"), ("one".into(), (0, 2)));
+        // Punctuation is a word of its own.
+        assert_eq!(after_keys("foo.bar", 1, "diw"), (".bar".into(), (0, 0)));
+        assert_eq!(after_keys("", 0, "diw"), ("".into(), (0, 0)), "nothing to act on");
+    }
+
+    #[test]
+    fn deleted_text_goes_to_the_register_to_paste() {
+        let mut ed = editor("one two three");
+        send(&mut ed, "dwwP");
+        assert_eq!(ed.notes(), "two one three");
+        assert_eq!(register(&ed), ("one ", false));
+    }
+
+    #[test]
+    fn c_deletes_then_types_and_is_one_undo_step() {
+        let mut ed = editor("one two three");
+        send(&mut ed, "wcwfour<esc>");
+        assert_eq!(ed.notes(), "one four three", "cw stops at the word's end, like ce");
+        assert!(!ed.insert);
+        send(&mut ed, "u");
+        assert_eq!(ed.notes(), "one two three");
+        assert_eq!(after_keys("one two", 2, "cwx<esc>").0, "onx two", "only the rest of the word");
+        assert_eq!(after_keys("one two", 3, "cwx<esc>").0, "onextwo", "on a blank, like dw");
+        assert_eq!(after_keys("one two three", 4, "C!<esc>").0, "one !");
+        assert_eq!(after_keys("one two", 4, "ciwsix<esc>").0, "one six");
+        assert_eq!(after_keys("abc", 0, "sx<esc>").0, "xbc");
+    }
+
+    #[test]
+    fn cc_and_capital_s_replace_lines_keeping_the_indent() {
+        let mut ed = editor("one\n  - two\nthree");
+        send(&mut ed, "jccnew<esc>");
+        assert_eq!(ed.notes(), "one\n  new\nthree");
+        send(&mut ed, "kSfirst<esc>");
+        assert_eq!(ed.notes(), "first\n  new\nthree");
+        assert_eq!(register(&ed), ("one", true));
+    }
+
+    #[test]
+    fn y_with_a_motion_copies_without_changing_the_text() {
+        let mut ed = editor("one two three");
+        send(&mut ed, "wyw");
+        assert_eq!(ed.notes(), "one two three");
+        assert_eq!(register(&ed), ("two ", false));
+        assert_eq!(cursor(&ed), (0, 4));
+        assert_eq!(flashed(&ed), Some(0..=0));
+        // yb copies backwards and moves to where it starts.
+        send(&mut ed, "$yb");
+        assert_eq!(register(&ed), ("thre", false));
+        assert_eq!(cursor(&ed), (0, 8));
+        send(&mut ed, "yiw");
+        assert_eq!(register(&ed), ("three", false));
+        send(&mut ed, "Y");
+        assert_eq!(register(&ed), ("one two three", true));
+    }
+
+    #[test]
+    fn esc_cancels_an_operator_rather_than_closing() {
+        let mut ed = editor("one two");
+        assert_eq!(send(&mut ed, "d<esc>"), Action::Stay);
+        assert_eq!(send(&mut ed, "w"), Action::Stay);
+        assert_eq!(ed.notes(), "one two", "w only moved");
+        assert_eq!(cursor(&ed), (0, 4));
+        assert_eq!(send(&mut ed, "di<esc>"), Action::Stay);
+        assert_eq!(send(&mut ed, "<esc>"), Action::Close);
+    }
+
+    #[test]
+    fn operators_count_multibyte_characters_as_one() {
+        assert_eq!(after_keys("café au lait", 0, "dw").0, "au lait");
+        assert_eq!(after_keys("naïve ünïcode", 7, "diw").0, "naïve ");
     }
 
     #[test]
