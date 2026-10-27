@@ -1015,10 +1015,32 @@ impl App {
                 }
                 self.mode = Mode::View(Viewer::default());
             }
+            Command::ViewAll if len > 0 => {
+                if let Some(slot) = slot {
+                    let end = outline::block_end(self.store.items(slot.day), slot.index);
+                    for index in slot.index..end {
+                        self.store.reload_notes(slot.day, index)?;
+                    }
+                }
+                self.mode = Mode::View(Viewer::whole());
+            }
+            Command::ViewDay => {
+                // Every item on the list and everything under it, so read
+                // each notes file again in case something else changed it.
+                for slot in self.slots() {
+                    if self.store.items(slot.day)[slot.index].depth == 0 {
+                        let end = outline::block_end(self.store.items(slot.day), slot.index);
+                        for index in slot.index..end {
+                            self.store.reload_notes(slot.day, index)?;
+                        }
+                    }
+                }
+                self.mode = Mode::View(Viewer::day());
+            }
             // Handled before running, as they aren't changes to record.
             Command::Undo | Command::Redo => {}
             // Needing an item, with none.
-            Command::Copy | Command::Edit | Command::EditCleared | Command::Delete | Command::Select | Command::OpenNotes | Command::ViewNotes | Command::Today => {}
+            Command::Copy | Command::Edit | Command::EditCleared | Command::Delete | Command::Select | Command::OpenNotes | Command::ViewNotes | Command::ViewAll | Command::Today => {}
             // Like finding files in many vim setups.
             Command::FindItems => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Items))),
             Command::SearchNotes => self.mode = Mode::Search(Box::new(Search::new(search::Kind::Notes))),
@@ -4221,6 +4243,94 @@ mod tests {
             assert_eq!(app.selected, 1);
             type_str(&mut app, " v");
         }
+    }
+
+    #[test]
+    fn space_shift_v_views_the_item_and_all_its_sub_items() {
+        let (mut app, _dir) = app_with(&["Trip", "Buy milk"]);
+        type_str(&mut app, "oFlights");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "k V");
+        let Mode::View(viewer) = &app.mode else { panic!("the viewer") };
+        assert_eq!(viewer.scope, viewer::Scope::Item);
+        // Read-only: these don't open the notes.
+        type_str(&mut app, "ie");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::View(_)));
+        for close in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('V')] {
+            press(&mut app, close);
+            assert!(matches!(app.mode, Mode::Normal));
+            assert_eq!(app.selected, 0);
+            type_str(&mut app, " V");
+        }
+        // Help comes back to the same view.
+        type_str(&mut app, "?");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(&app.mode, Mode::View(viewer) if viewer.scope == viewer::Scope::Item));
+    }
+
+    #[test]
+    fn space_shift_v_rereads_every_notes_file_in_the_block() {
+        let (mut app, _dir) = app_with(&["Trip"]);
+        type_str(&mut app, "oFlights");
+        press(&mut app, KeyCode::Esc);
+        app.store.set_notes(today(), 1, "aisle".into()).unwrap();
+        std::fs::write(app.store.notes_dir().join("flights.md"), "window").unwrap();
+        type_str(&mut app, "k V");
+        assert_eq!(app.store.items(today())[1].notes, "window");
+    }
+
+    #[test]
+    fn space_shift_v_on_an_empty_list_does_nothing() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, " V");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn space_e_views_the_whole_day_read_only() {
+        let (mut app, _dir) = app_with(&["Trip", "Buy milk"]);
+        type_str(&mut app, "j");
+        type_str(&mut app, " e");
+        let Mode::View(viewer) = &app.mode else { panic!("the viewer") };
+        assert_eq!(viewer.scope, viewer::Scope::Day);
+        // Read-only: these don't open any notes.
+        type_str(&mut app, "ieV");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::View(_)));
+        for close in [KeyCode::Esc, KeyCode::Char('q')] {
+            press(&mut app, close);
+            assert!(matches!(app.mode, Mode::Normal));
+            assert_eq!(app.selected, 1, "the selection stays");
+            type_str(&mut app, " e");
+        }
+        // Help comes back to the same view.
+        type_str(&mut app, "?");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(&app.mode, Mode::View(viewer) if viewer.scope == viewer::Scope::Day));
+    }
+
+    #[test]
+    fn space_e_rereads_every_notes_file_on_the_day() {
+        let (mut app, _dir) = app_with(&["Trip", "Buy milk"]);
+        type_str(&mut app, "oFlights");
+        press(&mut app, KeyCode::Esc);
+        app.store.set_notes(today(), 1, "aisle".into()).unwrap();
+        app.store.set_notes(today(), 2, "oat".into()).unwrap();
+        std::fs::write(app.store.notes_dir().join("flights.md"), "window").unwrap();
+        std::fs::write(app.store.notes_dir().join("buy-milk.md"), "soy").unwrap();
+        type_str(&mut app, " e");
+        assert_eq!(app.store.items(today())[1].notes, "window");
+        assert_eq!(app.store.items(today())[2].notes, "soy");
+    }
+
+    #[test]
+    fn space_e_opens_on_an_empty_day_too() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, " e");
+        assert!(matches!(app.mode, Mode::View(_)));
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]

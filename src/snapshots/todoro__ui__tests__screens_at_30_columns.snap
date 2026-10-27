@@ -86,6 +86,34 @@ viewing notes
 "╰───────── esc back ──── All ╯"
 " VIEW   i edit  ? help        "
 
+viewing all
+"╭─ 2. Write the quarterly … ─╮"
+"│ Write the quarterly report │"
+"│ for the team               │"
+"│                            │"
+"│ Q3                         │"
+"│ ──                         │"
+"│                            │"
+"│ • Ask for Q3 numbers       │"
+"│ ☐ Book a room              │"
+"│                            │"
+"╰───────── esc back ──── All ╯"
+" VIEW   j/k scroll  ? help    "
+
+viewing the day
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│ 1. Buy milk                │"
+"│                            │"
+"│ ────────────────────────── │"
+"│                            │"
+"│ 2. Write the quarterly     │"
+"│ report for the team        │"
+"│                            │"
+"│ Q3                         │"
+"│ ──                         │"
+"╰───────── esc back ──── Top ╯"
+" VIEW   j/k scroll  ? help    "
+
 choosing a deadline
 "╭ Deadline for Write the qu… ╮"
 "│           October          │"

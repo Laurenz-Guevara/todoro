@@ -1,0 +1,12 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 40, 8).backend()"
+---
+"╭─── Monday, October 5 2026 (today) ───╮"
+"│ Nothing on this day.                 │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰─────── j/k scroll · esc back ─── All ╯"
+" VIEW   j/k scroll  esc back  ? help    "

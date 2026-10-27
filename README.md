@@ -100,6 +100,8 @@ These are the default keys. You can change any of them, and the leader menu's, i
 | `Space` `w` | Workspaces: switch, create or delete |
 | `Space` `n` | Patch notes: what changed in every release |
 | `Space` `v` | View the selected item's notes, formatted |
+| `Space` `V` | View the selected item and all its sub-items, with their notes |
+| `Space` `e` | View every item on the day, with its sub-items and notes |
 | `Space` `t` | The day as a timeline, with the time now |
 | `Space` `p` | Plan the day: give items a start and end time |
 | `?` | Show all keybindings |
@@ -212,6 +214,10 @@ To use your own editor instead, open the options (`Space` `o`) and set the notes
 | `gg` / `G` | Top / bottom |
 | `i` / `e` / `Enter` | Edit the notes, then come back to the formatted view |
 | `Esc` / `q` / `v` | Back to the list |
+
+`Space` `V` shows an item's whole outline the same way, to read in one go: its title and notes, then each sub-item (and theirs, however deep) with its notes, separated by blank lines. It scrolls with the same keys and is read-only; `Esc`, `q` or `V` goes back.
+
+`Space` `e` does the same for the whole day: every item on the list, numbered as there, each with its notes and all its sub-items, and a line between items. Folded sub-items show too. `Esc` or `q` goes back.
 
 In normal mode:
 
@@ -446,6 +452,8 @@ The help (`?`) shows each key with its command's name in grey. These are all the
 | `paste-above` | Paste above |
 | `select` | Select several items |
 | `view-notes` | View the selected item's notes, formatted |
+| `view-all` | View the selected item and all its sub-items, with their notes |
+| `view-day` | View every item on the day, with its sub-items and notes |
 | `open-notes` | Edit the selected item's notes (in your own editor, if set in the options) |
 | `undo` | Undo a change to the list |
 | `redo` | Redo a change to the list |

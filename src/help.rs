@@ -75,6 +75,20 @@ pub const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: "Viewing everything (Space V)",
+        bindings: &[
+            ("j / k, gg / G", "Scroll, as when viewing notes"),
+            ("Esc / q / V", "Back to the list"),
+        ],
+    },
+    Section {
+        title: "Viewing the day (Space e)",
+        bindings: &[
+            ("j / k, gg / G", "Scroll, as when viewing notes"),
+            ("Esc / q", "Back to the list"),
+        ],
+    },
+    Section {
         title: "Selecting several (V)",
         bindings: &[
             ("j / k", "Extend the selection down / up"),
@@ -423,7 +437,17 @@ mod tests {
 
     #[test]
     fn single_key_search_is_case_sensitive() {
-        assert_eq!(found("G"), ["List: G", "Notes: gg / G", "Viewing notes (v): gg / G", "Search: j / k, gg / G"]);
+        assert_eq!(
+            found("G"),
+            [
+                "List: G",
+                "Notes: gg / G",
+                "Viewing notes (v): gg / G",
+                "Viewing everything (Space V): j / k, gg / G",
+                "Viewing the day (Space e): j / k, gg / G",
+                "Search: j / k, gg / G"
+            ]
+        );
         assert_eq!(found("O"), ["List: O", "Notes: o / O", "Planning the day (Space p): o / O"]);
         assert!(found("g").contains(&"Notes: gg / G".to_string()));
         assert!(!found("A").contains(&"List: a".to_string()));

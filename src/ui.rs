@@ -28,7 +28,7 @@ use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
 use crate::deadline::{self, Deadline};
 use crate::reminder::{self, Reminder};
-use crate::viewer::Viewer;
+use crate::viewer::{Scope, Viewer};
 use crate::markdown;
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -97,16 +97,7 @@ fn strip_colour(buffer: &mut Buffer) {
 }
 
 fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
-    // Use the longest date that fits, shortening it before dropping "(today)".
-    let room = (area.width as usize).saturating_sub(4);
-    let today = if app.day == app.today { " (today)" } else { "" };
-    let dates = ["%A, %B %-d %Y", "%a, %b %-d %Y", "%a %-d %b"].map(|format| app.day.format(format).to_string());
-    let (date, today) = [today, ""]
-        .iter()
-        .flat_map(|today| dates.iter().map(move |date| (date.clone(), *today)))
-        .find(|(date, today)| date.width() + today.width() <= room)
-        .unwrap_or_else(|| (truncate(&app.day.format("%-d/%-m").to_string(), room), ""));
-    let title = vec![" ".into(), date.bold(), today.fg(Color::Green), " ".into()];
+    let title = day_title(app, (area.width as usize).saturating_sub(4));
 
     // The keys for moving around, as keys.toml has them.
     let key = |command| list_key(app, command);
@@ -120,7 +111,6 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         &hints.iter().map(String::as_str).collect::<Vec<_>>(),
         (area.width as usize).saturating_sub(2),
     );
-    let title = Line::from(title);
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(title.clone().centered())
@@ -552,23 +542,51 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     }
 }
 
+/// The day on screen as the list's title: the longest date that fits in
+/// `room`, shortened before dropping "(today)".
+fn day_title(app: &App, room: usize) -> Line<'static> {
+    let today = if app.day == app.today { " (today)" } else { "" };
+    let dates = ["%A, %B %-d %Y", "%a, %b %-d %Y", "%a %-d %b"].map(|format| app.day.format(format).to_string());
+    let (date, today) = [today, ""]
+        .iter()
+        .flat_map(|today| dates.iter().map(move |date| (date.clone(), *today)))
+        .find(|(date, today)| date.width() + today.width() <= room)
+        .unwrap_or_else(|| (truncate(&app.day.format("%-d/%-m").to_string(), room), ""));
+    Line::from(vec![" ".into(), date.bold(), today.fg(Color::Green), " ".into()])
+}
+
 /// The selected item's notes as formatted Markdown, scrolled as far as the
 /// viewer says, with where you are in the corner as in vim.
 fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
     let room = (area.width as usize).saturating_sub(4);
-    let item = app.items()[app.selected];
-    let title = format!("{}{}", row_label(app, app.selected), item.text);
-    let title = format!(" {} ", truncate(&title, room.saturating_sub(2)));
+    let title = match viewer.scope {
+        Scope::Day => day_title(app, room),
+        Scope::Notes | Scope::Item => {
+            let title = format!("{}{}", row_label(app, app.selected), app.items()[app.selected].text);
+            Line::from(format!(" {} ", truncate(&title, room.saturating_sub(2))).bold())
+        }
+    };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(Line::from(title.bold()).centered())
+        .title(title.centered())
         .padding(Padding::horizontal(1));
     let inner = block.inner(area);
+    let width = inner.width as usize;
 
-    let lines = if item.notes.trim().is_empty() {
-        vec![Line::from("No notes yet. Press i to write some.").dark_gray()]
-    } else {
-        markdown::render(&item.notes, inner.width as usize)
+    let lines = match viewer.scope {
+        Scope::Day => day_lines(app, width),
+        Scope::Item => {
+            let slot = app.slots()[app.selected];
+            whole_lines(app.store.items(slot.day), slot.index, "", width)
+        }
+        Scope::Notes => {
+            let notes = &app.items()[app.selected].notes;
+            if notes.trim().is_empty() {
+                vec![Line::from("No notes yet. Press i to write some.").dark_gray()]
+            } else {
+                markdown::render(notes, width)
+            }
+        }
     };
     let height = inner.height as usize;
     viewer.height.set(height);
@@ -578,12 +596,82 @@ fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
 
     let position = format!(" {} ", scroll_position(scroll, max));
     let hint_room = (area.width as usize).saturating_sub(2 + 2 * (position.width() + 1));
-    let hint = fit_first(&[" j/k scroll · i edit · esc back ", " i edit · esc back ", " esc back "], hint_room);
+    let hints: &[&str] = if viewer.read_only() {
+        &[" j/k scroll · esc back ", " esc back "]
+    } else {
+        &[" j/k scroll · i edit · esc back ", " i edit · esc back ", " esc back "]
+    };
+    let hint = fit_first(hints, hint_room);
     let block = block
         .title_bottom(Line::from(hint).centered().dim())
         .title_bottom(Line::from(position).right_aligned().dim());
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
+}
+
+/// Every item on the list, for `Space e`: each top-level item's block as
+/// `Space V` shows it, numbered as on the list, with a rule between them.
+/// Folded sub-items show too, as this is for reading everything.
+fn day_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    let items = app.items();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (row, slot) in app.slots().into_iter().enumerate() {
+        if items[row].depth > 0 {
+            continue;
+        }
+        if !lines.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::from("─".repeat(width)).dark_gray());
+            lines.push(Line::default());
+        }
+        lines.extend(whole_lines(app.store.items(slot.day), slot.index, &row_label(app, row), width));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from("Nothing on this day.").dark_gray());
+    }
+    lines
+}
+
+/// The item at `root` and its whole block, for `Space V`: its title (after
+/// `label`) and notes, then each sub-item's title, indented by depth under a bullet as on the list,
+/// and its notes, with a blank line between each of them.
+fn whole_lines(items: &[Item], root: usize, label: &str, width: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let gap = |lines: &mut Vec<Line<'static>>| {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+    };
+    let depth = items[root].depth;
+    for item in &items[root..outline::block_end(items, root)] {
+        // Two columns a level, but always leaving most of the width for text.
+        let indent = (2 * item.depth.saturating_sub(depth + 1)).min(width / 3);
+        let pad = " ".repeat(indent);
+        if item.depth == depth {
+            for part in wrap(&format!("{label}{}", item.text), width.max(1), usize::MAX) {
+                lines.push(Line::from(if item.done { part.dark_gray().bold() } else { part.bold() }));
+            }
+        } else {
+            gap(&mut lines);
+            let bullet = if item.done { SUB_DONE } else { SUB_OPEN };
+            let room = width.saturating_sub(indent + bullet.width() + 1).max(1);
+            for (n, part) in wrap(&item.text, room, usize::MAX).into_iter().enumerate() {
+                let lead = if n == 0 { format!("{pad}{bullet} ") } else { " ".repeat(indent + bullet.width() + 1) };
+                let text = if item.done { part.dark_gray().bold() } else { part.bold() };
+                lines.push(Line::from(vec![lead.into(), text]));
+            }
+        }
+        if !item.notes.trim().is_empty() {
+            gap(&mut lines);
+            // Notes sit under their title's text, past the bullet.
+            let notes_indent = if item.depth > depth { indent + 2 } else { 0 };
+            for mut line in markdown::render(&item.notes, width.saturating_sub(notes_indent).max(1)) {
+                line.spans.insert(0, " ".repeat(notes_indent).into());
+                lines.push(line);
+            }
+        }
+    }
+    lines
 }
 
 /// Paints whole lines of the notes in `style`: lines selected with `V`, or
@@ -746,6 +834,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
+        Mode::View(viewer) if viewer.read_only() => ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("esc back", 1), ("? help", 4)]),
         Mode::View(_) => ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("i edit", 3), ("esc back", 1), ("? help", 4)]),
         Mode::Tags(_) => ("TAGS", Color::Cyan, &[("j/k move", 1), ("↵ show items", 2), ("esc close", 3)]),
         Mode::Workspaces(picker) if picker.adding.is_some() || picker.deleting.is_some() => {
@@ -2712,6 +2801,44 @@ mod tests {
     }
 
     #[test]
+    fn viewing_an_item_with_all_its_sub_items() {
+        let (mut app, _dir) = sub_items_app();
+        let notes = [
+            ("Plan the trip", "Lisbon, **mid-May**."),
+            ("Book flights", "Window seat."),
+            ("check reviews", "- breakfast\n- quiet rooms"),
+        ];
+        for (text, note) in notes {
+            let index = app.store.items(app.day).iter().position(|item| item.text == text).unwrap();
+            app.store.set_notes(app.day, index, note.into()).unwrap();
+        }
+        type_str(&mut app, "gg V");
+        assert_snapshot!(render_sized(&app, 50, 24).backend());
+        assert_snapshot!("viewing_all_at_30_columns", render_sized(&app, 30, 24).backend());
+    }
+
+    #[test]
+    fn viewing_the_whole_day() {
+        let (mut app, _dir) = sub_items_app();
+        type_str(&mut app, "GaCall the bank");
+        press(&mut app, KeyCode::Esc);
+        let notes = [("Plan the trip", "Lisbon, **mid-May**."), ("check reviews", "- breakfast"), ("Call the bank", "## Ask\nAbout the card.")];
+        for (text, note) in notes {
+            let index = app.store.items(app.day).iter().position(|item| item.text == text).unwrap();
+            app.store.set_notes(app.day, index, note.into()).unwrap();
+        }
+        type_str(&mut app, " e");
+        assert_snapshot!(render_sized(&app, 50, 30).backend());
+    }
+
+    #[test]
+    fn viewing_an_empty_day() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, " e");
+        assert_snapshot!(render_sized(&app, 40, 8).backend());
+    }
+
+    #[test]
     fn deleting_an_item_says_its_sub_items_go_too() {
         let (mut app, _dir) = sub_items_app();
         type_str(&mut app, "ggd");
@@ -3316,6 +3443,12 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, " v");
         shot(&app, "viewing notes");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, " V");
+        shot(&app, "viewing all");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, " e");
+        shot(&app, "viewing the day");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "@");
         shot(&app, "choosing a deadline");

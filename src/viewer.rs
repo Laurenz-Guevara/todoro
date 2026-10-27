@@ -1,5 +1,7 @@
-//! The notes viewer (`v`): an item's notes as formatted Markdown, to read
-//! and scroll, with a key to start editing.
+//! The notes viewer (`Space v`): an item's notes as formatted Markdown, to
+//! read and scroll, with a key to start editing. `Space V` shows an item's
+//! whole block the same way: it and every sub-item, each with its notes, and
+//! `Space e` the whole day: every item on the list with its block.
 
 use std::cell::Cell;
 
@@ -15,6 +17,20 @@ pub struct Viewer {
     pub total: Cell<usize>,
     /// Whether `g` was pressed, waiting for a second `g`.
     pending_g: bool,
+    /// What it shows.
+    pub scope: Scope,
+}
+
+/// What the viewer shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Scope {
+    /// The selected item's notes (`Space v`).
+    #[default]
+    Notes,
+    /// The selected item and all its sub-items, with their notes (`Space V`).
+    Item,
+    /// Every item on the day's list, each as `Item` shows it (`Space e`).
+    Day,
 }
 
 /// What the app should do after the viewer handles a key.
@@ -28,13 +44,30 @@ pub enum Action {
 }
 
 impl Viewer {
+    /// A viewer for an item and all its sub-items.
+    pub fn whole() -> Self {
+        Viewer { scope: Scope::Item, ..Viewer::default() }
+    }
+
+    /// A viewer for every item on the day.
+    pub fn day() -> Self {
+        Viewer { scope: Scope::Day, ..Viewer::default() }
+    }
+
+    /// Whether it shows more than one item's notes, so it's read-only: it
+    /// isn't clear whose notes to edit.
+    pub fn read_only(&self) -> bool {
+        self.scope != Scope::Notes
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let page = self.height.get().max(1) as isize;
         let pending_g = std::mem::take(&mut self.pending_g);
         match key.code {
             KeyCode::Esc | KeyCode::Char('q' | 'v') => return Action::Close,
-            KeyCode::Char('i' | 'e') | KeyCode::Enter => return Action::Edit,
+            KeyCode::Char('V') if self.scope == Scope::Item => return Action::Close,
+            KeyCode::Char('i' | 'e') | KeyCode::Enter if !self.read_only() => return Action::Edit,
             KeyCode::Char('?') => return Action::Help,
             KeyCode::Char('d') if ctrl => self.scroll_by(page / 2),
             KeyCode::Char('u') if ctrl => self.scroll_by(-page / 2),
@@ -105,6 +138,27 @@ mod tests {
         assert_eq!(v.scroll, 0);
         press(&mut v, KeyCode::Char('k'));
         assert_eq!(v.scroll, 0);
+    }
+
+    #[test]
+    fn the_whole_view_is_read_only() {
+        let mut v = Viewer::whole();
+        for edit in [KeyCode::Char('i'), KeyCode::Char('e'), KeyCode::Enter] {
+            assert_eq!(press(&mut v, edit), Action::Stay);
+        }
+        assert_eq!(press(&mut v, KeyCode::Char('V')), Action::Close);
+        assert_eq!(press(&mut Viewer::default(), KeyCode::Char('V')), Action::Stay, "only the whole view closes with V");
+    }
+
+    #[test]
+    fn the_day_view_is_read_only() {
+        let mut v = Viewer::day();
+        for edit in [KeyCode::Char('i'), KeyCode::Char('e'), KeyCode::Enter, KeyCode::Char('V')] {
+            assert_eq!(press(&mut v, edit), Action::Stay);
+        }
+        for close in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('v')] {
+            assert_eq!(press(&mut v, close), Action::Close);
+        }
     }
 
     #[test]
