@@ -2,6 +2,31 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [0.8.0] - 2026-10-27
+
+### Features
+
+Viewing:
+
+- `Space` `e` shows everything on the day in one view: every item, its sub-items however deep, and all their notes, one after another. Folded sub-items show too.
+- `Space` `V` does the same for just the selected item and what's under it.
+
+Notes:
+
+- The notes editor has vim's operators: `d` deletes, `c` changes and `y` copies, as far as a motion goes (`dw`, `ce`, `y$`, `db`, `d0`, `d^`), or over whole lines (`dj`, `dk`, `dG`, `dgg`). Counts work on either side, like `2dw` or `d3w`.
+- `diw` and `daw` act on the word under the cursor, with `c` and `y` too.
+- `D` and `C` delete or change to the end of the line, `cc` and `S` change the whole line keeping its indent, and `Y` copies the line.
+- `r` then a character replaces the one under the cursor, staying in normal mode. `3rx` replaces three. The cursor turns into an underline while it waits.
+- `Esc` after a half-typed command, like `d`, cancels it rather than closing the notes.
+
+Deadlines:
+
+- An overdue item now comes to today's list, in red, until it's done, instead of staying behind on its deadline day. It still doesn't show on the days ahead.
+
+The list:
+
+- The status bar shows `o add sub-item` when there's room.
+
 ## [0.7.0] - 2026-10-11
 
 ### Breaking
