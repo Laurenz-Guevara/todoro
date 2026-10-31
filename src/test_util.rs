@@ -20,7 +20,9 @@ pub fn app_with(items: &[&str]) -> (App, TempDir) {
     for (i, item) in items.iter().enumerate() {
         store.insert(today(), i, item.to_string()).unwrap();
     }
-    (App::new(store, today()), dir)
+    let mut app = App::new(store, today());
+    app.clipboard = crate::clipboard::Clipboard::Memory(Vec::new());
+    (app, dir)
 }
 
 /// An app on `today()` in a todoro folder with these workspaces, each with
@@ -35,6 +37,7 @@ pub fn app_with_workspaces(names: &[&str]) -> (App, TempDir) {
     }
     let store = Store::open(folder.todos_path(names[0])).unwrap();
     let mut app = App::new(store, today());
+    app.clipboard = crate::clipboard::Clipboard::Memory(Vec::new());
     app.workspaces = Some(folder);
     app.workspace = Some(names[0].to_string());
     (app, dir)

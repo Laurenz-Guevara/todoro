@@ -1,6 +1,6 @@
-//! Saving the day's view (`Space e`, then `w`) as a text file to send to
-//! someone: every item on the list with its sub-items and notes, as plain
-//! UTF-8 text that any editor or email opens cleanly.
+//! The viewer's text, to send to someone: saving the day (`Space e`, then
+//! `w`) as a text file, and copying what any of the views shows (`y`). It's
+//! plain UTF-8 text that any editor, email or chat shows cleanly.
 
 use std::fs;
 use std::io;
@@ -28,7 +28,6 @@ pub fn day_text(app: &App) -> String {
     let mut out = app.day.format("%A %-d %B %Y").to_string();
     out.push('\n');
     let items = app.items();
-    let mut number = 0;
     let mut any = false;
     for (row, slot) in app.slots().into_iter().enumerate() {
         if items[row].depth > 0 {
@@ -40,18 +39,32 @@ pub fn day_text(app: &App) -> String {
             out.push_str("\n\n");
         }
         any = true;
-        let label = if items[row].done {
-            "[x] ".to_string()
-        } else {
-            number += 1;
-            format!("{number}. ")
-        };
-        block(app.store.items(slot.day), slot.index, &label, &mut out);
+        block(app.store.items(slot.day), slot.index, &label(app, row), &mut out);
     }
     if !any {
         out.push_str("\nNothing on this day.\n");
     }
     out
+}
+
+/// The selected item and its sub-items, as the day's text shows each item
+/// (`Space V`).
+pub fn item_text(app: &App) -> String {
+    let Some(slot) = app.slots().get(app.selected).copied() else { return String::new() };
+    let mut out = String::new();
+    block(app.store.items(slot.day), slot.index, &label(app, app.selected), &mut out);
+    out
+}
+
+/// The label before a top-level item's title, numbered as on the list, or
+/// `[x]` once completed. A sub-item's title has none.
+fn label(app: &App, row: usize) -> String {
+    let items = app.items();
+    match (items[row].depth, items[row].done) {
+        (0, true) => "[x] ".into(),
+        (0, false) => format!("{}. ", items[..=row].iter().filter(|item| item.depth == 0 && !item.done).count()),
+        _ => String::new(),
+    }
 }
 
 /// An item and its whole block: its title after `label`, then its notes,
@@ -163,6 +176,19 @@ Check **prices** first
 [x] Call mom
 "
         );
+    }
+
+    #[test]
+    fn an_item_with_its_sub_items_as_text() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Plan the trip"]);
+        let day = today();
+        app.store.insert_at(day, 2, vec![Item { text: "Book flights".into(), ..Item::default() }], 1).unwrap();
+        app.store.set_notes(day, 2, "Window seat".into()).unwrap();
+        app.selected = 1;
+        assert_eq!(item_text(&app), "2. Plan the trip\n\n- Book flights\n\n  Window seat\n");
+        // A sub-item on its own has no number.
+        app.selected = 2;
+        assert_eq!(item_text(&app), "Book flights\n\nWindow seat\n");
     }
 
     #[test]

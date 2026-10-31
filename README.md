@@ -216,11 +216,14 @@ To use your own editor instead, open the options (`Space` `o`) and set the notes
 | `Space` / `Ctrl+B` | A page down / up |
 | `gg` / `G` | Top / bottom |
 | `i` / `e` / `Enter` | Edit the notes, then come back to the formatted view |
+| `yy` | Copy the notes to the clipboard, as written |
 | `Esc` / `q` / `v` | Back to the list |
 
 `Space` `V` shows an item's whole outline the same way, to read in one go: its title and notes, then each sub-item (and theirs, however deep) with its notes, separated by blank lines. It scrolls with the same keys and is read-only; `Esc`, `q` or `V` goes back.
 
 `Space` `e` does the same for the whole day: every item on the list, numbered as there, each with its notes and all its sub-items, and a line between items. Folded sub-items show too. `Esc` or `q` goes back.
+
+In all three views, `yy` copies everything the view shows to the clipboard, as plain text, ready to paste into a message or email.
 
 To send the day to someone, press `w` there to save it as a text file. Type where (a file, or a folder for it to go in; `~` is your home folder), or press `Enter` straight away for the `export` folder in your todoro folder, where it's named for the day, like `2026-10-31.txt`. If the file is already there, `Enter` again replaces it. The text is plain, with your notes as you wrote them, so it opens cleanly anywhere.
 

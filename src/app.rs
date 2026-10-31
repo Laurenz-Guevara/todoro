@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::calendar::{self, Calendar};
 use crate::changelog::{self, ChangelogView};
+use crate::clipboard::{Clipboard, Copied};
 use crate::export;
 use crate::help::Help;
 use crate::input::LineInput;
@@ -22,6 +23,9 @@ use crate::tags::{self, TagPicker};
 use crate::viewer::{self, Viewer};
 use crate::store::{Item, Priority, Snapshot, Store};
 use crate::workspaces::{self, Picker, Workspaces};
+
+/// How long a brief message (like `yy`'s "No notes to copy") shows for.
+const BRIEF_MESSAGE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// How many changes `u` can undo.
 const UNDO_LIMIT: usize = 200;
@@ -170,6 +174,12 @@ pub struct App {
     pub command: Option<LineInput>,
     /// Something to tell the user, shown in the status bar until the next key.
     pub message: Option<String>,
+    /// Whether `message` goes by itself, `BRIEF_MESSAGE` after it shows,
+    /// and once the first tick has seen it, when.
+    message_brief: bool,
+    message_ends: Option<std::time::Instant>,
+    /// Where `yy` in the viewer copies to.
+    pub clipboard: Clipboard,
     /// The items last copied (`yy`) or deleted, for `p` and `P` to paste.
     pub register: Vec<Item>,
     /// Text last copied or deleted in any item's notes, kept for the next
@@ -224,6 +234,9 @@ impl App {
             count: None,
             command: None,
             message: None,
+            message_brief: false,
+            message_ends: None,
+            clipboard: Clipboard::System,
             register: Vec::new(),
             notes_register: None,
             external: None,
@@ -319,12 +332,26 @@ impl App {
         self.slots().get(index).copied()
     }
 
+    fn clear_message(&mut self) {
+        self.message = None;
+        self.message_brief = false;
+        self.message_ends = None;
+    }
+
+    /// Shows a message that goes by itself after `BRIEF_MESSAGE`, as well as
+    /// with the next key.
+    fn brief_message(&mut self, message: String) {
+        self.message = Some(message);
+        self.message_brief = true;
+        self.message_ends = None;
+    }
+
     fn clamp_selection(&mut self) {
         self.selected = self.selected.min(self.slots().len().saturating_sub(1));
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> io::Result<()> {
-        self.message = None;
+        self.clear_message();
         let result = self.key(key);
         self.report_conflicts();
         result
@@ -548,6 +575,7 @@ impl App {
                     }
                 }
                 viewer::Action::Save => self.save_export(),
+                viewer::Action::Copy => self.copy_view(),
                 viewer::Action::Edit => {
                     self.mode = Mode::Normal;
                     self.view_after_edit = true;
@@ -1605,6 +1633,38 @@ impl App {
         dir.join(export::EXPORT_DIR).join(export::file_name(self.day, workspace))
     }
 
+    /// Copies what the viewer shows to the clipboard, as text: the day as
+    /// it's saved, the item with its sub-items in the same way, or the
+    /// item's notes as written.
+    fn copy_view(&mut self) {
+        let Mode::View(viewer) = &self.mode else { return };
+        let (text, what) = match viewer.scope {
+            viewer::Scope::Day => (export::day_text(self), "the day"),
+            viewer::Scope::Item => (export::item_text(self), "the item and its sub-items"),
+            viewer::Scope::Notes => {
+                let notes = self.items().get(self.selected).map(|item| item.notes.clone()).unwrap_or_default();
+                if notes.trim().is_empty() {
+                    self.brief_message("No notes to copy".into());
+                    return;
+                }
+                (notes, "the notes")
+            }
+        };
+        // The text flashes to show it's copied, as copied lines do in the
+        // notes. The terminal may not allow copying, so that says so.
+        match self.clipboard.copy(&text) {
+            Ok(copied) => {
+                if copied == Copied::Terminal {
+                    self.brief_message(format!("Asked the terminal to copy {what}"));
+                }
+                if let Mode::View(viewer) = &mut self.mode {
+                    viewer.flash = Some(std::time::Instant::now());
+                }
+            }
+            Err(error) => self.brief_message(format!("Couldn't copy: {error}")),
+        }
+    }
+
     /// Saves the day's text where the `w` prompt says. A file that's already
     /// there is only replaced on a second `Enter`.
     fn save_export(&mut self) {
@@ -1968,7 +2028,7 @@ impl App {
     /// Notes keep its lines; single-line inputs get it on one line; anywhere
     /// else it's ignored.
     pub fn handle_paste(&mut self, text: &str) -> io::Result<()> {
-        self.message = None;
+        self.clear_message();
         let result = self.paste_text(text);
         self.report_conflicts();
         result
@@ -2045,15 +2105,17 @@ impl App {
 
     /// When something on screen (a copy's flash) needs redrawing, if ever.
     pub fn redraw_at(&self) -> Option<std::time::Instant> {
-        match &self.mode {
+        let timed = match &self.mode {
             Mode::Notes(editor) => editor.flash_ends(),
+            Mode::View(viewer) => viewer.flash_ends(),
             Mode::Calendar(calendar) => calendar.snake.as_ref().and_then(|game| game.next_step()),
             Mode::Help { back, .. } => match back.as_ref() {
                 Mode::Notes(editor) => editor.flash_ends(),
                 _ => None,
             },
             _ => None,
-        }
+        };
+        [timed, self.message_ends].into_iter().flatten().min()
     }
 
     /// Ends anything timed (a copy's flash) whose time is up at `now`, and
@@ -2061,8 +2123,17 @@ impl App {
     pub fn tick(&mut self, now: std::time::Instant) {
         match &mut self.mode {
             Mode::Notes(editor) => editor.expire_flash(now),
+            Mode::View(viewer) => viewer.expire_flash(now),
             Mode::Calendar(calendar) => calendar.tick(now),
             _ => {}
+        }
+        // A brief message's time starts once it's on screen.
+        if self.message_brief {
+            match self.message_ends {
+                None => self.message_ends = Some(now + BRIEF_MESSAGE),
+                Some(ends) if now >= ends => self.clear_message(),
+                Some(_) => {}
+            }
         }
     }
 
@@ -4485,6 +4556,69 @@ mod tests {
         let (mut app, dir) = app_with_workspaces(&["home"]);
         type_str(&mut app, " ew");
         assert_eq!(saving(&app).unwrap().default, dir.path().join("todoro").join("export").join("2026-10-05.txt"));
+    }
+
+    #[test]
+    fn yy_copies_what_each_view_shows() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Plan the trip"]);
+        app.store.set_notes(today(), 1, "Lisbon, **May**".into()).unwrap();
+        let flashing = |app: &App| matches!(&app.mode, Mode::View(viewer) if viewer.flash.is_some());
+        type_str(&mut app, " eyy");
+        assert!(flashing(&app));
+        assert_eq!(app.message, None);
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "j Vyy");
+        assert!(flashing(&app));
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, " vyy");
+        assert!(flashing(&app));
+        assert!(matches!(&app.mode, Mode::View(_)), "still viewing");
+        let copied = app.clipboard.copied();
+        assert_eq!(copied.len(), 3);
+        assert_eq!(copied[0], export::day_text(&app));
+        assert_eq!(copied[1], "2. Plan the trip\n\nLisbon, **May**\n");
+        assert_eq!(copied[2], "Lisbon, **May**");
+    }
+
+    #[test]
+    fn a_brief_message_goes_after_a_second() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, " v");
+        assert_eq!(app.redraw_at(), None);
+        type_str(&mut app, "yy");
+        assert_eq!(app.message.as_deref(), Some("No notes to copy"));
+        let start = std::time::Instant::now();
+        app.tick(start);
+        assert_eq!(app.redraw_at(), Some(start + BRIEF_MESSAGE));
+        app.tick(start + std::time::Duration::from_millis(900));
+        assert_eq!(app.message.as_deref(), Some("No notes to copy"));
+        app.tick(start + BRIEF_MESSAGE);
+        assert_eq!(app.message, None);
+        assert_eq!(app.redraw_at(), None);
+        // Other messages stay until a key, as before.
+        press(&mut app, KeyCode::Esc);
+        app.message = Some("Saved".into());
+        app.tick(start + std::time::Duration::from_secs(5));
+        assert_eq!(app.message.as_deref(), Some("Saved"));
+    }
+
+    #[test]
+    fn a_key_before_the_second_is_up_clears_it_as_before() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, " vyy");
+        let start = std::time::Instant::now();
+        app.tick(start);
+        type_str(&mut app, "j");
+        assert_eq!(app.message, None);
+        assert_eq!(app.redraw_at(), None);
+    }
+
+    #[test]
+    fn copying_notes_that_arent_there_says_so() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, " vyy");
+        assert_eq!(app.message.as_deref(), Some("No notes to copy"));
+        assert!(app.clipboard.copied().is_empty());
     }
 
     #[test]

@@ -4,6 +4,7 @@ mod changelog;
 mod deadline;
 mod export;
 mod cli;
+mod clipboard;
 mod help;
 mod input;
 mod keymap;

@@ -78,6 +78,7 @@ pub const SECTIONS: &[Section] = &[
             ("Space / Ctrl+B", "A page down / up"),
             ("gg / G", "Top / bottom"),
             ("i / e / Enter", "Edit the notes, then come back here"),
+            ("yy", "Copy the notes to the clipboard"),
             ("Esc / q / v", "Back to the list"),
         ],
     },
@@ -85,6 +86,7 @@ pub const SECTIONS: &[Section] = &[
         title: "Viewing everything (Space V)",
         bindings: &[
             ("j / k, gg / G", "Scroll, as when viewing notes"),
+            ("yy", "Copy all of it to the clipboard"),
             ("Esc / q / V", "Back to the list"),
         ],
     },
@@ -92,6 +94,7 @@ pub const SECTIONS: &[Section] = &[
         title: "Viewing the day (Space e)",
         bindings: &[
             ("j / k, gg / G", "Scroll, as when viewing notes"),
+            ("yy", "Copy all of it to the clipboard"),
             ("w", "Save it as a text file, to send (↵ for the export folder)"),
             ("Esc / q", "Back to the list"),
         ],

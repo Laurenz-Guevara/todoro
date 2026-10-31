@@ -598,11 +598,11 @@ fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
     let position = format!(" {} ", scroll_position(scroll, max));
     let hint_room = (area.width as usize).saturating_sub(2 + 2 * (position.width() + 1));
     let hints: &[&str] = if viewer.scope == Scope::Day {
-        &[" j/k scroll · w save · esc back ", " w save · esc back ", " esc back "]
+        &[" j/k scroll · yy copy · w save · esc back ", " yy copy · w save · esc back ", " w save · esc back ", " esc back "]
     } else if viewer.read_only() {
-        &[" j/k scroll · esc back ", " esc back "]
+        &[" j/k scroll · yy copy · esc back ", " yy copy · esc back ", " esc back "]
     } else {
-        &[" j/k scroll · i edit · esc back ", " i edit · esc back ", " esc back "]
+        &[" j/k scroll · i edit · yy copy · esc back ", " i edit · yy copy · esc back ", " i edit · esc back ", " esc back "]
     };
     let hint = fit_first(hints, hint_room);
     let block = block
@@ -610,6 +610,21 @@ fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
         .title_bottom(Line::from(position).right_aligned().dim());
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), inner);
+    // Just copied (`yy`): the text on screen flashes, from its first line to
+    // its last, as copied lines do in the notes.
+    if viewer.flash.is_some() {
+        let buffer = frame.buffer_mut();
+        let blank = |y: u16| (inner.left()..inner.right()).all(|x| buffer[(x, y)].symbol().trim().is_empty());
+        let rows: Vec<u16> = (inner.top()..inner.bottom()).filter(|&y| !blank(y)).collect();
+        if let (Some(&first), Some(&last)) = (rows.first(), rows.last()) {
+            let style = Style::new().bg(SELECTED_BG).add_modifier(Modifier::BOLD);
+            for y in first..=last {
+                for x in inner.left()..inner.right() {
+                    buffer[(x, y)].set_style(style);
+                }
+            }
+        }
+    }
 }
 
 /// Every item on the list, for `Space e`: each top-level item's block as
@@ -860,10 +875,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
         }
         Mode::View(viewer) if viewer.scope == Scope::Day => {
-            ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("w save", 3), ("esc back", 1), ("? help", 4)])
+            ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("yy copy", 2), ("w save", 3), ("esc back", 1), ("? help", 4)])
         }
-        Mode::View(viewer) if viewer.read_only() => ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("esc back", 1), ("? help", 4)]),
-        Mode::View(_) => ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("i edit", 3), ("esc back", 1), ("? help", 4)]),
+        Mode::View(viewer) if viewer.read_only() => {
+            ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("yy copy", 3), ("esc back", 1), ("? help", 4)])
+        }
+        Mode::View(_) => ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("i edit", 3), ("yy copy", 2), ("esc back", 1), ("? help", 4)]),
         Mode::Tags(_) => ("TAGS", Color::Cyan, &[("j/k move", 1), ("↵ show items", 2), ("esc close", 3)]),
         Mode::Workspaces(picker) if picker.adding.is_some() || picker.deleting.is_some() => {
             ("WORKSPACES", Color::Cyan, &[("enter confirm", 2), ("esc back", 1)])
@@ -4402,6 +4419,31 @@ mod tests {
         app.tick(ends);
         assert!(flashing(&app).is_empty());
         assert_eq!(app.redraw_at(), None);
+    }
+
+    #[test]
+    fn copying_a_view_flashes_its_text() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Plan the trip"]);
+        type_str(&mut app, " eyy");
+        assert_eq!(app.message, None, "no message: the flash says it");
+        let flashing = |app: &App| -> Vec<u16> {
+            let terminal = render(app);
+            let buffer = terminal.backend().buffer().clone();
+            (0..buffer.area.height).filter(|&y| buffer[(5, y)].bg == SELECTED_BG).collect()
+        };
+        // From "1. Buy milk" on row 1 to "2. Plan the trip" on row 5, the
+        // rule and gaps between included; not the empty rows below.
+        assert_eq!(flashing(&app), [1, 2, 3, 4, 5]);
+        let Mode::View(viewer) = &app.mode else { panic!("viewing") };
+        let ends = viewer.flash_ends().unwrap();
+        assert_eq!(app.redraw_at(), Some(ends));
+        app.tick(ends);
+        assert!(flashing(&app).is_empty());
+        assert_eq!(app.redraw_at(), None);
+        // A key ends it early.
+        type_str(&mut app, "yy");
+        type_str(&mut app, "j");
+        assert!(flashing(&app).is_empty());
     }
 
     #[test]

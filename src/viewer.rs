@@ -5,6 +5,7 @@
 
 use std::cell::Cell;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -20,10 +21,14 @@ pub struct Viewer {
     pub total: Cell<usize>,
     /// Whether `g` was pressed, waiting for a second `g`.
     pending_g: bool,
+    /// Whether `y` was pressed, waiting for a second `y` to copy.
+    pending_y: bool,
     /// What it shows.
     pub scope: Scope,
     /// Saving the day as a text file (`w` on `Space e`), once started.
     pub saving: Option<Saving>,
+    /// When the text was copied (`yy`), while it flashes to show it.
+    pub flash: Option<Instant>,
 }
 
 /// The `w` prompt: where to save the day's text.
@@ -67,6 +72,8 @@ pub enum Action {
     StartSaving,
     /// Save the day where typed (`Saving::input`).
     Save,
+    /// Copy what's shown to the clipboard (`yy`).
+    Copy,
 }
 
 impl Viewer {
@@ -87,6 +94,8 @@ impl Viewer {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        // Any key ends a copy's flash early.
+        self.flash = None;
         if let Some(saving) = &mut self.saving {
             match key.code {
                 KeyCode::Enter => return Action::Save,
@@ -106,6 +115,7 @@ impl Viewer {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let page = self.height.get().max(1) as isize;
         let pending_g = std::mem::take(&mut self.pending_g);
+        let pending_y = std::mem::take(&mut self.pending_y);
         match key.code {
             KeyCode::Esc | KeyCode::Char('q' | 'v') => return Action::Close,
             KeyCode::Char('V') if self.scope == Scope::Item => return Action::Close,
@@ -120,6 +130,8 @@ impl Viewer {
             KeyCode::Char('k') | KeyCode::Up => self.scroll_by(-1),
             KeyCode::PageDown | KeyCode::Char(' ') => self.scroll_by(page),
             KeyCode::PageUp => self.scroll_by(-page),
+            KeyCode::Char('y') if pending_y => return Action::Copy,
+            KeyCode::Char('y') => self.pending_y = true,
             KeyCode::Char('g') if pending_g => self.scroll = 0,
             KeyCode::Char('g') => self.pending_g = true,
             KeyCode::Char('G') | KeyCode::End => self.scroll_by(isize::MAX / 2),
@@ -127,6 +139,18 @@ impl Viewer {
             _ => {}
         }
         Action::Stay
+    }
+
+    /// When the copy's flash should end, if it's flashing.
+    pub fn flash_ends(&self) -> Option<Instant> {
+        self.flash.map(|since| since + crate::notes::FLASH)
+    }
+
+    /// Ends the flash once its time is up at `now`.
+    pub fn expire_flash(&mut self, now: Instant) {
+        if self.flash_ends().is_some_and(|end| now >= end) {
+            self.flash = None;
+        }
     }
 
     fn scroll_by(&mut self, delta: isize) {
@@ -208,6 +232,36 @@ mod tests {
         assert_eq!(press(&mut v, KeyCode::Esc), Action::Stay);
         assert!(v.saving.is_none());
         assert_eq!(press(&mut v, KeyCode::Esc), Action::Close);
+    }
+
+    #[test]
+    fn yy_copies_in_every_view() {
+        for mut v in [viewer(), Viewer::whole(), Viewer::day()] {
+            assert_eq!(press(&mut v, KeyCode::Char('y')), Action::Stay);
+            assert_eq!(press(&mut v, KeyCode::Char('y')), Action::Copy);
+        }
+    }
+
+    #[test]
+    fn a_key_after_one_y_cancels_it_and_does_its_own_thing() {
+        let mut v = viewer();
+        press(&mut v, KeyCode::Char('y'));
+        press(&mut v, KeyCode::Char('j'));
+        assert_eq!(v.scroll, 1);
+        assert_eq!(press(&mut v, KeyCode::Char('y')), Action::Stay, "a new y starts again");
+        assert_eq!(press(&mut v, KeyCode::Char('y')), Action::Copy);
+        // Space pages as before.
+        press(&mut v, KeyCode::Char(' '));
+        assert_eq!(v.scroll, 11);
+    }
+
+    #[test]
+    fn keys_while_typing_where_to_save_are_typed() {
+        let mut v = Viewer::day();
+        v.saving = Some(Saving::new(PathBuf::from("/tmp/day.txt")));
+        press(&mut v, KeyCode::Char('y'));
+        assert_eq!(press(&mut v, KeyCode::Char('y')), Action::Stay);
+        assert_eq!(v.saving.as_ref().unwrap().input.text, "yy");
     }
 
     #[test]

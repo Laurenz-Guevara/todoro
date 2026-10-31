@@ -98,7 +98,7 @@ viewing all
 "│ ☐ Book a room              │"
 "│                            │"
 "╰───────── esc back ──── All ╯"
-" VIEW   j/k scroll  ? help    "
+" VIEW   yy copy  ? help       "
 
 viewing the day
 "╭─ Mon, Oct 5 2026 (today) ──╮"
