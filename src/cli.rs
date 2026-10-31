@@ -23,7 +23,8 @@ Options:
   -u, --undo                 Put back what -d deleted last
   -wl, --workspaces          List the workspaces, * marking the current one
   -w, --workspace NAME       Switch to a workspace: todoro and -l use it
-  --where                    Print the todoro folder, where every workspace is kept
+  --where                    Print the todoro folder, where every workspace
+                             is kept
   -U, --update               Update to the latest version, after showing what's
                              new and asking. Your todos are backed up first, and
                              if the new version can't read them all, the one you
@@ -34,8 +35,9 @@ Options:
   --help                     Print this help
 
 Keys:
-  Change any key in keys.toml (KEYS). Inside todoro, the options (Space o)
-  open it in your editor, with every default listed.
+  (KEYS)
+  Inside todoro, the options (Space o) open it in your editor,
+  with every default listed.
 
 Environment:
   TODORO_SETTINGS  Use this settings file
@@ -43,10 +45,14 @@ Environment:
   TODORO_FILE      Use this single todos file, with no folder or workspaces
   NO_COLOR         Start with colours off";
 
-/// The help, with where the keys file is.
+/// The help, with where the keys file is, on a line of its own so a long
+/// path doesn't stretch the help past 80 columns.
 fn help(keys: Option<&Path>) -> String {
-    let keys = keys.map_or_else(|| "beside the settings".to_string(), |path| path.display().to_string());
-    HELP.replace("(KEYS)", &format!("({keys})"))
+    let keys = match keys {
+        Some(path) => format!("Change any key in keys.toml:\n    {}", path.display()),
+        None => "Change any key in keys.toml, beside the settings.".to_string(),
+    };
+    HELP.replace("  (KEYS)", &format!("  {keys}"))
 }
 
 /// What to do for the command line.
@@ -237,7 +243,11 @@ mod tests {
         assert_eq!(run(&["-V"], &Settings::default(), None), Run::Print(format!("todoro {VERSION}")));
         let Run::Print(help) = run(&["--help"], &Settings::default(), None) else { panic!("help") };
         assert!(help.contains("--where"));
-        assert!(help.contains("keys.toml (/home/sam/.config/todoro/keys.toml)"), "{help}");
+        assert!(help.contains("keys.toml:\n    /home/sam/.config/todoro/keys.toml\n"), "{help}");
+        // Every line but the path fits in 80 columns.
+        for line in help.lines().filter(|line| !line.contains("/home/sam")) {
+            assert!(line.chars().count() <= 80, "too wide: {line}");
+        }
         assert!(help.contains("TODORO_KEYS"));
         assert_eq!(run(&["-h"], &Settings::default(), None), Run::Print(help));
     }
