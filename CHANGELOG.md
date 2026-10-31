@@ -2,6 +2,48 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [1.0.0] - 2026-10-31
+
+### Features
+
+Updating:
+
+- `:update` checks for a newer version and shows what's new in it. Press `y` to install it, and todoro restarts on it, or `n` to stay. From the terminal, `todoro -U` does the same.
+- Once a day, when todoro opens, it checks for a newer version and says so at the right of the status bar. It never installs anything by itself. Turn off "Check for updates" in the options to stop it checking.
+- Updating never risks your todos. Your todos, notes, settings and keys are backed up first, and the new version must read all of them before it's kept. If it can't, the version you had goes back, and nothing changes. `todoro -U -f` updates anyway, for when you've made your own copies.
+
+From the terminal:
+
+- `todoro -l` prints today's list.
+- `todoro -a Buy milk` adds an item to today's list, and `-p 2` after it adds it under item 2.
+- `todoro -d` shows today's list with sub-items numbered, `todoro -d 2` deletes item 2 after asking (`2.1` is its first sub-item, and `-f` skips asking), and `todoro -u` puts it back.
+- `todoro -wl` lists the workspaces, and `todoro -w work` switches to one.
+- An open todoro picks up these changes within a second, and never overwrites them.
+
+Copying and saving:
+
+- `yy` on the list copies the item's text, with its sub-items, to the clipboard as well.
+- `yy` in the notes, item and day views copies what they show to the clipboard.
+- `w` in the day's view (`Space` `e`) saves it as a text file.
+
+Notes:
+
+- Empty notes open ready to type, and notes with text open in normal mode as before. Two options under Notes change either.
+
+Calendar:
+
+- In the year view, `h`/`j`/`k`/`l` move around the grid of months as it's drawn, and `J`/`K` jump to the month above or below.
+
+Windows:
+
+- `todoro.exe` has a new icon, a close-up of todoro's face that stays clear at small sizes.
+
+### Fixes
+
+- A todoro left open no longer loses items added or deleted from the command line, or by a second todoro.
+- The export folder no longer shows up as a workspace.
+- `todoro --help` fits in 80 columns.
+
 ## [0.9.0] - 2026-10-31
 
 ### Features
