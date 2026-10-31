@@ -13,6 +13,7 @@ Usage: todoro [option]
 With no option, todoro opens. Press ? inside it for every key.
 
 Options:
+  -l, --list   Print today's list
   --where      Print the todoro folder, where every workspace is kept
   --version    Print the version
   --help       Print this help
@@ -38,6 +39,8 @@ fn help(keys: Option<&Path>) -> String {
 pub enum Run {
     /// Open todoro.
     App,
+    /// Print today's list and stop.
+    List,
     /// Print this and stop.
     Print(String),
     /// Print this error and stop with this exit code.
@@ -52,6 +55,10 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
         [flag] => match flag.as_str() {
             "--version" | "-V" => Run::Print(format!("todoro {VERSION}")),
             "--help" | "-h" => Run::Print(help(keys)),
+            "--list" | "-l" if todoro_file.is_none() && settings.data_dir.is_none() => {
+                Run::Fail("todoro isn't set up yet. Run todoro to choose a folder.".into(), 1)
+            }
+            "--list" | "-l" => Run::List,
             "--where" => match (todoro_file, &settings.data_dir) {
                 (Some(file), _) => Run::Print(file.display().to_string()),
                 (None, Some(dir)) => Run::Print(dir.display().to_string()),
@@ -97,6 +104,19 @@ mod tests {
         // A single file, when TODORO_FILE is set.
         let file = PathBuf::from("/tmp/todos.json");
         assert_eq!(run(&["--where"], &settings, Some(&file)), Run::Print("/tmp/todos.json".into()));
+    }
+
+    #[test]
+    fn list_prints_todays_list_once_set_up() {
+        let settings = Settings { data_dir: Some(PathBuf::from("/home/sam/todoro")), ..Settings::default() };
+        assert_eq!(run(&["--list"], &settings, None), Run::List);
+        assert_eq!(run(&["-l"], &settings, None), Run::List);
+        let file = PathBuf::from("/tmp/todos.json");
+        assert_eq!(run(&["-l"], &Settings::default(), Some(&file)), Run::List);
+        let Run::Fail(message, 1) = run(&["-l"], &Settings::default(), None) else { panic!("should fail") };
+        assert!(message.contains("set up"));
+        let Run::Print(help) = run(&["--help"], &settings, None) else { panic!("help") };
+        assert!(help.contains("-l, --list"));
     }
 
     #[test]

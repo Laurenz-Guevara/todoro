@@ -485,7 +485,7 @@ struct RowReminder {
 }
 
 /// The icon for a priority, shown when semantic icons are on.
-fn priority_icon(priority: Priority) -> &'static str {
+pub(crate) fn priority_icon(priority: Priority) -> &'static str {
     match priority {
         Priority::High => "∧",
         Priority::Medium => "–",
@@ -503,23 +503,23 @@ fn priority_style(priority: Priority) -> Style {
 }
 
 /// The bullet of an open sub-item, and of a completed one.
-const SUB_OPEN: &str = "↳";
-const SUB_DONE: &str = "✓";
+pub(crate) const SUB_OPEN: &str = "↳";
+pub(crate) const SUB_DONE: &str = "✓";
 
 /// Shown before the progress of an item whose sub-items are folded away.
 const FOLDED_MARKER: &str = "▸";
 
 /// Shown after an item on the main list when it has notes.
-const NOTES_MARKER: &str = " ≡";
+pub(crate) const NOTES_MARKER: &str = " ≡";
 
 /// Shown after a pinned item, which moves forward to today until completed.
-const PINNED_MARKER: &str = " ⚲";
+pub(crate) const PINNED_MARKER: &str = " ⚲";
 
 /// Shown after an item with a reminder, and beside how many are due today.
-const REMINDER_MARKER: &str = "⚑";
+pub(crate) const REMINDER_MARKER: &str = "⚑";
 
 /// Shown in the pin's place on an item with a deadline, before when it's due.
-const DEADLINE_MARKER: &str = " ◷ ";
+pub(crate) const DEADLINE_MARKER: &str = " ◷ ";
 
 fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     let room = (area.width as usize).saturating_sub(4);

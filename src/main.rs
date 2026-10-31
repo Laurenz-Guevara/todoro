@@ -7,6 +7,7 @@ mod help;
 mod input;
 mod keymap;
 mod leader;
+mod list;
 mod markdown;
 mod notes;
 mod notes_files;
@@ -53,6 +54,10 @@ fn main() -> io::Result<()> {
     let todoro_file = std::env::var_os("TODORO_FILE").map(PathBuf::from);
     match cli::parse(&args, &settings, todoro_file.as_deref(), keymap::default_path().as_deref()) {
         cli::Run::App => {}
+        cli::Run::List => {
+            print!("{}", list_today(&settings, todoro_file)?);
+            return Ok(());
+        }
         cli::Run::Print(text) => {
             println!("{text}");
             return Ok(());
@@ -101,6 +106,25 @@ fn main() -> io::Result<()> {
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
+}
+
+/// Today's list as text, from `TODORO_FILE` or the workspace todoro would
+/// open. It only reads: nothing is set up, saved or moved on.
+fn list_today(settings: &Settings, todoro_file: Option<PathBuf>) -> io::Result<String> {
+    let (path, workspace) = match (todoro_file, &settings.data_dir) {
+        (Some(file), _) => (file, None),
+        (None, Some(dir)) => match workspaces::pick(dir, settings.workspace.as_deref())? {
+            Some(name) => (Workspaces::new(dir.clone()).todos_path(&name), Some(name)),
+            None => return Ok("There are no workspaces yet. Run todoro to make one.\n".into()),
+        },
+        (None, None) => return Ok("todoro isn't set up yet. Run todoro to choose a folder.\n".into()),
+    };
+    let store = Store::open(path)?;
+    let now = Local::now();
+    // The workspace's name helps only when there's more than one.
+    let several = settings.data_dir.as_ref().is_some_and(|dir| Workspaces::new(dir.clone()).list().is_ok_and(|names| names.len() > 1));
+    let workspace = workspace.filter(|_| several);
+    Ok(list::today(&store, now.date_naive(), now.time(), settings.twelve_hour, workspace.as_deref()))
 }
 
 /// Whether the terminal reports keys like Shift+Enter apart, once asked.

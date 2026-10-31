@@ -29,7 +29,8 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/options.rs`: `Settings` (saved to `settings.json`), the `TOGGLES` shown in the options popup (`Space o`), and the popup's keys
 - `src/tags.rs`: finding `#tags` in items' text (`find_tags`), counting them (`all_tags`) and the tag list's keys (`Space s t`)
 - `src/changelog.rs`: the release notes, built in from `CHANGELOG.md` with `include_str!`, and the popup showing them (`Space n`, and "what's new" on the first start after an update, tracked by `Settings::last_seen_version`)
-- `src/cli.rs`: command-line flags (`--where`, `--version`, `--help`); `--where` prints only the folder path, for scripts
+- `src/cli.rs`: command-line flags (`-l`/`--list`, `--where`, `--version`, `--help`); `--where` prints only the folder path, for scripts
+- `src/list.rs`: `todoro -l`, today's list as plain text (`list::today`): the date, the open items numbered with every sub-item (folded too) and the app's markers, then the completed ones. It reads only, from the workspace todoro would open (`list_today` in `main.rs`), and moves nothing, unlike opening todoro
 - `src/workspaces.rs`: the todoro folder the user chooses on first run and the workspaces in it (one folder each, with its own `todos.json`), plus first-run setup and moving pre-folder todos in
 - `src/setup.rs`: the first-run screen's state and keys
 - `src/keymap.rs`: the list's and the leader menu's keys (`Keymap`, `Command`, `Key`): the defaults (`DEFAULT_LIST`, `DEFAULT_LEADER`, `DEFAULT_GROUPS`), every command's name, label and description (`COMMANDS`), the user's `keys.toml` applied over them (`Keymap::from_toml`, `load`, `default_path`), and the commented starter file (`starter_file`, `ensure_file`)

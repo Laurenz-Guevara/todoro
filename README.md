@@ -49,6 +49,7 @@ This puts `todoro` in `~/.cargo/bin`, which rustup adds to your `PATH`.
 
 ```sh
 todoro             # open todoro
+todoro -l          # print today's list (also --list), as todoro would show it
 todoro --where     # print the todoro folder, e.g. to back it up: cp -r "$(todoro --where)" /backup/
 todoro --version
 todoro --help
