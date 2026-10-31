@@ -24,8 +24,10 @@ impl Workspaces {
         Self { dir }
     }
 
-    /// Every workspace, sorted by name ignoring case. Hidden folders (like a
-    /// `.git` folder) aren't workspaces.
+    /// Every workspace, sorted by name ignoring case: each folder with a todos
+    /// file, or nothing in it yet. Hidden folders (like a `.git` folder), and
+    /// others with files but no todos (like the `export` folder of saved
+    /// days), aren't workspaces.
     pub fn list(&self) -> io::Result<Vec<String>> {
         let mut names = Vec::new();
         let entries = match fs::read_dir(&self.dir) {
@@ -36,7 +38,12 @@ impl Workspaces {
         for entry in entries {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if entry.file_type()?.is_dir() && !name.starts_with('.') {
+            if !entry.file_type()?.is_dir() || name.starts_with('.') {
+                continue;
+            }
+            let path = entry.path();
+            let empty = fs::read_dir(&path).is_ok_and(|mut inside| inside.next().is_none());
+            if empty || path.join(TODOS_FILE).exists() {
                 names.push(name);
             }
         }
@@ -425,6 +432,18 @@ mod tests {
         let Err(message) = switch_command(&folder.dir, &mut chosen, None).unwrap() else { panic!("should fail") };
         assert!(message.starts_with("Which workspace? Like: todoro -w home"), "{message}");
         assert_eq!(chosen.as_deref(), Some("home"), "unchanged");
+    }
+
+    #[test]
+    fn folders_with_other_files_and_hidden_ones_are_not_workspaces() {
+        let (_dir, workspaces) = folder();
+        workspaces.create("Work").unwrap();
+        fs::create_dir_all(workspaces.dir.join(crate::export::EXPORT_DIR)).unwrap();
+        fs::write(workspaces.dir.join(crate::export::EXPORT_DIR).join("2026-10-05.txt"), "Monday").unwrap();
+        fs::create_dir_all(workspaces.dir.join(".git")).unwrap();
+        fs::create_dir_all(workspaces.dir.join("New")).unwrap();
+        fs::write(workspaces.dir.join("notes.txt"), "a file").unwrap();
+        assert_eq!(workspaces.list().unwrap(), ["New", "Work"]);
     }
 
     #[test]
