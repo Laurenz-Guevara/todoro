@@ -60,6 +60,27 @@ fn main() -> io::Result<()> {
             print!("{}", list_today(&settings, todoro_file)?);
             return Ok(());
         }
+        cli::Run::Workspaces => {
+            let dir = settings.data_dir.as_deref().expect("checked by cli::parse");
+            println!("{}", workspaces::list_command(dir, settings.workspace.as_deref())?);
+            return Ok(());
+        }
+        cli::Run::Switch(wanted) => {
+            let dir = settings.data_dir.clone().expect("checked by cli::parse");
+            match workspaces::switch_command(&dir, &mut settings.workspace, wanted.as_deref())? {
+                Ok(message) => {
+                    if let Some(path) = &settings_path {
+                        settings.save(path)?;
+                    }
+                    println!("{message}");
+                    return Ok(());
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(1);
+                }
+            }
+        }
         cli::Run::Print(text) => {
             println!("{text}");
             return Ok(());

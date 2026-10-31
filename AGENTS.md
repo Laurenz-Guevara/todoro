@@ -31,7 +31,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 - `src/options.rs`: `Settings` (saved to `settings.json`), the `TOGGLES` shown in the options popup (`Space o`), and the popup's keys
 - `src/tags.rs`: finding `#tags` in items' text (`find_tags`), counting them (`all_tags`) and the tag list's keys (`Space s t`)
 - `src/changelog.rs`: the release notes, built in from `CHANGELOG.md` with `include_str!`, and the popup showing them (`Space n`, and "what's new" on the first start after an update, tracked by `Settings::last_seen_version`)
-- `src/cli.rs`: command-line flags (`-l`/`--list`, `--where`, `--version`, `--help`); `--where` prints only the folder path, for scripts
+- `src/cli.rs`: command-line flags (`-l`/`--list`, `-wl`/`--workspaces`, `-w`/`--workspace NAME`, `--where`, `--version`, `--help`), like git's subcommands; the workspace ones need the todoro folder (not `TODORO_FILE`) and run `workspaces::list_command` and `workspaces::switch_command`, which sets `Settings::workspace` (the name found with `workspaces::find`, ignoring case) for `main` to save; `--where` prints only the folder path, for scripts
 - `src/list.rs`: `todoro -l`, today's list as plain text (`list::today`): the date, the open items numbered with every sub-item (folded too) and the app's markers, then the completed ones. It reads only, from the workspace todoro would open (`list_today` in `main.rs`), and moves nothing, unlike opening todoro
 - `src/workspaces.rs`: the todoro folder the user chooses on first run and the workspaces in it (one folder each, with its own `todos.json`), plus first-run setup and moving pre-folder todos in
 - `src/setup.rs`: the first-run screen's state and keys

@@ -13,10 +13,12 @@ Usage: todoro [option]
 With no option, todoro opens. Press ? inside it for every key.
 
 Options:
-  -l, --list   Print today's list
-  --where      Print the todoro folder, where every workspace is kept
-  --version    Print the version
-  --help       Print this help
+  -l, --list                 Print today's list
+  -wl, --workspaces          List the workspaces, * marking the current one
+  -w, --workspace NAME       Switch to a workspace: todoro and -l use it
+  --where                    Print the todoro folder, where every workspace is kept
+  --version                  Print the version
+  --help                     Print this help
 
 Keys:
   Change any key in keys.toml (KEYS). Inside todoro, the options (Space o)
@@ -41,6 +43,10 @@ pub enum Run {
     App,
     /// Print today's list and stop.
     List,
+    /// List the workspaces and stop.
+    Workspaces,
+    /// Switch to this workspace (`None` when no name was given) and stop.
+    Switch(Option<String>),
     /// Print this and stop.
     Print(String),
     /// Print this error and stop with this exit code.
@@ -50,8 +56,21 @@ pub enum Run {
 /// What to do for `args` (without the program name), given the settings,
 /// `TODORO_FILE` and where the keys file is.
 pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, keys: Option<&Path>) -> Run {
+    let workspace_flag = |flag: &str| matches!(flag, "-wl" | "--workspaces" | "-w" | "--workspace");
+    match args.first().map(String::as_str) {
+        // Workspaces only exist in the todoro folder.
+        Some(flag) if workspace_flag(flag) && todoro_file.is_some() => {
+            return Run::Fail("TODORO_FILE is set, so todoro uses just that file, with no workspaces.".into(), 1);
+        }
+        Some(flag) if workspace_flag(flag) && settings.data_dir.is_none() => {
+            return Run::Fail("todoro isn't set up yet. Run todoro to choose a folder.".into(), 1);
+        }
+        _ => {}
+    }
     match args {
         [] => Run::App,
+        [flag] if flag == "-w" || flag == "--workspace" => Run::Switch(None),
+        [flag, name] if flag == "-w" || flag == "--workspace" => Run::Switch(Some(name.clone())),
         [flag] => match flag.as_str() {
             "--version" | "-V" => Run::Print(format!("todoro {VERSION}")),
             "--help" | "-h" => Run::Print(help(keys)),
@@ -59,6 +78,7 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
                 Run::Fail("todoro isn't set up yet. Run todoro to choose a folder.".into(), 1)
             }
             "--list" | "-l" => Run::List,
+            "--workspaces" | "-wl" => Run::Workspaces,
             "--where" => match (todoro_file, &settings.data_dir) {
                 (Some(file), _) => Run::Print(file.display().to_string()),
                 (None, Some(dir)) => Run::Print(dir.display().to_string()),
@@ -117,6 +137,31 @@ mod tests {
         assert!(message.contains("set up"));
         let Run::Print(help) = run(&["--help"], &settings, None) else { panic!("help") };
         assert!(help.contains("-l, --list"));
+    }
+
+    #[test]
+    fn workspace_flags() {
+        let settings = Settings { data_dir: Some(PathBuf::from("/home/sam/todoro")), ..Settings::default() };
+        assert_eq!(run(&["-wl"], &settings, None), Run::Workspaces);
+        assert_eq!(run(&["--workspaces"], &settings, None), Run::Workspaces);
+        assert_eq!(run(&["-w", "work"], &settings, None), Run::Switch(Some("work".into())));
+        assert_eq!(run(&["--workspace", "my work"], &settings, None), Run::Switch(Some("my work".into())));
+        assert_eq!(run(&["-w"], &settings, None), Run::Switch(None));
+        // A name goes only with -w.
+        assert!(matches!(run(&["-wl", "work"], &settings, None), Run::Fail(_, 2)));
+        assert!(matches!(run(&["-w", "work", "home"], &settings, None), Run::Fail(_, 2)));
+        let Run::Print(help) = run(&["--help"], &settings, None) else { panic!("help") };
+        assert!(help.contains("-wl, --workspaces") && help.contains("-w, --workspace NAME"));
+    }
+
+    #[test]
+    fn workspace_flags_need_the_todoro_folder() {
+        let Run::Fail(message, 1) = run(&["-wl"], &Settings::default(), None) else { panic!("should fail") };
+        assert!(message.contains("set up"));
+        let settings = Settings { data_dir: Some(PathBuf::from("/home/sam/todoro")), ..Settings::default() };
+        let file = PathBuf::from("/tmp/todos.json");
+        let Run::Fail(message, 1) = run(&["-w", "work"], &settings, Some(&file)) else { panic!("should fail") };
+        assert!(message.contains("TODORO_FILE"));
     }
 
     #[test]

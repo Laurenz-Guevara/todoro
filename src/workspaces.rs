@@ -198,6 +198,53 @@ impl Picker {
     }
 }
 
+/// What `todoro -wl` prints: each workspace on a line, the current one
+/// (the one todoro opens) marked with `*`, as `git branch` marks a branch.
+pub fn list_text(names: &[String], current: Option<&str>) -> String {
+    if names.is_empty() {
+        return "There are no workspaces yet. Run todoro to make one.".into();
+    }
+    names
+        .iter()
+        .map(|name| if Some(name.as_str()) == current { format!("* {name}") } else { format!("  {name}") })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The workspace called `wanted`: exactly, or else ignoring case.
+pub fn find<'a>(names: &'a [String], wanted: &str) -> Option<&'a String> {
+    let wanted = wanted.trim();
+    names.iter().find(|name| name.as_str() == wanted).or_else(|| names.iter().find(|name| name.to_lowercase() == wanted.to_lowercase()))
+}
+
+/// `todoro -wl`: the workspaces in the todoro folder `dir`, marking the one
+/// todoro opens (`wanted`, as `pick` chooses).
+pub fn list_command(dir: &Path, wanted: Option<&str>) -> io::Result<String> {
+    let names = Workspaces::new(dir.to_path_buf()).list()?;
+    let current = pick(dir, wanted)?;
+    Ok(list_text(&names, current.as_deref()))
+}
+
+/// `todoro -w NAME`: makes `wanted` the workspace todoro opens, in `settings`
+/// for the caller to save. Returns what to print, or why not, with the
+/// workspaces there are.
+pub fn switch_command(dir: &Path, settings_workspace: &mut Option<String>, wanted: Option<&str>) -> io::Result<Result<String, String>> {
+    let names = Workspaces::new(dir.to_path_buf()).list()?;
+    let current = pick(dir, settings_workspace.as_deref())?;
+    let listed = list_text(&names, current.as_deref());
+    let Some(wanted) = wanted.filter(|wanted| !wanted.trim().is_empty()) else {
+        return Ok(Err(format!("Which workspace? Like: todoro -w {}\n\n{listed}", names.first().map_or("work", String::as_str))));
+    };
+    let Some(name) = find(&names, wanted) else {
+        return Ok(Err(format!("There's no workspace called {}. These are the ones there are:\n\n{listed}", wanted.trim())));
+    };
+    if current.as_deref() == Some(name.as_str()) {
+        return Ok(Ok(format!("Already on {name}")));
+    }
+    *settings_workspace = Some(name.clone());
+    Ok(Ok(format!("Switched to {name}")))
+}
+
 /// Which workspace to open in `dir`: `wanted` if it's there, otherwise the
 /// first. `None` if the folder has none (it's new, or was emptied), when
 /// the setup screen is needed.
@@ -327,6 +374,57 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let workspaces = Workspaces::new(dir.path().join("todoro"));
         (dir, workspaces)
+    }
+
+    #[test]
+    fn listing_marks_the_current_workspace() {
+        let names = names(&["home", "work"]);
+        assert_eq!(list_text(&names, Some("work")), "  home\n* work");
+        assert_eq!(list_text(&[], None), "There are no workspaces yet. Run todoro to make one.");
+    }
+
+    #[test]
+    fn the_list_command_marks_the_one_todoro_opens() {
+        let (_dir, folder) = folder();
+        folder.create("home").unwrap();
+        folder.create("work").unwrap();
+        assert_eq!(list_command(&folder.dir, Some("work")).unwrap(), "  home\n* work");
+        // With none chosen, or one that's gone, todoro opens the first.
+        assert_eq!(list_command(&folder.dir, None).unwrap(), "* home\n  work");
+        assert_eq!(list_command(&folder.dir, Some("gone")).unwrap(), "* home\n  work");
+    }
+
+    #[test]
+    fn finding_a_workspace_ignores_case_unless_theres_an_exact_match() {
+        let names = names(&["Home", "home", "Work"]);
+        assert_eq!(find(&names, "home").map(String::as_str), Some("home"));
+        assert_eq!(find(&names, "work").map(String::as_str), Some("Work"));
+        assert_eq!(find(&names, " Work ").map(String::as_str), Some("Work"));
+        assert_eq!(find(&names, "play"), None);
+    }
+
+    #[test]
+    fn switching_sets_the_workspace_to_open() {
+        let (_dir, folder) = folder();
+        folder.create("home").unwrap();
+        folder.create("Work").unwrap();
+        let mut chosen = Some("home".to_string());
+        assert_eq!(switch_command(&folder.dir, &mut chosen, Some("work")).unwrap(), Ok("Switched to Work".into()));
+        assert_eq!(chosen.as_deref(), Some("Work"));
+        assert_eq!(switch_command(&folder.dir, &mut chosen, Some("Work")).unwrap(), Ok("Already on Work".into()));
+    }
+
+    #[test]
+    fn switching_to_nothing_or_a_workspace_that_isnt_there_lists_them() {
+        let (_dir, folder) = folder();
+        folder.create("home").unwrap();
+        folder.create("work").unwrap();
+        let mut chosen = Some("home".to_string());
+        let Err(message) = switch_command(&folder.dir, &mut chosen, Some("play")).unwrap() else { panic!("should fail") };
+        assert_eq!(message, "There's no workspace called play. These are the ones there are:\n\n* home\n  work");
+        let Err(message) = switch_command(&folder.dir, &mut chosen, None).unwrap() else { panic!("should fail") };
+        assert!(message.starts_with("Which workspace? Like: todoro -w home"), "{message}");
+        assert_eq!(chosen.as_deref(), Some("home"), "unchanged");
     }
 
     #[test]
