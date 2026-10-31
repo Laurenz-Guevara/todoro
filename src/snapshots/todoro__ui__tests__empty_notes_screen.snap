@@ -3,7 +3,7 @@ source: src/ui.rs
 expression: render(&app).backend()
 ---
 "╭────────────────────── 1. Buy milk ───────────────────────╮"
-"│  No notes yet. Press i to start writing.                 │"
+"│  No notes yet. Type to start writing.                    │"
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"
@@ -11,4 +11,4 @@ expression: render(&app).backend()
 "│                                                          │"
 "│                                                          │"
 "╰─────────────────── esc/q back to list ───────────────────╯"
-" NORMAL   i/a/o insert  x delete  dd delete line  ? help    "
+" INSERT   esc normal mode                                   "

@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: render(&app).backend()
+---
+"╭────────────────────── 1. Buy milk ───────────────────────╮"
+"│  No notes yet. Press i to start writing.                 │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"│                                                          │"
+"╰─────────────────── esc/q back to list ───────────────────╯"
+" NORMAL   i/a/o insert  x delete  dd delete line  ? help    "

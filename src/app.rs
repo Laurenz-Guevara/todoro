@@ -859,8 +859,15 @@ impl App {
         // Read the notes file again, in case something else changed it.
         self.store.reload_notes(slot.day, slot.index)?;
         self.notes_before = Some(self.state());
-        let mut editor = NotesEditor::new(&self.store.items(slot.day)[slot.index].notes);
+        let notes = &self.store.items(slot.day)[slot.index].notes;
+        let mut editor = NotesEditor::new(notes);
         editor.register = self.notes_register.clone();
+        // Ready to type, or in normal mode, as the options say for empty
+        // notes and for notes with text.
+        let typing = if notes.trim().is_empty() { !self.settings.empty_notes_normal } else { self.settings.notes_insert };
+        if typing {
+            editor.start_typing();
+        }
         self.mode = Mode::Notes(Box::new(editor));
         Ok(())
     }
@@ -2533,11 +2540,55 @@ mod tests {
     }
 
     #[test]
+    fn notes_open_ready_to_type_when_empty_and_in_normal_mode_with_text() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        app.store.set_notes(today(), 1, "Ask about\nSunday".into()).unwrap();
+        let typing = |app: &App| match &app.mode {
+            Mode::Notes(editor) => editor.insert,
+            _ => panic!("the notes screen"),
+        };
+        press(&mut app, KeyCode::Enter);
+        assert!(typing(&app));
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        assert!(!typing(&app));
+        press(&mut app, KeyCode::Esc);
+        // Both the other way round, with the options.
+        app.settings.empty_notes_normal = true;
+        app.settings.notes_insert = true;
+        press(&mut app, KeyCode::Enter);
+        assert!(typing(&app));
+        // Ready to type at the end.
+        type_str(&mut app, " lunch");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.items()[1].notes, "Ask about\nSunday lunch");
+        type_str(&mut app, "k");
+        press(&mut app, KeyCode::Enter);
+        assert!(!typing(&app));
+    }
+
+    #[test]
+    fn what_is_typed_on_opening_is_one_undo_step_in_the_notes() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.store.set_notes(today(), 0, "Oat".into()).unwrap();
+        app.settings.notes_insert = true;
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, " and soy");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "u");
+        let Mode::Notes(editor) = &app.mode else { panic!("the notes screen") };
+        assert_eq!(editor.notes(), "Oat");
+    }
+
+    #[test]
     fn notes_are_saved_as_you_type() {
         let (mut app, dir) = app_with(&["one", "two"]);
         type_str(&mut app, "j");
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "idetails");
+        type_str(&mut app, "details");
         // Still in insert mode, but already on disk.
         let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
         assert_eq!(reloaded.items(today())[1].notes, "details");
@@ -2549,7 +2600,7 @@ mod tests {
         let (mut app, _dir) = app_with(&["one", "two"]);
         type_str(&mut app, "j");
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "inote");
+        type_str(&mut app, "note");
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Notes(_)));
         press(&mut app, KeyCode::Esc);
@@ -2562,7 +2613,7 @@ mod tests {
     fn reopening_notes_shows_what_was_written() {
         let (mut app, _dir) = app_with(&["one"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "ifirst");
+        type_str(&mut app, "first");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "q");
         press(&mut app, KeyCode::Enter);
@@ -2577,7 +2628,7 @@ mod tests {
     fn editing_an_item_keeps_its_notes() {
         let (mut app, _dir) = app_with(&["one"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "inote");
+        type_str(&mut app, "note");
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "e!");
@@ -2590,7 +2641,7 @@ mod tests {
     fn ctrl_c_in_notes_quits_with_the_notes_saved() {
         let (mut app, dir) = app_with(&["one"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "iunsaved?");
+        type_str(&mut app, "unsaved?");
         app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)).unwrap();
         assert!(app.quit);
         let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
@@ -2695,7 +2746,7 @@ mod tests {
     fn help_from_notes_returns_to_the_notes_as_they_were() {
         let (mut app, _dir) = app_with(&["one"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "idraft");
+        type_str(&mut app, "draft");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "?undo");
         assert!(matches!(app.mode, Mode::Help { .. }));
@@ -2714,7 +2765,7 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert_eq!(items(&app), ["one?"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "iwhy?");
+        type_str(&mut app, "why?");
         let Mode::Notes(editor) = &app.mode else { panic!("should be on the notes screen") };
         assert_eq!(editor.notes(), "why?");
     }
@@ -2834,7 +2885,7 @@ mod tests {
         type_str(&mut app, "lle!");
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "inote");
+        type_str(&mut app, "note");
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.store.items(today())[0].text, "pin a!");
@@ -3068,7 +3119,7 @@ mod tests {
     fn u_undoes_a_whole_notes_visit_in_one_step() {
         let (mut app, _dir) = app_with(&["one"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "ifirst line");
+        type_str(&mut app, "first line");
         press(&mut app, KeyCode::Enter);
         type_str(&mut app, "second");
         press(&mut app, KeyCode::Esc);
@@ -3087,6 +3138,7 @@ mod tests {
         let (mut app, _dir) = app_with(&["one"]);
         type_str(&mut app, "x");
         press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
         type_str(&mut app, "q");
         type_str(&mut app, "u");
         assert!(!app.items()[0].done);
@@ -4071,7 +4123,7 @@ mod tests {
     fn colon_q_in_the_notes_goes_back_to_the_list_with_them_saved() {
         let (mut app, _dir) = app_with(&["one"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "inote");
+        type_str(&mut app, "note");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, ":wq");
         press(&mut app, KeyCode::Enter);
@@ -4087,6 +4139,8 @@ mod tests {
         type_str(&mut app, "jddq");
         type_str(&mut app, "j");
         press(&mut app, KeyCode::Enter);
+        // Empty, so it opened ready to type.
+        press(&mut app, KeyCode::Esc);
         type_str(&mut app, "Pq");
         assert_eq!(app.items()[0].notes, "keep");
         assert_eq!(app.items()[1].notes, "move me");
@@ -4205,6 +4259,7 @@ mod tests {
         let reloaded = Store::open(dir.path().join("todos.json")).unwrap();
         assert_eq!(reloaded.items(today())[0].notes, "first line\nsecond line\nthird line");
         // Leaving the notes keeps it, and it's one step for the list's undo.
+        press(&mut app, KeyCode::Esc);
         type_str(&mut app, "q");
         type_str(&mut app, "u");
         assert_eq!(app.items()[0].notes, "");
@@ -4362,7 +4417,7 @@ mod tests {
     fn notes_are_saved_to_a_markdown_file_as_you_type() {
         let (mut app, dir) = app_with(&["Buy milk"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "i# Oat");
+        type_str(&mut app, "# Oat");
         assert_eq!(std::fs::read_to_string(notes_file(&dir, "buy-milk.md")).unwrap(), "# Oat");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "q");
@@ -4424,7 +4479,7 @@ mod tests {
     fn each_workspace_has_its_own_notes_folder() {
         let (mut app, dir) = crate::test_util::app_with_workspaces(&["Home", "Work"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "ihome notes");
+        type_str(&mut app, "home notes");
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "q");
         let path = dir.path().join("todoro").join("Home").join("notes").join("home-item.md");
@@ -4823,8 +4878,8 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         type_str(&mut app, " vi");
         let Mode::Notes(editor) = &app.mode else { panic!("the notes screen") };
-        assert!(!editor.insert, "in normal mode, as from the list");
-        type_str(&mut app, "ioat");
+        assert!(editor.insert, "empty, so ready to type, as from the list");
+        type_str(&mut app, "oat");
         press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::View(_)));
@@ -4835,6 +4890,7 @@ mod tests {
         assert_eq!(app.items()[0].notes, "");
         // Notes opened from the list still go back to the list.
         press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
     }
@@ -5968,6 +6024,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::Notes(_)));
         // Shift with a letter is just the capital.
         press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
         app.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT)).unwrap();
         assert_eq!(items(&app)[app.selected], "milk");
     }
@@ -6619,7 +6676,6 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
         type_str(&mut app, "j");
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "i");
         // Deleted elsewhere, so every index moves.
         let mut other = Store::open(app.store.path().to_path_buf()).unwrap();
         other.delete_block(today(), 0).unwrap();

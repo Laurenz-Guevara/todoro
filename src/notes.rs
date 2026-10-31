@@ -101,6 +101,11 @@ pub enum Action {
     Help,
 }
 
+/// What empty notes show, in insert mode or not.
+fn placeholder(insert: bool) -> &'static str {
+    if insert { "No notes yet. Type to start writing." } else { "No notes yet. Press i to start writing." }
+}
+
 impl NotesEditor {
     pub fn new(notes: &str) -> Self {
         let lines = if notes.is_empty() { vec![String::new()] } else { notes.lines().map(String::from).collect() };
@@ -127,7 +132,7 @@ impl NotesEditor {
     fn set_lines(&mut self, lines: Vec<String>, (row, col): (usize, usize)) {
         let mut textarea = TextArea::new(lines);
         textarea.set_cursor_line_style(Style::new());
-        textarea.set_placeholder_text("No notes yet. Press i to start writing.");
+        textarea.set_placeholder_text(placeholder(self.insert));
         textarea.set_placeholder_style(Style::new().fg(Color::DarkGray));
         textarea.set_line_number_style(Style::new().fg(Color::DarkGray));
         // The text area's default selection is a bright blue that hides the
@@ -938,7 +943,18 @@ impl NotesEditor {
 
     fn set_insert(&mut self, insert: bool) {
         self.insert = insert;
+        self.textarea.set_placeholder_text(placeholder(insert));
         self.update_cursor_style();
+    }
+
+    /// Starts in insert mode at the end of the notes, ready to type, as the
+    /// options may ask on opening them. What's typed is one undo step, as
+    /// after `i`.
+    pub fn start_typing(&mut self) {
+        self.insert_before = Some(self.snapshot());
+        self.textarea.move_cursor(CursorMove::Bottom);
+        self.textarea.move_cursor(CursorMove::End);
+        self.set_insert(true);
     }
 
     /// A block cursor in normal mode, and an underline while typing or

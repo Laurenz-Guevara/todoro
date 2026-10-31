@@ -2386,15 +2386,19 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
     if let Some(folder) = &options.folder {
         text_rows.push((FOLDER_ROW, "Data", "Todoro folder: ", folder.as_str(), FOLDER_ABOUT, "Move to:"));
     }
-    for (index, section, label, value, about, prompt) in text_rows {
+    for (index, row_section, label, value, about, prompt) in text_rows {
         if !options.matches(index) {
             continue;
         }
         let text_width = inner_width.saturating_sub(2).max(1);
-        if !lines.is_empty() {
-            lines.push(Line::default());
+        // Under the toggles' heading when it's the same section (Notes).
+        if row_section != section {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.push(Line::from(row_section.bold()));
+            section = row_section;
         }
-        lines.push(Line::from(section.bold()));
         let start = lines.len();
         let room = text_width.saturating_sub(label.width());
         let mut row = Line::from(vec![label.into(), truncate(value, room).cyan()]);
@@ -3237,7 +3241,15 @@ mod tests {
     fn writing_notes_in_insert_mode() {
         let (mut app, _dir) = app_with(&["Buy milk"]);
         press(&mut app, KeyCode::Enter);
-        type_str(&mut app, "ioat milk");
+        type_str(&mut app, "oat milk");
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn empty_notes_screen_in_normal_mode() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.settings.empty_notes_normal = true;
+        press(&mut app, KeyCode::Enter);
         assert_snapshot!(render(&app).backend());
     }
 

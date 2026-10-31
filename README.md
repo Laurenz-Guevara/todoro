@@ -214,7 +214,7 @@ With `A`, `Enter` adds the item and starts a new one below it, so you can type a
 
 ### Notes
 
-`Enter` on an item opens its notes: free text that isn't shown on the main list. The notes screen has its own small vim-style editor, with line numbers, and saves as you type.
+`Enter` on an item opens its notes: free text that isn't shown on the main list. The notes screen has its own small vim-style editor, with line numbers, and saves as you type. Empty notes open ready to type, and notes with text open in normal mode; the options can change either.
 
 To use your own editor instead, open the options (`Space` `o`) and set the notes editor to its command, like `nvim`, `hx` or `code --wait`. `Enter` then opens the item's Markdown file in it, and todoro picks up what you saved when it closes. Leave the command empty to go back to todoro's editor.
 
@@ -366,6 +366,8 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 **Notes**
 
+- **Empty notes in normal:** empty notes open ready to type, in insert mode. Turn this on to open them in normal mode instead, where `i` starts typing. Off by default.
+- **Notes with text in insert:** notes that already have text open in normal mode. Turn this on to open them ready to type, at the end. Off by default.
 - **Notes editor:** a command to open notes with instead of todoro's own editor, like `nvim`. `Enter` types it; an empty one goes back to todoro's editor. The command runs with the notes file after it, through `sh` (or `cmd` on Windows), so arguments and `$EDITOR` work. Editors that open a window and return straight away need their wait flag, like `code --wait`.
 
 **Delete**

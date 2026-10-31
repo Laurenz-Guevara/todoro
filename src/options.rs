@@ -23,6 +23,11 @@ pub struct Settings {
     /// Show deadline times on the 12-hour clock (`11PM`), not the 24-hour
     /// one (`23:00`).
     pub twelve_hour: bool,
+    /// Open empty notes in normal mode, rather than ready to type.
+    pub empty_notes_normal: bool,
+    /// Open notes that have text ready to type at their end, rather than in
+    /// normal mode.
+    pub notes_insert: bool,
     /// The newest version whose release notes have been shown, so "what's
     /// new" appears once after each update. Not an option in the popup.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -78,6 +83,20 @@ pub const TOGGLES: &[Toggle] = &[
         description: "Show deadline times like 11PM instead of 23:00. You can type either.",
         get: |s| s.twelve_hour,
         set: |s, on| s.twelve_hour = on,
+    },
+    Toggle {
+        section: "Notes",
+        label: "Empty notes in normal",
+        description: "Empty notes open ready to type. With this on, they open in normal mode, and i starts typing.",
+        get: |s| s.empty_notes_normal,
+        set: |s, on| s.empty_notes_normal = on,
+    },
+    Toggle {
+        section: "Notes",
+        label: "Notes with text in insert",
+        description: "Notes with text open in normal mode. With this on, they open ready to type at the end.",
+        get: |s| s.notes_insert,
+        set: |s, on| s.notes_insert = on,
     },
 ];
 
