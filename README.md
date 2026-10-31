@@ -2,6 +2,8 @@
 
 A terminal todo app with vim-style keys. It opens on today's list, and you move between days with `h` and `l`. Mark items done with `x`, and pin the ones you want to follow you to the next day with `m`. Any item can have longer notes, which you open with `Enter`, and a calendar (`Space` `c`) lets you plan weeks or months ahead.
 
+<img width="713" height="744" alt="todoro-logo" src="https://github.com/user-attachments/assets/d0276be0-ec40-4ab3-9966-ebd30ff2acec" />
+
 ```
 ╭───────────── Monday, October 5 2026 (today) ─────────────╮
 │1. Buy milk                                               │
