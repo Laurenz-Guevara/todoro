@@ -16,6 +16,7 @@ mod notes_files;
 mod options;
 mod outline;
 mod reminder;
+mod safety;
 mod search;
 mod setup;
 mod snake;
@@ -138,6 +139,17 @@ fn main() -> io::Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+        cli::Run::CheckData => {
+            match safety::check_data(&safety::Data::of(&settings, todoro_file.as_deref())) {
+                Ok(json) => println!("{json}"),
+                Err(message) => fail(&message),
+            }
+            return Ok(());
+        }
+        cli::Run::Update { force } => {
+            update_from_command_line(&mut settings, settings_path.as_ref(), todoro_file.as_deref(), force)?;
+            return Ok(());
         }
         cli::Run::Print(text) => {
             println!("{text}");
@@ -365,27 +377,24 @@ fn install_update(terminal: &mut ratatui::DefaultTerminal, app: &mut App, versio
     let _ = execute!(io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     println!("Updating todoro from {} to {version}…\n", changelog::VERSION);
-    // Where this todoro is, while it's still there to ask.
-    let exe = std::env::current_exe();
-    let message = match update::install(version) {
-        Ok(()) => {
+    let todoro_file = std::env::var_os("TODORO_FILE").map(PathBuf::from);
+    let extra: Vec<PathBuf> = app.settings_path.iter().chain(&app.keys_path).cloned().collect();
+    let message = match safe_update(&app.settings, todoro_file.as_deref(), &extra, version, false) {
+        Ok((exe, _)) => {
             // Its notes were just read, so the new version needn't show them.
             app.settings.last_seen_version = Some(version.to_string());
             app.settings.update_available = None;
             if let Some(path) = &app.settings_path {
                 let _ = app.settings.save(path);
             }
-            println!("\nUpdated. Starting todoro {version}…");
-            let error = match exe {
-                Ok(exe) => update::restart(exe),
-                Err(error) => error,
-            };
+            println!("Starting todoro {version}…");
+            let error = update::restart(exe);
             format!("Updated to {version}, but couldn't start it: {error}. Quit and open todoro again.")
         }
-        Err(error) => {
-            println!("\nCouldn't update: {error}. Press Enter to go back to todoro.");
+        Err(message) => {
+            println!("\n{message}\n\nPress Enter to go back to todoro.");
             let _ = io::stdin().read_line(&mut String::new());
-            format!("Couldn't update: {error}")
+            message
         }
     };
     terminal::enable_raw_mode()?;
@@ -395,6 +404,93 @@ fn install_update(terminal: &mut ratatui::DefaultTerminal, app: &mut App, versio
     terminal.clear()?;
     app.message = Some(message);
     Ok(())
+}
+
+/// Installs `version` with `safety::update`, saying in the terminal how it
+/// went. Returns where the new todoro is (to start it) and whether it was
+/// forced past a problem, or what to tell the user when it didn't update.
+fn safe_update(
+    settings: &Settings,
+    todoro_file: Option<&Path>,
+    extra: &[PathBuf],
+    version: &str,
+    force: bool,
+) -> Result<(PathBuf, bool), String> {
+    // Where this todoro is, while it's still there to ask: on Linux, once
+    // the file is replaced, `current_exe` names the old, deleted one.
+    let exe = std::env::current_exe().map_err(|error| format!("Couldn't update: couldn't find this todoro: {error}"))?;
+    let data = safety::Data::of(settings, todoro_file);
+    let mut install = || update::install(version);
+    let check = || {
+        println!("\nChecking that todoro {version} reads all your todos and notes…");
+        safety::checked_by(&exe)
+    };
+    let now = Local::now().naive_local();
+    match safety::update(&data, version, &exe, extra, now, force, safety::Steps { install: &mut install, check: &check }) {
+        Ok(safety::Outcome::Updated { backup }) => {
+            println!("Updated to {version}. It read everything.");
+            if let Some(backup) = backup {
+                println!("A copy of your todos from before is in {}", backup.display());
+            }
+            Ok((exe, false))
+        }
+        Ok(safety::Outcome::Forced { problem, backup }) => {
+            println!("Updated to {version}, as forced, though {problem}.");
+            if let Some(backup) = backup {
+                println!("A copy of your todos from before is in {}", backup.display());
+            }
+            Ok((exe, true))
+        }
+        Err(failure) => Err(failure.explain(version)),
+    }
+}
+
+/// `todoro --update`: finds the latest version, shows what's new, asks, and
+/// updates with `safe_update`.
+fn update_from_command_line(
+    settings: &mut Settings,
+    settings_path: Option<&PathBuf>,
+    todoro_file: Option<&Path>,
+    force: bool,
+) -> io::Result<()> {
+    let fetcher = update::Fetcher::github();
+    if (fetcher.installed)() != update::Install::Installer {
+        fail(update::UPDATE_IT_YOURSELF);
+    }
+    println!("Asking GitHub for the latest version…");
+    let version = (fetcher.latest)().unwrap_or_else(|error| fail(&format!("Couldn't check for updates: {error}")));
+    if !update::is_newer(&version) {
+        println!("todoro {} is the latest version.", changelog::VERSION);
+        return Ok(());
+    }
+    println!("\ntodoro {version} is out. You have {}.\n", changelog::VERSION);
+    if let Ok(text) = (fetcher.changelog)(&version) {
+        let this = changelog::parse_version(changelog::VERSION).unwrap_or_default();
+        for release in changelog::releases(&text).into_iter().filter(|release| release.version > this) {
+            println!("## {}\n\n{}\n", release.title, release.notes.trim());
+        }
+    }
+    if force {
+        println!("With --force, it stays even if it can't read all your todos and notes.");
+    }
+    if !confirm(&format!("Update to {version}? [y/N] "))? {
+        println!("Not updated.");
+        return Ok(());
+    }
+    println!();
+    let extra: Vec<PathBuf> = settings_path.into_iter().cloned().chain(keymap::default_path()).collect();
+    match safe_update(settings, todoro_file, &extra, &version, force) {
+        Ok(_) => {
+            // Its notes were just shown, so the new version needn't show them.
+            settings.last_seen_version = Some(version);
+            settings.update_available = None;
+            if let Some(path) = settings_path {
+                settings.save(path)?;
+            }
+            Ok(())
+        }
+        Err(message) => fail(&message),
+    }
 }
 
 /// Hands the terminal to the user's editor to edit `path`, and takes it back

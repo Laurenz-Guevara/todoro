@@ -24,6 +24,12 @@ Options:
   -wl, --workspaces          List the workspaces, * marking the current one
   -w, --workspace NAME       Switch to a workspace: todoro and -l use it
   --where                    Print the todoro folder, where every workspace is kept
+  -U, --update               Update to the latest version, after showing what's
+                             new and asking. Your todos are backed up first, and
+                             if the new version can't read them all, the one you
+                             have goes back
+  -U --force                 Update even if the new version can't read them all,
+                             when you have your own copies (also -U -f)
   --version                  Print the version
   --help                     Print this help
 
@@ -65,6 +71,12 @@ pub enum Run {
     Workspaces,
     /// Switch to this workspace (`None` when no name was given) and stop.
     Switch(Option<String>),
+    /// Update to the latest version, keeping it even if it can't read
+    /// everything when `force`, and stop.
+    Update { force: bool },
+    /// Print what this version reads of the data, as JSON, for an update
+    /// to check the new version with, and stop. It never writes.
+    CheckData,
     /// Print this and stop.
     Print(String),
     /// Print this error and stop with this exit code.
@@ -95,6 +107,15 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
     {
         return delete(&args[1..]);
     }
+    if let Some(flag) = args.first()
+        && (flag == "-U" || flag == "--update")
+    {
+        return match &args[1..] {
+            [] => Run::Update { force: false },
+            [force] if force == "-f" || force == "--force" => Run::Update { force: true },
+            _ => Run::Fail(format!("todoro: --update takes only --force (or -f)\n\n{}", help(keys)), 2),
+        };
+    }
     match args {
         [] => Run::App,
         [flag] if flag == "-w" || flag == "--workspace" => Run::Switch(None),
@@ -108,6 +129,7 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
             "--list" | "-l" => Run::List,
             "--workspaces" | "-wl" => Run::Workspaces,
             "--undo" | "-u" => Run::Undo,
+            "--check-data" => Run::CheckData,
             "--where" => match (todoro_file, &settings.data_dir) {
                 (Some(file), _) => Run::Print(file.display().to_string()),
                 (None, Some(dir)) => Run::Print(dir.display().to_string()),
@@ -189,6 +211,24 @@ mod tests {
     #[test]
     fn no_options_opens_todoro() {
         assert_eq!(run(&[], &Settings::default(), None), Run::App);
+    }
+
+    #[test]
+    fn update_with_or_without_force_in_long_or_short() {
+        let settings = Settings::default();
+        assert_eq!(run(&["--update"], &settings, None), Run::Update { force: false });
+        assert_eq!(run(&["-U"], &settings, None), Run::Update { force: false });
+        for force in [["--update", "--force"], ["-U", "-f"], ["-U", "--force"], ["--update", "-f"]] {
+            assert_eq!(run(&force, &settings, None), Run::Update { force: true }, "{force:?}");
+        }
+        assert!(matches!(run(&["-U", "now"], &settings, None), Run::Fail(_, 2)));
+        // -u is still undo.
+        assert_eq!(run(&["-u"], &settings, None), Run::Undo);
+        assert_eq!(run(&["--check-data"], &settings, None), Run::CheckData);
+        let Run::Print(help) = run(&["--help"], &settings, None) else { panic!("help") };
+        assert!(help.contains("-U, --update") && help.contains("-U --force"), "{help}");
+        // It's for updates to run, not people.
+        assert!(!help.contains("--check-data"));
     }
 
     #[test]

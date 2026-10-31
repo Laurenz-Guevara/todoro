@@ -285,6 +285,23 @@ impl Merge {
 impl Store {
     /// Loads from `path`. A missing file is an empty store; it is created on first save.
     pub fn open(path: PathBuf) -> io::Result<Self> {
+        let (mut store, inline) = Self::load(path)?;
+        if inline {
+            store.save()?;
+        }
+        Ok(store)
+    }
+
+    /// Loads from `path` without writing anything, not even moving inline
+    /// notes into files as `open` does: for checking what a version reads
+    /// (`todoro --check-data`). It must not be saved.
+    pub fn open_read_only(path: PathBuf) -> io::Result<Self> {
+        Ok(Self::load(path)?.0)
+    }
+
+    /// The store at `path`, and whether it has notes from before notes
+    /// files, which saving moves into them.
+    fn load(path: PathBuf) -> io::Result<(Self, bool)> {
         let on_disk = read_if_there(&path)?;
         let raw: BTreeMap<String, Vec<RawItem>> = match &on_disk {
             Some(s) => serde_json::from_str(s).map_err(io::Error::other)?,
@@ -308,11 +325,8 @@ impl Store {
         let mut notes = NotesFiles::for_todos(&path);
         notes.load(&mut days)?;
         let stamp = Cell::new(stamp(&path));
-        let mut store = Self { path, days, notes, conflicts: Vec::new(), on_disk, stamp, kept_outside: None, merge: None };
-        if inline {
-            store.save()?;
-        }
-        Ok(store)
+        let store = Self { path, days, notes, conflicts: Vec::new(), on_disk, stamp, kept_outside: None, merge: None };
+        Ok((store, inline))
     }
 
     /// Whether something else has changed the todos file since this store

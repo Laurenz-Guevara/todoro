@@ -1,9 +1,10 @@
 //! Updating todoro from inside it. Once a day, if the option is on, todoro
 //! asks GitHub for the latest version, only to show that one is available.
 //! It never installs anything by itself: `:update` shows the new release's
-//! notes, and only `y` there runs the official installer, after which
-//! todoro restarts on the new version. A copy installed some other way (with
-//! `cargo install`, or by hand) is left alone, with how to update it.
+//! notes, and only `y` there runs the official installer (with the backup
+//! and checks in `safety`), after which todoro restarts on the new version.
+//! A copy installed some other way (with `cargo install`, or by hand) is
+//! left alone, with how to update it.
 //!
 //! GitHub is asked with `curl`, which macOS, Linux and Windows 10 and later
 //! have, so todoro needs no networking of its own.

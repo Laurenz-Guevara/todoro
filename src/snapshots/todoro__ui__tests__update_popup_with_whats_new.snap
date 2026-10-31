@@ -10,8 +10,8 @@ expression: "screen.join(\"\\n\").replace(crate::changelog::VERSION, \"X.Y.Z\")"
 │ │ • Everything is better                               │ │
 │ │                                                      │ │
 │ │ Press y to update from X.Y.Z to 99.0.0 now, or n to  │ │
-│ │ stay on X.Y.Z. todoro restarts on the new version.   │ │
-│ │                                                      │ │
+│ │ stay on X.Y.Z. Your todos are backed up first, and   │ │
+│ │ todoro restarts on the new version.                  │ │
 │ │                                                      │ │
 │ │                                                      │ │
 │ │                                                      │ │

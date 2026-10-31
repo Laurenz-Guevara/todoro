@@ -41,7 +41,11 @@ Type `:update` in todoro. It checks for a newer version and, if there is one, sh
 
 Once a day, when you open todoro, it also checks whether there's a newer version, and if there is, says so at the right of the status bar, like `v1.0.0 available · :update`. It never installs anything by itself. Turn **Check for updates** off in the options to stop it checking.
 
-Both ask GitHub with `curl`, which comes with macOS, Linux and Windows 10 and later.
+Both ask GitHub with `curl`, which comes with macOS, Linux and Windows 10 and later. You can also update from the terminal with `todoro -U` (also `--update`), which shows what's new and asks the same way.
+
+Updating never risks your todos. First todoro copies your todos, notes, settings and keys into a backup folder: `.backups` in the todoro folder (`todoro --where`), or `.todoro-backups` beside the file with `TODORO_FILE`. It keeps the last three. Then, once the new version is installed, todoro asks it to read all your todos and notes, without changing them. If it can't, or finds fewer, the version you had goes back and todoro tells you why. Nothing has changed, and the update is installed only when it can read everything.
+
+If you've made your own copies and want the new version anyway, run `todoro -U -f` (also `todoro --update --force`): it updates even if the new version can't read everything, still backing up first.
 
 ### From source
 
@@ -68,6 +72,8 @@ todoro -u          # put back what -d deleted last (also --undo)
 todoro -wl         # list the workspaces (also --workspaces), * marking the current one
 todoro -w work     # switch to the work workspace (also --workspace): todoro and -l use it
 todoro --where     # print the todoro folder, e.g. to back it up: cp -r "$(todoro --where)" /backup/
+todoro -U          # update to the latest version, after showing what's new and asking (also --update)
+todoro -U -f       # update even if the new version can't read all your todos (also --update --force)
 todoro --version
 todoro --help
 ```

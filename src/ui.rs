@@ -2562,7 +2562,7 @@ fn draw_update(frame: &mut Frame, popup: &update::Popup) {
             let long = format!(" todoro {version} is out ");
             let title = fit_first(&[long.as_str(), " Update ", " New "], room);
             let ask = format!(
-                "Press y to update from {} to {version} now, or n to stay on {}. todoro restarts on the new version.",
+                "Press y to update from {} to {version} now, or n to stay on {}. Your todos are backed up first, and todoro restarts on the new version.",
                 changes::VERSION,
                 changes::VERSION
             );
