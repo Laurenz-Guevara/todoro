@@ -344,8 +344,6 @@ impl Failure {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-
     use super::*;
 
     fn at(time: &str) -> NaiveDateTime {
@@ -454,7 +452,10 @@ mod tests {
         assert_eq!(super::backup(&Data::Nothing, "9.0.0", &[], at(NOON)).unwrap(), None);
     }
 
-    /// A stand-in for the todoro exe, saying which version it is.
+    /// A stand-in for the todoro exe, saying which version it is. The
+    /// update tests use them on Unix only: on Windows the installer moves
+    /// the exe aside itself.
+    #[cfg(not(windows))]
     fn exe(dir: &Path) -> PathBuf {
         let bin = dir.join("bin");
         fs::create_dir(&bin).unwrap();
@@ -465,8 +466,9 @@ mod tests {
 
     /// Updates with an installer that writes "new" over `exe`, and a new
     /// version that reads `read`.
+    #[cfg(not(windows))]
     fn run(data: &Data, exe: &Path, force: bool, read: Result<Summary, String>) -> Result<Outcome, Failure> {
-        let installed = Cell::new(false);
+        let installed = std::cell::Cell::new(false);
         let mut install = || {
             assert!(previous_exe(exe).exists(), "kept before installing");
             fs::write(exe, "new").unwrap();
