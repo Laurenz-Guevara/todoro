@@ -400,6 +400,28 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
     app.list_offset.set(state.offset());
 
+    // Just copied (`yy`): the copied rows flash, as selected with `V`.
+    if let Some((_, flashed)) = &app.list_flash {
+        let offset = state.offset();
+        let buffer = frame.buffer_mut();
+        for &row in flashed.iter().filter(|&&row| row < rows.len()) {
+            let at = list_row(row);
+            if at < offset {
+                continue;
+            }
+            let top: usize = heights[offset..at].iter().sum();
+            for line in top..top + heights[at] {
+                let y = inner.y + line as u16;
+                if y >= inner.bottom() {
+                    break;
+                }
+                for x in inner.left()..inner.right() {
+                    buffer[(x, y)].set_bg(VISUAL_BG);
+                }
+            }
+        }
+    }
+
     if let Mode::Insert { index, .. } = &app.mode {
         let (line, col) = typing_cursor;
         let row: usize = heights[state.offset()..list_row(*index)].iter().sum::<usize>() + line;
@@ -4419,6 +4441,22 @@ mod tests {
         app.tick(ends);
         assert!(flashing(&app).is_empty());
         assert_eq!(app.redraw_at(), None);
+    }
+
+    #[test]
+    fn copying_on_the_list_flashes_its_rows() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Plan the trip", "Call mom"]);
+        app.store.insert_at(app.day, 2, vec![Item { text: "Book flights".into(), ..Item::default() }], 1).unwrap();
+        type_str(&mut app, "jyy");
+        let flashing = |app: &App| -> Vec<u16> {
+            let terminal = render(app);
+            let buffer = terminal.backend().buffer().clone();
+            (0..buffer.area.height).filter(|&y| buffer[(5, y)].bg == VISUAL_BG).collect()
+        };
+        // "Plan the trip" and its sub-item, on screen rows 2 and 3.
+        assert_eq!(flashing(&app), [2, 3]);
+        app.tick(app.redraw_at().unwrap());
+        assert!(flashing(&app).is_empty());
     }
 
     #[test]

@@ -96,7 +96,7 @@ These are the default keys. You can change any of them, and the leader menu's, i
 | `r` / `:remind` | Set a reminder on the selected item |
 | `!` | Triage the selected item: High, Medium, Low, then no priority again |
 | `d` | Delete the selected item (asks to confirm) |
-| `yy` | Copy the selected item |
+| `yy` | Copy the selected item, and its text to the clipboard |
 | `p` / `P` | Paste the copied (or last deleted) item below / above the cursor |
 | `V` / `v` | Select several items |
 | `Enter` | Edit the selected item's notes, in your own editor if you've set one |
@@ -137,7 +137,7 @@ Pinned items are marked with `⚲` and items that have notes with `≡`. A triag
 | `m` | Pin them all, or unpin them if they're all pinned |
 | `!` | Give them all the next priority |
 | `d` | Delete them (asks once) |
-| `y` | Copy them, to paste with `p` |
+| `y` | Copy them, to paste with `p`, and their text to the clipboard |
 | `H` / `L` | Move them to the previous / next day, and go with them |
 | `Esc` / `V` | Stop selecting |
 
@@ -473,7 +473,7 @@ The help (`?`) shows each key with its command's name in grey. These are all the
 | `overdue` | List the items past their deadline |
 | `triage` | Triage: High, Medium, Low, then none |
 | `delete` | Delete the selected item |
-| `copy` | Copy the selected item |
+| `copy` | Copy the selected item, and its text to the clipboard |
 | `paste-below` | Paste below (also after deleting) |
 | `paste-above` | Paste above |
 | `select` | Select several items |

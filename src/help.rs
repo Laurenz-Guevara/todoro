@@ -107,7 +107,7 @@ pub const SECTIONS: &[Section] = &[
             ("m", "Pin them (or unpin if all pinned)"),
             ("!", "Triage them all to the next priority"),
             ("d", "Delete them"),
-            ("y", "Copy them"),
+            ("y", "Copy them, and their text to the clipboard"),
             ("H / L", "Move them to the previous / next day"),
             ("Esc / V", "Stop selecting"),
         ],

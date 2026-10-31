@@ -96,6 +96,21 @@ pub(crate) fn block(items: &[Item], root: usize, label: &str, out: &mut String) 
     }
 }
 
+/// Copied items as text for the clipboard (`yy` on the list): each
+/// top-level item's text, and each sub-item's under it, indented by depth
+/// after `-` (`- [x]` once completed), as the day's text has them, without
+/// notes. One item is just its text, with no line break after it.
+pub fn titles(items: &[Item]) -> String {
+    let lines: Vec<String> = items
+        .iter()
+        .map(|item| match item.depth {
+            0 => item.text.clone(),
+            depth => format!("{}{}{}", "  ".repeat(depth - 1), if item.done { "- [x] " } else { "- " }, item.text),
+        })
+        .collect();
+    lines.join("\n")
+}
+
 /// The file name for a day's export: its date, and the workspace's name
 /// when there's more than one, so they don't overwrite each other.
 pub fn file_name(day: NaiveDate, workspace: Option<&str>) -> String {
@@ -195,6 +210,15 @@ Check **prices** first
     fn an_empty_day_says_so() {
         let (app, _dir) = app_with(&[]);
         assert_eq!(day_text(&app), "Monday 5 October 2026\n\nNothing on this day.\n");
+    }
+
+    #[test]
+    fn copied_items_as_text() {
+        let item = |text: &str, depth, done| Item { text: text.into(), depth, done, notes: "not copied".into(), ..Item::default() };
+        assert_eq!(titles(&[item("Buy milk", 0, false)]), "Buy milk");
+        let trip = [item("Plan the trip", 0, false), item("Book flights", 1, false), item("Window seat", 2, true), item("Pack", 1, true)];
+        assert_eq!(titles(&trip), "Plan the trip\n- Book flights\n  - [x] Window seat\n- [x] Pack");
+        assert_eq!(titles(&[item("Buy milk", 0, false), item("Call mom", 0, true)]), "Buy milk\nCall mom");
     }
 
     #[test]

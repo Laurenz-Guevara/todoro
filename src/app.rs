@@ -177,6 +177,9 @@ pub struct App {
     /// Whether `message` goes by itself, `BRIEF_MESSAGE` after it shows,
     /// and once the first tick has seen it, when.
     message_brief: bool,
+    /// When items were copied on the list (`yy`), and their rows, with
+    /// their sub-items', while they flash to show it.
+    pub list_flash: Option<(std::time::Instant, Vec<usize>)>,
     message_ends: Option<std::time::Instant>,
     /// Where `yy` in the viewer copies to.
     pub clipboard: Clipboard,
@@ -235,6 +238,7 @@ impl App {
             command: None,
             message: None,
             message_brief: false,
+            list_flash: None,
             message_ends: None,
             clipboard: Clipboard::System,
             register: Vec::new(),
@@ -352,6 +356,8 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> io::Result<()> {
         self.clear_message();
+        // Any key ends a copy's flash early.
+        self.list_flash = None;
         let before = self.slot(self.selected);
         let result = self.key(key);
         self.report_conflicts(before);
@@ -983,7 +989,7 @@ impl App {
             Command::First => self.selected = count.map_or(0, |n| self.row_for_number(n)),
             Command::Last => self.selected = count.map_or(len.saturating_sub(1), |n| self.row_for_number(n)),
             Command::Overdue => self.mode = Mode::Search(Box::new(Search::overdue())),
-            Command::Copy if len > 0 => self.register = self.copy_rows(&[self.selected]),
+            Command::Copy if len > 0 => self.copy_items(&[self.selected]),
             Command::Leader => self.mode = Mode::Leader(Leader::default()),
             // Paste below or above the cursor, like a and its opposite.
             Command::PasteBelow => self.paste(true)?,
@@ -1681,17 +1687,29 @@ impl App {
             }
         };
         // The text flashes to show it's copied, as copied lines do in the
-        // notes. The terminal may not allow copying, so that says so.
-        match self.clipboard.copy(&text) {
+        // notes.
+        if self.copy_to_clipboard(&text, what)
+            && let Mode::View(viewer) = &mut self.mode
+        {
+            viewer.flash = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Puts `text` on the system clipboard, saying so only if it went
+    /// through the terminal, which may not allow it, or failed. Whether it
+    /// was copied, for a flash to show it.
+    fn copy_to_clipboard(&mut self, text: &str, what: &str) -> bool {
+        match self.clipboard.copy(text) {
             Ok(copied) => {
                 if copied == Copied::Terminal {
                     self.brief_message(format!("Asked the terminal to copy {what}"));
                 }
-                if let Mode::View(viewer) = &mut self.mode {
-                    viewer.flash = Some(std::time::Instant::now());
-                }
+                true
             }
-            Err(error) => self.brief_message(format!("Couldn't copy: {error}")),
+            Err(error) => {
+                self.brief_message(format!("Couldn't copy: {error}"));
+                false
+            }
         }
     }
 
@@ -1827,7 +1845,7 @@ impl App {
                     self.store.update_many(day, &indices, |item| item.priority = priority)?;
                 }
             }
-            KeyCode::Char('y') => self.register = self.copy_rows(&rows),
+            KeyCode::Char('y') => self.copy_items(&rows),
             KeyCode::Char('d') => {
                 self.mode = Mode::ConfirmDelete { rows };
                 return Ok(());
@@ -1857,6 +1875,30 @@ impl App {
 
     /// Copies of the items at screen `rows` with their sub-items, each
     /// starting at the top level, as `yy` and `y` keep them to paste.
+    /// Copies the items at screen `rows`, with their sub-items, to paste
+    /// with `p`, and their text to the system clipboard (`export::titles`).
+    /// Their rows flash to show it.
+    fn copy_items(&mut self, rows: &[usize]) {
+        self.register = self.copy_rows(rows);
+        let text = export::titles(&self.register);
+        let what = if self.register.len() == 1 { "the item" } else { "the items" };
+        if self.copy_to_clipboard(&text, what) {
+            self.list_flash = Some((std::time::Instant::now(), self.block_rows(rows)));
+        }
+    }
+
+    /// The screen rows of the items at `rows` and of what shows of their
+    /// sub-items.
+    fn block_rows(&self, rows: &[usize]) -> Vec<usize> {
+        let mut blocks = Vec::new();
+        for (day, indices) in self.group_by_day(rows) {
+            let items = self.store.items(day);
+            blocks.extend(outline::outermost(items, &indices).into_iter().map(|start| (day, start..outline::block_end(items, start))));
+        }
+        let slots = self.slots();
+        (0..slots.len()).filter(|&row| blocks.iter().any(|(day, block)| *day == slots[row].day && block.contains(&slots[row].index))).collect()
+    }
+
     fn copy_rows(&self, rows: &[usize]) -> Vec<Item> {
         let mut copied = Vec::new();
         for (day, indices) in self.group_by_day(rows) {
@@ -2146,7 +2188,8 @@ impl App {
             },
             _ => None,
         };
-        [timed, self.message_ends].into_iter().flatten().min()
+        let list_flash = self.list_flash.as_ref().map(|(since, _)| *since + crate::notes::FLASH);
+        [timed, list_flash, self.message_ends].into_iter().flatten().min()
     }
 
     /// Ends anything timed (a copy's flash) whose time is up at `now`, and
@@ -2157,6 +2200,9 @@ impl App {
             Mode::View(viewer) => viewer.expire_flash(now),
             Mode::Calendar(calendar) => calendar.tick(now),
             _ => {}
+        }
+        if self.list_flash.as_ref().is_some_and(|(since, _)| now >= *since + crate::notes::FLASH) {
+            self.list_flash = None;
         }
         // A brief message's time starts once it's on screen.
         if self.message_brief {
@@ -3572,6 +3618,52 @@ mod tests {
         assert_eq!(app.day, today().succ_opt().unwrap());
         type_str(&mut app, "hu");
         assert!(!app.items()[0].done);
+    }
+
+    #[test]
+    fn yy_on_the_list_copies_the_item_and_its_sub_items_to_the_clipboard() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Plan the trip"]);
+        let day = today();
+        app.store.insert_at(day, 2, vec![Item { text: "Book flights".into(), ..Item::default() }], 1).unwrap();
+        app.store.insert_at(day, 3, vec![Item { text: "Compare prices".into(), ..Item::default() }], 2).unwrap();
+        app.store.insert_at(day, 4, vec![Item { text: "Pack".into(), ..Item::default() }], 1).unwrap();
+        app.store.toggle_done(day, 4).unwrap();
+        type_str(&mut app, "yy");
+        assert_eq!(app.clipboard.copied(), ["Buy milk"]);
+        assert_eq!(app.message, None, "no message: the row flashes");
+        type_str(&mut app, "jyy");
+        assert_eq!(app.clipboard.copied()[1], "Plan the trip\n- Book flights\n  - Compare prices\n- [x] Pack");
+        // p still pastes it, sub-items and all.
+        type_str(&mut app, "Gp");
+        assert_eq!(items(&app).len(), 9);
+        // A sub-item on its own is just its text.
+        type_str(&mut app, "ggjjyy");
+        assert_eq!(app.clipboard.copied()[2], "Book flights\n- Compare prices");
+    }
+
+    #[test]
+    fn copying_on_the_list_flashes_the_copied_rows_until_its_time_or_a_key() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Plan the trip", "Call mom"]);
+        app.store.insert_at(today(), 2, vec![Item { text: "Book flights".into(), ..Item::default() }], 1).unwrap();
+        type_str(&mut app, "jyy");
+        let (since, rows) = app.list_flash.clone().unwrap();
+        assert_eq!(rows, [1, 2]);
+        let ends = since + crate::notes::FLASH;
+        assert_eq!(app.redraw_at(), Some(ends));
+        app.tick(ends);
+        assert!(app.list_flash.is_none());
+        assert_eq!(app.redraw_at(), None);
+        type_str(&mut app, "yyj");
+        assert!(app.list_flash.is_none());
+    }
+
+    #[test]
+    fn selected_items_are_copied_to_the_clipboard_with_y() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom", "Pay rent"]);
+        type_str(&mut app, "Vjy");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.clipboard.copied(), ["Buy milk\nCall mom"]);
+        assert_eq!(app.list_flash.as_ref().map(|(_, rows)| rows.clone()), Some(vec![0, 1]));
     }
 
     #[test]

@@ -115,7 +115,7 @@ const COMMANDS: &[(Command, &str, &str, &str)] = &[
     (Command::Overdue, "overdue", "overdue", "List the items past their deadline"),
     (Command::Triage, "triage", "triage", "Triage: High, Medium, Low, then none"),
     (Command::Delete, "delete", "delete", "Delete the selected item"),
-    (Command::Copy, "copy", "copy", "Copy the selected item"),
+    (Command::Copy, "copy", "copy", "Copy the selected item, and its text to the clipboard"),
     (Command::PasteBelow, "paste-below", "paste below", "Paste below (also after deleting)"),
     (Command::PasteAbove, "paste-above", "paste above", "Paste above"),
     (Command::Select, "select", "select", "Select several items"),
