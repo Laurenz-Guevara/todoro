@@ -52,6 +52,11 @@ todoro             # open todoro
 todoro -l          # print today's list (also --list), as todoro would show it
 todoro -a Buy milk # add an item to today's list (also --add)
 todoro -a Book flights -p 2   # add it as a sub-item of item 2, as -l numbers it (also --parent)
+todoro -d          # print today's list with sub-items numbered too, to see what to delete
+todoro -d 2        # delete item 2 (also --delete), after showing it, its sub-items and notes and asking
+todoro -d 2.1      # delete item 2's first sub-item
+todoro -d 2 --force  # delete it without asking (also -f)
+todoro -u          # put back what -d deleted last (also --undo)
 todoro -wl         # list the workspaces (also --workspaces), * marking the current one
 todoro -w work     # switch to the work workspace (also --workspace): todoro and -l use it
 todoro --where     # print the todoro folder, e.g. to back it up: cp -r "$(todoro --where)" /backup/

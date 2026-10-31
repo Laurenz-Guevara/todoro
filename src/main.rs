@@ -57,7 +57,7 @@ fn main() -> io::Result<()> {
     match cli::parse(&args, &settings, todoro_file.as_deref(), keymap::default_path().as_deref()) {
         cli::Run::App => {}
         cli::Run::List => {
-            print!("{}", list_today(&settings, todoro_file)?);
+            print!("{}", list_today(&settings, todoro_file, false)?);
             return Ok(());
         }
         cli::Run::Add { text, parent } => {
@@ -78,6 +78,44 @@ fn main() -> io::Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+        cli::Run::Delete { address, force } => {
+            let (mut store, _) = match open_for_command_line(&settings, todoro_file)? {
+                Ok(opened) => opened,
+                Err(message) => fail(&message),
+            };
+            let now = Local::now();
+            let (today, time) = (now.date_naive(), now.time());
+            if !force {
+                match list::delete_preview(&store, today, time, &address) {
+                    Ok(preview) => print!("{preview}"),
+                    Err(message) => fail(&message),
+                }
+                if !confirm("\nDelete it? [y/N] ")? {
+                    println!("Nothing was deleted.");
+                    return Ok(());
+                }
+            }
+            match list::delete(&mut store, today, time, &address)? {
+                Ok(message) => println!("{message}"),
+                Err(message) => fail(&message),
+            }
+            return Ok(());
+        }
+        cli::Run::Numbered => {
+            print!("{}", list_today(&settings, todoro_file, true)?);
+            return Ok(());
+        }
+        cli::Run::Undo => {
+            let (mut store, _) = match open_for_command_line(&settings, todoro_file)? {
+                Ok(opened) => opened,
+                Err(message) => fail(&message),
+            };
+            match list::undo(&mut store)? {
+                Ok(message) => println!("{message}"),
+                Err(message) => fail(&message),
+            }
+            return Ok(());
         }
         cli::Run::Workspaces => {
             let dir = settings.data_dir.as_deref().expect("checked by cli::parse");
@@ -151,8 +189,9 @@ fn main() -> io::Result<()> {
 }
 
 /// Today's list as text, from `TODORO_FILE` or the workspace todoro would
-/// open. It only reads: nothing is set up, saved or moved on.
-fn list_today(settings: &Settings, todoro_file: Option<PathBuf>) -> io::Result<String> {
+/// open, `numbered` for `todoro -d`'s list (`list::numbered`). It only
+/// reads: nothing is set up, saved or moved on.
+fn list_today(settings: &Settings, todoro_file: Option<PathBuf>, numbered: bool) -> io::Result<String> {
     let (store, workspace) = match open_for_command_line(settings, todoro_file)? {
         Ok(opened) => opened,
         Err(message) => return Ok(format!("{message}\n")),
@@ -161,7 +200,25 @@ fn list_today(settings: &Settings, todoro_file: Option<PathBuf>) -> io::Result<S
     // The workspace's name helps only when there's more than one.
     let several = settings.data_dir.as_ref().is_some_and(|dir| Workspaces::new(dir.clone()).list().is_ok_and(|names| names.len() > 1));
     let workspace = workspace.filter(|_| several);
-    Ok(list::today(&store, now.date_naive(), now.time(), settings.twelve_hour, workspace.as_deref()))
+    let text = if numbered { list::numbered } else { list::today };
+    Ok(text(&store, now.date_naive(), now.time(), settings.twelve_hour, workspace.as_deref()))
+}
+
+/// Prints `message` as an error and stops.
+fn fail(message: &str) -> ! {
+    eprintln!("{message}");
+    std::process::exit(1);
+}
+
+/// Asks `question` and reads the answer: yes only for `y` or `yes`.
+/// Nothing typed, or no answer at all, is no.
+fn confirm(question: &str) -> io::Result<bool> {
+    use std::io::Write;
+    print!("{question}");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 /// The todos a command-line flag works on: `TODORO_FILE`, or the workspace

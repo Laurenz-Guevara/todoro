@@ -93,7 +93,7 @@ impl Priority {
 /// How an item is written to disk. Items with only text stay plain strings, so
 /// files from before notes and completion existed load unchanged and remain
 /// readable by older versions until an item gets notes or is completed.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 enum RawItem {
     Text(String),
@@ -176,6 +176,62 @@ fn nest(items: &[Item]) -> Vec<RawItem> {
     written
 }
 
+/// An item deleted from the command line (`todoro -d`), with its sub-items
+/// and their notes, kept in a file to put back (`todoro -u`).
+#[derive(Serialize, Deserialize)]
+pub struct Deleted {
+    /// Where it was: its day, its index there, and how deep it was.
+    day: String,
+    index: usize,
+    depth: usize,
+    /// It and its sub-items, written as in the todos file.
+    items: Vec<RawItem>,
+    /// Each one's notes, in outline order, since the todos file keeps notes
+    /// in files of their own.
+    notes: Vec<String>,
+}
+
+impl Deleted {
+    /// `items`, its block as it was, stored at `index` on `day`.
+    pub fn new(day: NaiveDate, index: usize, items: &[Item]) -> Self {
+        let depth = items.first().map_or(0, |item| item.depth);
+        let mut copies: Vec<Item> = items.iter().map(|item| Item { notes_file: None, ..item.clone() }).collect();
+        outline::rebase(&mut copies, 0);
+        let notes = copies.iter().map(|item| item.notes.clone()).collect();
+        Deleted { day: key(day), index, depth, items: nest(&copies), notes }
+    }
+
+    pub fn day(&self) -> Option<NaiveDate> {
+        NaiveDate::parse_from_str(&self.day, "%Y-%m-%d").ok()
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// The items to put back, at depth 0, with their notes.
+    pub fn items(&self) -> Vec<Item> {
+        let mut items = Vec::new();
+        flatten(self.items.clone(), 0, &mut items);
+        for (item, notes) in items.iter_mut().zip(&self.notes) {
+            item.notes = notes.clone();
+        }
+        items
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_default()
+    }
+
+    pub fn from_json(text: &str) -> io::Result<Self> {
+        serde_json::from_str(text).map_err(io::Error::other)
+    }
+}
+
 /// A copy of every item, to restore for undo.
 #[derive(Clone, PartialEq)]
 pub struct Snapshot(BTreeMap<String, Vec<Item>>);
@@ -226,6 +282,12 @@ impl Store {
     /// The todos file.
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    /// Where the last item deleted from the command line is kept, beside
+    /// the todos file.
+    pub fn deleted_path(&self) -> PathBuf {
+        self.path.with_file_name("last-deleted.json")
     }
 
     /// The folder notes files are kept in.
@@ -537,6 +599,34 @@ impl Store {
         Ok(removed)
     }
 
+    /// Deletes the item at `index` on `day` with its sub-items, returning
+    /// them as they were (depths and all), for `Deleted`.
+    pub fn delete_block(&mut self, day: NaiveDate, index: usize) -> io::Result<Vec<Item>> {
+        let removed = self.take_blocks(day, &[index]).into_iter().flatten().collect();
+        self.save()?;
+        Ok(removed)
+    }
+
+    /// Puts `items` (a block at depth 0, as `Deleted::items` gives) back at
+    /// `index` on `day`, `depth` deep, keeping whether each was done, and
+    /// giving their notes files again. The depth is kept only as deep as the
+    /// item above allows, in case the list changed meanwhile, and if
+    /// sub-items deeper than that now sit at `index`, it goes after them,
+    /// rather than taking them from their item. Returns where it went.
+    pub fn put_back(&mut self, day: NaiveDate, index: usize, depth: usize, items: Vec<Item>) -> io::Result<usize> {
+        let mut items: Vec<Item> = items.into_iter().map(|item| Item { notes_file: None, ..item }).collect();
+        let day_items = self.days.entry(key(day)).or_default();
+        let index = index.min(day_items.len());
+        let deepest = index.checked_sub(1).map_or(0, |above| day_items[above].depth + 1);
+        let depth = depth.min(deepest);
+        let index = index + day_items[index..].iter().take_while(|item| item.depth > depth).count();
+        outline::rebase(&mut items, depth);
+        day_items.splice(index..index, items);
+        let moved = outline::normalize(day_items);
+        self.save()?;
+        Ok(moved.get(index).copied().unwrap_or(index))
+    }
+
     /// Takes the blocks of the items at `indices` out of `day`, in order.
     fn take_blocks(&mut self, day: NaiveDate, indices: &[usize]) -> Vec<Vec<Item>> {
         let k = key(day);
@@ -702,6 +792,39 @@ mod tests {
 
     fn texts(store: &Store, day: NaiveDate) -> Vec<&str> {
         store.items(day).iter().map(|item| item.text.as_str()).collect()
+    }
+
+    #[test]
+    fn putting_back_goes_after_sub_items_now_in_its_place() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        let day = today();
+        for (i, text) in ["Plan the trip", "Buy milk", "Call mom"].into_iter().enumerate() {
+            store.insert(day, i, text.into()).unwrap();
+        }
+        let removed = store.delete_block(day, 1).unwrap();
+        // Meanwhile "Plan the trip" got two sub-items, where "Buy milk" was.
+        let subs = vec![Item { text: "Book flights".into(), depth: 1, ..Item::default() }, Item { text: "Pack".into(), depth: 1, ..Item::default() }];
+        store.insert_at(day, 1, subs, 1).unwrap();
+        assert_eq!(store.put_back(day, 1, 0, removed).unwrap(), 3);
+        assert_eq!(texts(&store, day), ["Plan the trip", "Book flights", "Pack", "Buy milk", "Call mom"]);
+        assert_eq!(store.items(day).iter().map(|item| item.depth).collect::<Vec<_>>(), [0, 1, 1, 0, 0]);
+    }
+
+    #[test]
+    fn putting_back_a_sub_item_goes_after_deeper_ones_but_stays_a_sub_item() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        let day = today();
+        store.insert(day, 0, "Plan the trip".into()).unwrap();
+        store.insert_at(day, 1, vec![Item { text: "Book flights".into(), ..Item::default() }], 1).unwrap();
+        store.insert_at(day, 2, vec![Item { text: "Pack".into(), ..Item::default() }], 1).unwrap();
+        let removed = store.delete_block(day, 2).unwrap();
+        // "Book flights" got a sub-item where "Pack" was.
+        store.insert_at(day, 2, vec![Item { text: "Window seat".into(), ..Item::default() }], 2).unwrap();
+        store.put_back(day, 2, 1, removed).unwrap();
+        assert_eq!(texts(&store, day), ["Plan the trip", "Book flights", "Window seat", "Pack"]);
+        assert_eq!(store.items(day).iter().map(|item| item.depth).collect::<Vec<_>>(), [0, 1, 2, 1]);
     }
 
     #[test]

@@ -16,6 +16,11 @@ Options:
   -l, --list                 Print today's list
   -a, --add TEXT             Add an item to today's list
   -a TEXT -p N               Add it as a sub-item of item N (as -l numbers it)
+  -d, --delete               Print today's list with sub-items numbered too
+  -d, --delete N             Delete item N, after showing all it takes with it
+                             and asking; 2.1 is item 2's first sub-item
+  -d N --force               Delete it without asking (also -f)
+  -u, --undo                 Put back what -d deleted last
   -wl, --workspaces          List the workspaces, * marking the current one
   -w, --workspace NAME       Switch to a workspace: todoro and -l use it
   --where                    Print the todoro folder, where every workspace is kept
@@ -48,6 +53,14 @@ pub enum Run {
     /// Add an item to today's list, under the open item numbered `parent`
     /// if there is one, and stop.
     Add { text: String, parent: Option<usize> },
+    /// Delete the item at this address (`[2, 1]` for `2.1`), asking first
+    /// unless `force`, and stop.
+    Delete { address: Vec<usize>, force: bool },
+    /// Print today's open items with their sub-items numbered, the
+    /// addresses `Delete` takes, and stop.
+    Numbered,
+    /// Put back what `Delete` deleted last, and stop.
+    Undo,
     /// List the workspaces and stop.
     Workspaces,
     /// Switch to this workspace (`None` when no name was given) and stop.
@@ -77,6 +90,11 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
     {
         return add(&args[1..], keys);
     }
+    if let Some(flag) = args.first()
+        && (flag == "-d" || flag == "--delete")
+    {
+        return delete(&args[1..]);
+    }
     match args {
         [] => Run::App,
         [flag] if flag == "-w" || flag == "--workspace" => Run::Switch(None),
@@ -89,6 +107,7 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
             }
             "--list" | "-l" => Run::List,
             "--workspaces" | "-wl" => Run::Workspaces,
+            "--undo" | "-u" => Run::Undo,
             "--where" => match (todoro_file, &settings.data_dir) {
                 (Some(file), _) => Run::Print(file.display().to_string()),
                 (None, Some(dir)) => Run::Print(dir.display().to_string()),
@@ -98,6 +117,34 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
         },
         _ => Run::Fail(format!("todoro: give at most one option\n\n{}", help(keys)), 2),
     }
+}
+
+/// `-d N`, where N is an item's number as `todoro -l` shows it, with
+/// sub-items after dots (`2.1`), and `--force` (or `-f`) to skip asking.
+fn delete(args: &[String]) -> Run {
+    let usage = "Like: todoro -d 2, or todoro -d 2.1 for item 2's first sub-item";
+    let mut address = None;
+    let mut force = false;
+    for arg in args {
+        match arg.as_str() {
+            "--force" | "-f" => force = true,
+            _ if address.is_some() => return Run::Fail(format!("todoro: -d deletes one item at a time. {usage}"), 2),
+            number => match parse_address(number) {
+                Some(found) => address = Some(found),
+                None => return Run::Fail(format!("todoro: {number} isn't an item's number. {usage}"), 2),
+            },
+        }
+    }
+    match address {
+        Some(address) => Run::Delete { address, force },
+        None if force => Run::Fail(format!("todoro: give the number of the item to delete. {usage}"), 2),
+        None => Run::Numbered,
+    }
+}
+
+/// `2.1.3` as `[2, 1, 3]`; every part a number from 1.
+fn parse_address(text: &str) -> Option<Vec<usize>> {
+    text.split('.').map(|part| part.parse::<usize>().ok().filter(|&n| n > 0)).collect()
 }
 
 /// `-a TEXT`, with `-p N` (or `--parent N`) anywhere after it for a
@@ -221,6 +268,23 @@ mod tests {
         assert!(matches!(add(&["-a", "Pack", "-p", "two"]), Run::Fail(message, 2) if message.contains("number")));
         let Run::Print(help) = add(&["--help"]) else { panic!("help") };
         assert!(help.contains("-a, --add TEXT") && help.contains("-p N"));
+    }
+
+    #[test]
+    fn delete_takes_a_number_or_a_dotted_one_and_maybe_force() {
+        assert_eq!(add(&["-d", "2"]), Run::Delete { address: vec![2], force: false });
+        assert_eq!(add(&["--delete", "2.1.3"]), Run::Delete { address: vec![2, 1, 3], force: false });
+        assert_eq!(add(&["-d", "2", "--force"]), Run::Delete { address: vec![2], force: true });
+        assert_eq!(add(&["-d", "-f", "2.1"]), Run::Delete { address: vec![2, 1], force: true });
+        assert_eq!(add(&["-d"]), Run::Numbered);
+        assert_eq!(add(&["--delete"]), Run::Numbered);
+        for bad in [&["-d", "--force"][..], &["-d", "two"], &["-d", "0"], &["-d", "2."], &["-d", "2..1"], &["-d", "1", "2"]] {
+            assert!(matches!(add(bad), Run::Fail(_, 2)), "{bad:?}");
+        }
+        assert_eq!(add(&["-u"]), Run::Undo);
+        assert_eq!(add(&["--undo"]), Run::Undo);
+        let Run::Print(help) = add(&["--help"]) else { panic!("help") };
+        assert!(help.contains("-d, --delete N") && help.contains("--force") && help.contains("-u, --undo"));
     }
 
     #[test]

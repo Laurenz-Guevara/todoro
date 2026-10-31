@@ -69,7 +69,7 @@ fn label(app: &App, row: usize) -> String {
 
 /// An item and its whole block: its title after `label`, then its notes,
 /// then each sub-item indented by depth, with its notes under its text.
-fn block(items: &[Item], root: usize, label: &str, out: &mut String) {
+pub(crate) fn block(items: &[Item], root: usize, label: &str, out: &mut String) {
     let depth = items[root].depth;
     for item in &items[root..outline::block_end(items, root)] {
         let (title, notes_indent) = if item.depth == depth {
