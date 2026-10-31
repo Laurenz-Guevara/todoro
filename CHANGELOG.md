@@ -2,6 +2,12 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [0.9.0] - 2026-10-31
+
+### Features
+
+- On Windows, `todoro.exe` has todoro's logo as its icon.
+
 ## [0.8.0] - 2026-10-27
 
 ### Features
