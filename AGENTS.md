@@ -13,6 +13,7 @@ cargo install --path .      # install/update the `todoro` binary in ~/.cargo/bin
 
 ## Layout
 
+- `build.rs`: embeds `assets/todoro.ico` in the Windows exe (with `winresource`, only when building on Windows); `assets/todoro-logo.png` is the square logo it was made from
 - `src/main.rs`: terminal setup/teardown and the event loop
 - `src/app.rs`: app state, modes (`Normal`, `Insert`, `ConfirmDelete`, `Notes`, `Help`) and key handling
 - `src/input.rs`: `LineInput`, single-line typing with a movable cursor
