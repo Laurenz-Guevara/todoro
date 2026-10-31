@@ -223,6 +223,11 @@ impl Store {
         Ok(store)
     }
 
+    /// The todos file.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// The folder notes files are kept in.
     #[cfg(test)]
     pub fn notes_dir(&self) -> &std::path::Path {

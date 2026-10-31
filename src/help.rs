@@ -92,6 +92,7 @@ pub const SECTIONS: &[Section] = &[
         title: "Viewing the day (Space e)",
         bindings: &[
             ("j / k, gg / G", "Scroll, as when viewing notes"),
+            ("w", "Save it as a text file, to send (↵ for the export folder)"),
             ("Esc / q", "Back to the list"),
         ],
     },

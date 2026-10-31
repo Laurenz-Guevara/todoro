@@ -112,7 +112,21 @@ viewing the day
 "│ Q3                         │"
 "│ ──                         │"
 "╰───────── esc back ──── Top ╯"
-" VIEW   j/k scroll  ? help    "
+" VIEW   w save  ? help        "
+
+saving the day
+"╭─ Mon, Oct 5 2026 (today) ──╮"
+"│ 1. Buy milk                │"
+"│                            │"
+"│ ────────────────────────── │"
+"│                            │"
+"│ 2. Write the quarterly     │"
+"│ report for the team        │"
+"│                            │"
+"│ Q3                         │"
+"│ ──                         │"
+"╰───────── esc back ──── Top ╯"
+"Save to (↵ default):          "
 
 choosing a deadline
 "╭ Deadline for Write the qu… ╮"

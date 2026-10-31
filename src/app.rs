@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::calendar::{self, Calendar};
 use crate::changelog::{self, ChangelogView};
+use crate::export;
 use crate::help::Help;
 use crate::input::LineInput;
 use crate::keymap::{self, Command, Key, Keymap};
@@ -540,6 +541,13 @@ impl App {
                 viewer::Action::Stay => {}
                 viewer::Action::Close => self.mode = Mode::Normal,
                 viewer::Action::Help => self.open_help(),
+                viewer::Action::StartSaving => {
+                    let default = self.export_default();
+                    if let Mode::View(viewer) = &mut self.mode {
+                        viewer.saving = Some(viewer::Saving::new(default));
+                    }
+                }
+                viewer::Action::Save => self.save_export(),
                 viewer::Action::Edit => {
                     self.mode = Mode::Normal;
                     self.view_after_edit = true;
@@ -1584,6 +1592,48 @@ impl App {
     }
 
     /// After editing notes started from the viewer, shows them there again.
+    /// Where the day's text is saved unless another place is typed: the
+    /// `export` folder in the todoro folder (or beside `TODORO_FILE`).
+    fn export_default(&self) -> std::path::PathBuf {
+        let dir = match &self.workspaces {
+            Some(workspaces) => workspaces.dir.clone(),
+            None => self.store.path().parent().map(std::path::Path::to_path_buf).unwrap_or_default(),
+        };
+        // The workspace's name, when there's more than one to tell apart.
+        let several = self.workspaces.as_ref().is_some_and(|workspaces| workspaces.list().is_ok_and(|names| names.len() > 1));
+        let workspace = self.workspace.as_deref().filter(|_| several);
+        dir.join(export::EXPORT_DIR).join(export::file_name(self.day, workspace))
+    }
+
+    /// Saves the day's text where the `w` prompt says. A file that's already
+    /// there is only replaced on a second `Enter`.
+    fn save_export(&mut self) {
+        let text = export::day_text(self);
+        let Mode::View(viewer) = &mut self.mode else { return };
+        let Some(saving) = &mut viewer.saving else { return };
+        let path = export::target(&saving.input.text, &saving.default);
+        let shown = workspaces::display_path(&path);
+        if path.is_dir() {
+            saving.error = Some(format!("{shown} is a folder"));
+            return;
+        }
+        if path.exists() && !saving.replace {
+            saving.replace = true;
+            saving.error = Some("That file exists. ↵ again replaces it".into());
+            return;
+        }
+        match export::write(&path, &text) {
+            Ok(()) => {
+                viewer.saving = None;
+                self.message = Some(format!("Saved to {shown}"));
+            }
+            Err(error) => {
+                saving.replace = false;
+                saving.error = Some(format!("Couldn't save: {error}"));
+            }
+        }
+    }
+
     fn back_to_viewer(&mut self) {
         if std::mem::take(&mut self.view_after_edit) && matches!(self.mode, Mode::Normal) {
             self.mode = Mode::View(Viewer::default());
@@ -1932,6 +1982,11 @@ impl App {
             }
             Mode::Insert { input, .. } => input.paste(text),
             Mode::Search(search) => search.paste(text),
+            Mode::View(viewer) => {
+                if let Some(saving) = &mut viewer.saving {
+                    saving.input.paste(text);
+                }
+            }
             Mode::Calendar(calendar) => {
                 let time = calendar.picking.as_mut().and_then(|picking| picking.time.as_mut());
                 if let Some(input) = calendar.adding.as_mut().or(calendar.command.as_mut()).or(time) {
@@ -4355,6 +4410,91 @@ mod tests {
         type_str(&mut app, "?");
         press(&mut app, KeyCode::Esc);
         assert!(matches!(&app.mode, Mode::View(viewer) if viewer.scope == viewer::Scope::Day));
+    }
+
+    fn saving(app: &App) -> Option<&viewer::Saving> {
+        match &app.mode {
+            Mode::View(viewer) => viewer.saving.as_ref(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn w_on_the_day_saves_it_to_the_export_folder_by_default() {
+        let (mut app, dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, " ew");
+        let default = dir.path().join("export").join("2026-10-05.txt");
+        assert_eq!(saving(&app).unwrap().default, default);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(std::fs::read_to_string(&default).unwrap(), export::day_text(&app));
+        assert!(saving(&app).is_none());
+        assert!(matches!(&app.mode, Mode::View(_)), "still viewing");
+        assert_eq!(app.message.as_deref(), Some(format!("Saved to {}", workspaces::display_path(&default)).as_str()));
+    }
+
+    #[test]
+    fn saving_over_a_file_asks_first() {
+        let (mut app, dir) = app_with(&["Buy milk"]);
+        let path = dir.path().join("export").join("2026-10-05.txt");
+        export::write(&path, "older\n").unwrap();
+        type_str(&mut app, " ew");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "older\n");
+        assert!(saving(&app).unwrap().error.as_ref().unwrap().contains("exists"));
+        press(&mut app, KeyCode::Enter);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("1. Buy milk"));
+        assert!(saving(&app).is_none());
+    }
+
+    #[test]
+    fn a_typed_path_or_folder_is_saved_to() {
+        let (mut app, dir) = app_with(&["Buy milk"]);
+        let file = dir.path().join("for sam.txt");
+        type_str(&mut app, " ew");
+        type_str(&mut app, &file.display().to_string());
+        press(&mut app, KeyCode::Enter);
+        assert!(std::fs::read_to_string(&file).unwrap().contains("1. Buy milk"));
+        // A folder gets the day's file name, and pasting works too.
+        let folder = dir.path().join("shared");
+        type_str(&mut app, "w");
+        app.handle_paste(&format!("{}/", folder.display())).unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert!(folder.join("2026-10-05.txt").exists());
+    }
+
+    #[test]
+    fn a_save_that_fails_says_why_and_keeps_the_prompt() {
+        let (mut app, dir) = app_with(&["Buy milk"]);
+        // A file where its folder should be.
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, "").unwrap();
+        type_str(&mut app, " ew");
+        type_str(&mut app, &blocker.join("day.txt").display().to_string());
+        press(&mut app, KeyCode::Enter);
+        assert!(saving(&app).unwrap().error.as_ref().unwrap().starts_with("Couldn't save"));
+        press(&mut app, KeyCode::Esc);
+        assert!(saving(&app).is_none());
+        assert!(matches!(&app.mode, Mode::View(_)));
+    }
+
+    #[test]
+    fn exports_go_in_the_todoro_folder_named_for_the_workspace_when_there_are_several() {
+        let (mut app, dir) = app_with_workspaces(&["home", "work"]);
+        type_str(&mut app, " ew");
+        assert_eq!(saving(&app).unwrap().default, dir.path().join("todoro").join("export").join("2026-10-05 home.txt"));
+        let (mut app, dir) = app_with_workspaces(&["home"]);
+        type_str(&mut app, " ew");
+        assert_eq!(saving(&app).unwrap().default, dir.path().join("todoro").join("export").join("2026-10-05.txt"));
+    }
+
+    #[test]
+    fn only_the_day_view_saves() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, " Vw");
+        assert!(saving(&app).is_none());
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, " vw");
+        assert!(saving(&app).is_none());
     }
 
     #[test]

@@ -1,0 +1,12 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 70, 8).backend()"
+---
+"╭────────────────── Monday, October 5 2026 (today) ──────────────────╮"
+"│ 1. Buy milk                                                        │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"│                                                                    │"
+"╰────────────────── j/k scroll · w save · esc back ───────────── All ╯"
+"Save to (↵ for /home/sam/todoro/export/2026-10-05.txt):               "

@@ -4,8 +4,11 @@
 //! `Space e` the whole day: every item on the list with its block.
 
 use std::cell::Cell;
+use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::input::LineInput;
 
 #[derive(Default)]
 pub struct Viewer {
@@ -19,6 +22,25 @@ pub struct Viewer {
     pending_g: bool,
     /// What it shows.
     pub scope: Scope,
+    /// Saving the day as a text file (`w` on `Space e`), once started.
+    pub saving: Option<Saving>,
+}
+
+/// The `w` prompt: where to save the day's text.
+pub struct Saving {
+    /// The path being typed. Nothing means `default`.
+    pub input: LineInput,
+    pub default: PathBuf,
+    /// Set when the file is already there: the next `Enter` replaces it.
+    pub replace: bool,
+    /// Why it couldn't save, or that `Enter` again replaces the file.
+    pub error: Option<String>,
+}
+
+impl Saving {
+    pub fn new(default: PathBuf) -> Self {
+        Saving { input: LineInput::default(), default, replace: false, error: None }
+    }
 }
 
 /// What the viewer shows.
@@ -41,6 +63,10 @@ pub enum Action {
     /// Edit the notes, coming back here after.
     Edit,
     Help,
+    /// Ask where to save the day (`w`), for the app to fill in where.
+    StartSaving,
+    /// Save the day where typed (`Saving::input`).
+    Save,
 }
 
 impl Viewer {
@@ -61,6 +87,22 @@ impl Viewer {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if let Some(saving) = &mut self.saving {
+            match key.code {
+                KeyCode::Enter => return Action::Save,
+                KeyCode::Esc => self.saving = None,
+                code => {
+                    let before = saving.input.text.clone();
+                    saving.input.handle_key(code);
+                    // A different path needs its own check before replacing.
+                    if saving.input.text != before {
+                        saving.replace = false;
+                        saving.error = None;
+                    }
+                }
+            }
+            return Action::Stay;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let page = self.height.get().max(1) as isize;
         let pending_g = std::mem::take(&mut self.pending_g);
@@ -69,6 +111,7 @@ impl Viewer {
             KeyCode::Char('V') if self.scope == Scope::Item => return Action::Close,
             KeyCode::Char('i' | 'e') | KeyCode::Enter if !self.read_only() => return Action::Edit,
             KeyCode::Char('?') => return Action::Help,
+            KeyCode::Char('w') if self.scope == Scope::Day => return Action::StartSaving,
             KeyCode::Char('d') if ctrl => self.scroll_by(page / 2),
             KeyCode::Char('u') if ctrl => self.scroll_by(-page / 2),
             KeyCode::Char('f') if ctrl => self.scroll_by(page),
@@ -138,6 +181,33 @@ mod tests {
         assert_eq!(v.scroll, 0);
         press(&mut v, KeyCode::Char('k'));
         assert_eq!(v.scroll, 0);
+    }
+
+    #[test]
+    fn w_on_the_day_asks_where_to_save_and_the_prompt_takes_the_keys() {
+        assert_eq!(press(&mut Viewer::default(), KeyCode::Char('w')), Action::Stay, "only the day view saves");
+        assert_eq!(press(&mut Viewer::whole(), KeyCode::Char('w')), Action::Stay);
+        let mut v = Viewer::day();
+        assert_eq!(press(&mut v, KeyCode::Char('w')), Action::StartSaving);
+        v.saving = Some(Saving::new(PathBuf::from("/home/sam/todoro/export/2026-10-05.txt")));
+        // Keys that close or scroll the viewer are typed instead.
+        for c in "~/qj".chars() {
+            assert_eq!(press(&mut v, KeyCode::Char(c)), Action::Stay);
+        }
+        assert_eq!(v.saving.as_ref().unwrap().input.text, "~/qj");
+        assert_eq!(v.scroll, 0);
+        assert_eq!(press(&mut v, KeyCode::Enter), Action::Save);
+        // Typing after being asked to replace a file starts over.
+        let saving = v.saving.as_mut().unwrap();
+        saving.replace = true;
+        saving.error = Some("exists".into());
+        press(&mut v, KeyCode::Backspace);
+        assert!(!v.saving.as_ref().unwrap().replace);
+        assert_eq!(v.saving.as_ref().unwrap().error, None);
+        // Esc stops saving, not viewing.
+        assert_eq!(press(&mut v, KeyCode::Esc), Action::Stay);
+        assert!(v.saving.is_none());
+        assert_eq!(press(&mut v, KeyCode::Esc), Action::Close);
     }
 
     #[test]

@@ -25,7 +25,7 @@ use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, KEYS_AB
 use crate::search::{self, Hit, Search};
 use crate::setup::Setup;
 use crate::snake::{self, Snake};
-use crate::workspaces::Picker;
+use crate::workspaces::{self, Picker};
 use crate::tags::{self, TagPicker};
 use crate::deadline::{self, Deadline};
 use crate::reminder::{self, Reminder};
@@ -597,7 +597,9 @@ fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
 
     let position = format!(" {} ", scroll_position(scroll, max));
     let hint_room = (area.width as usize).saturating_sub(2 + 2 * (position.width() + 1));
-    let hints: &[&str] = if viewer.read_only() {
+    let hints: &[&str] = if viewer.scope == Scope::Day {
+        &[" j/k scroll · w save · esc back ", " w save · esc back ", " esc back "]
+    } else if viewer.read_only() {
         &[" j/k scroll · esc back ", " esc back "]
     } else {
         &[" j/k scroll · i edit · esc back ", " i edit · esc back ", " esc back "]
@@ -747,6 +749,27 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         frame.set_cursor_position(Position::new(area.x + col.min(area.width.saturating_sub(1)), area.y));
         return;
     }
+    // So does where to save the day's text.
+    if let Mode::View(viewer) = &app.mode
+        && let Some(saving) = &viewer.saving
+    {
+        let default = workspaces::display_path(&saving.default);
+        let input = &saving.input;
+        let labels = [format!("Save to (↵ for {default}): "), "Save to (↵ default): ".into(), "Save to: ".into()];
+        // The longest label that leaves room for what's typed, and for why
+        // it couldn't save.
+        let error = saving.error.as_ref().map_or(0, |error| error.width() + 2);
+        let room = (area.width as usize).saturating_sub(input.text.width() + 1 + error);
+        let label = labels.iter().find(|label| label.width() <= room).unwrap_or(&labels[2]).clone();
+        let mut line = Line::from(vec![label.clone().yellow().bold(), input.text.clone().into()]);
+        if let Some(error) = &saving.error {
+            line.push_span(format!("  {error}").red());
+        }
+        frame.render_widget(line, area);
+        let col = (label.width() + input.text[..input.cursor].width()) as u16;
+        frame.set_cursor_position(Position::new(area.x + col.min(area.width.saturating_sub(1)), area.y));
+        return;
+    }
     // A time being typed in the plan view takes the bottom line too.
     if let Mode::Plan { plan, .. } = &app.mode
         && let Some(typing) = &plan.typing
@@ -835,6 +858,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
         Mode::Notes(_) => {
             ("NORMAL", Color::Blue, &[("i/a/o insert", 2), ("x delete", 1), ("dd delete line", 0), ("? help", 3)])
+        }
+        Mode::View(viewer) if viewer.scope == Scope::Day => {
+            ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("w save", 3), ("esc back", 1), ("? help", 4)])
         }
         Mode::View(viewer) if viewer.read_only() => ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("esc back", 1), ("? help", 4)]),
         Mode::View(_) => ("VIEW", Color::Cyan, &[("j/k scroll", 2), ("i edit", 3), ("esc back", 1), ("? help", 4)]),
@@ -2876,6 +2902,27 @@ mod tests {
         assert_snapshot!("viewing_all_at_30_columns", render_sized(&app, 30, 24).backend());
     }
 
+    /// A fixed default for the `w` prompt, as the real one is in a
+    /// temporary folder.
+    fn set_export_default(app: &mut App) {
+        if let Mode::View(viewer) = &mut app.mode {
+            viewer.saving.as_mut().unwrap().default = PathBuf::from("/home/sam/todoro/export/2026-10-05.txt");
+        }
+    }
+
+    #[test]
+    fn saving_the_day() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, " ew");
+        set_export_default(&mut app);
+        assert_snapshot!("saving_the_day", render_sized(&app, 70, 8).backend());
+        type_str(&mut app, "~/Desktop/for-sam.txt");
+        if let Mode::View(viewer) = &mut app.mode {
+            viewer.saving.as_mut().unwrap().error = Some("That file exists. ↵ again replaces it".into());
+        }
+        assert_snapshot!("saving_the_day_over_a_file", render_sized(&app, 100, 8).backend());
+    }
+
     #[test]
     fn viewing_the_whole_day() {
         let (mut app, _dir) = sub_items_app();
@@ -3508,6 +3555,10 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, " e");
         shot(&app, "viewing the day");
+        type_str(&mut app, "w");
+        set_export_default(&mut app);
+        shot(&app, "saving the day");
+        press(&mut app, KeyCode::Esc);
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "@");
         shot(&app, "choosing a deadline");

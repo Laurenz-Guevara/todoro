@@ -2,6 +2,7 @@ mod app;
 mod calendar;
 mod changelog;
 mod deadline;
+mod export;
 mod cli;
 mod help;
 mod input;
