@@ -8,6 +8,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use crate::deadline::{self, Deadline};
 use crate::input::LineInput;
 use crate::reminder::Reminder;
+use crate::snake::{self, Dir, Snake};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Zoom {
@@ -29,6 +30,11 @@ pub struct Calendar {
     /// How many months the year view last drew side by side, which `j` and
     /// `k` follow to the month above or below. Set while drawing.
     pub year_columns: Cell<u32>,
+    /// A `:` command being typed. There's only one, kept secret: `snake`.
+    pub command: Option<LineInput>,
+    /// A game of Snake on the year view, which keeps every other key away
+    /// until `Esc` ends it.
+    pub snake: Option<Snake>,
 }
 
 /// Choosing a deadline or a reminder: the day with the calendar, then a time.
@@ -74,7 +80,7 @@ pub enum Action {
 
 impl Calendar {
     pub fn new(cursor: NaiveDate, today: NaiveDate) -> Self {
-        Self { zoom: Zoom::Month, cursor, today, adding: None, picking: None, year_columns: Cell::new(1) }
+        Self { zoom: Zoom::Month, cursor, today, adding: None, picking: None, year_columns: Cell::new(1), command: None, snake: None }
     }
 
     /// The year view, to choose a deadline for the item stored at `day`,
@@ -100,7 +106,7 @@ impl Calendar {
             error: None,
         };
         let cursor = current.map_or(cursor, |deadline| deadline.date);
-        Self { zoom: Zoom::Year, cursor, today, adding: None, picking: Some(picking), year_columns: Cell::new(1) }
+        Self { zoom: Zoom::Year, cursor, today, adding: None, picking: Some(picking), year_columns: Cell::new(1), command: None, snake: None }
     }
 
     /// The year view, to choose a day to be reminded of the item stored at
@@ -128,6 +134,27 @@ impl Calendar {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Action {
+        if self.snake.is_some() {
+            self.snake_key(key.code);
+            return Action::Stay;
+        }
+        if let Some(input) = &mut self.command {
+            match key.code {
+                KeyCode::Enter => {
+                    let command = input.text.trim().to_string();
+                    self.command = None;
+                    if command == "snake" {
+                        self.start_snake(snake::random_seed());
+                    }
+                }
+                KeyCode::Esc => self.command = None,
+                KeyCode::Backspace if input.text.is_empty() => self.command = None,
+                code => {
+                    input.handle_key(code);
+                }
+            }
+            return Action::Stay;
+        }
         if let Some(picking) = &mut self.picking {
             if let Some(input) = &mut picking.time {
                 match key.code {
@@ -204,6 +231,7 @@ impl Calendar {
             KeyCode::Char('m') => self.zoom = Zoom::Month,
             KeyCode::Char('y') => self.zoom = Zoom::Year,
             KeyCode::Char('a') => self.adding = Some(LineInput::default()),
+            KeyCode::Char(':') if self.picking.is_none() => self.command = Some(LineInput::default()),
             KeyCode::Char('?') => return Action::Help,
             KeyCode::Enter => return Action::Open(self.cursor),
             KeyCode::Esc | KeyCode::Char('q' | 'c') => return Action::Close,
@@ -221,59 +249,52 @@ impl Calendar {
         self.cursor = moved.unwrap_or(self.cursor);
     }
 
-    /// Moves a day along the cursor's week row in its month. From the row's
-    /// end it goes to the same row of the next (or previous) month, as near
-    /// as that month has, landing on the side it came in from.
-    fn move_across_year(&mut self, forward: bool) {
-        let cursor = self.cursor;
-        let step = if forward { cursor.succ_opt() } else { cursor.pred_opt() };
-        if let Some(next) = step
-            && next.month() == cursor.month()
-            && week_start(next) == week_start(cursor)
-        {
-            self.cursor = next;
-            return;
-        }
-        let first = cursor.with_day(1).expect("every month has a 1st");
-        let row = month_weeks(cursor).iter().position(|&monday| monday == week_start(cursor)).unwrap_or(0);
-        let other = if forward { first.checked_add_months(Months::new(1)) } else { first.checked_sub_months(Months::new(1)) };
-        let Some(other) = other else { return };
-        let weeks = month_weeks(other);
-        let monday = weeks[row.min(weeks.len() - 1)];
-        let in_month = |day: NaiveDate| day.month() == other.month();
-        // Days of the row inside the month: coming from the left, the first;
-        // from the right, the last.
-        let mut days = (0..7).filter_map(|i| monday.checked_add_days(Days::new(i))).filter(|&day| in_month(day));
-        let landing = if forward { days.next() } else { days.last() };
-        if let Some(day) = landing {
-            self.cursor = day;
+    /// Starts a game of Snake on the year view, the snake's head on the
+    /// selected day.
+    fn start_snake(&mut self, seed: u64) {
+        self.zoom = Zoom::Year;
+        self.snake = Some(Snake::new(self.cursor, seed));
+    }
+
+    /// The game's keys: hjkl and the arrows turn, `Enter` plays again once
+    /// it's over, `Esc` ends it. Nothing else does anything.
+    fn snake_key(&mut self, code: KeyCode) {
+        let Some(game) = &mut self.snake else { return };
+        let dir = match code {
+            KeyCode::Char('h') | KeyCode::Left => Dir::Left,
+            KeyCode::Char('l') | KeyCode::Right => Dir::Right,
+            KeyCode::Char('k') | KeyCode::Up => Dir::Up,
+            KeyCode::Char('j') | KeyCode::Down => Dir::Down,
+            KeyCode::Esc => {
+                self.snake = None;
+                return;
+            }
+            KeyCode::Enter if game.over() => {
+                let seed = game.next_seed();
+                self.start_snake(seed);
+                return;
+            }
+            _ => return,
+        };
+        game.turn(dir);
+    }
+
+    /// Moves the snake, if a game is on and it's time at `now`.
+    pub fn tick(&mut self, now: std::time::Instant) {
+        if let Some(game) = &mut self.snake {
+            game.tick(now, self.year_columns.get());
         }
     }
 
-    /// Moves a week down (or up) the cursor's weekday column in its month.
-    /// From the column's end it goes to the month below (or above) on screen,
-    /// `year_columns` months on, to the same weekday nearest the side it
-    /// came in from. Every month has each weekday, so there's always one.
+    /// Moves along the week's row in the year view, as `step_across` does.
+    fn move_across_year(&mut self, forward: bool) {
+        self.cursor = step_across(self.cursor, forward).unwrap_or(self.cursor);
+    }
+
+    /// Moves down or up the weekday's column in the year view, as
+    /// `step_down` does.
     fn move_down_year(&mut self, forward: bool) {
-        let cursor = self.cursor;
-        let step = if forward { cursor.checked_add_days(Days::new(7)) } else { cursor.checked_sub_days(Days::new(7)) };
-        if let Some(next) = step
-            && next.month() == cursor.month()
-        {
-            self.cursor = next;
-            return;
-        }
-        let first = cursor.with_day(1).expect("every month has a 1st");
-        let months = Months::new(self.year_columns.get().max(1));
-        let other = if forward { first.checked_add_months(months) } else { first.checked_sub_months(months) };
-        let Some(other) = other else { return };
-        let in_month = |day: &NaiveDate| day.month() == other.month();
-        // The weekday's first week in the month, or from below, its last.
-        let mut days = (0..35).filter_map(|i| other.checked_add_days(Days::new(i))).filter(in_month).filter(|day| day.weekday() == cursor.weekday());
-        let landing = if forward { days.next() } else { days.last() };
-        if let Some(day) = landing {
-            self.cursor = day;
-        }
+        self.cursor = step_down(self.cursor, forward, self.year_columns.get()).unwrap_or(self.cursor);
     }
 
     /// Moves to the same day of another month, or its last day if shorter.
@@ -297,6 +318,49 @@ impl Picking {
             Action::SetDeadline { day, index, deadline: Some(on) }
         }
     }
+}
+
+/// The next (or previous) day along `date`'s week row in its month, in the
+/// year view. From the row's end it's on the same row of the next (or
+/// previous) month, as near as that month has, on the side it came in from.
+pub fn step_across(date: NaiveDate, forward: bool) -> Option<NaiveDate> {
+    let step = if forward { date.succ_opt() } else { date.pred_opt() };
+    if let Some(next) = step
+        && next.month() == date.month()
+        && week_start(next) == week_start(date)
+    {
+        return Some(next);
+    }
+    let first = date.with_day(1).expect("every month has a 1st");
+    let row = month_weeks(date).iter().position(|&monday| monday == week_start(date)).unwrap_or(0);
+    let other = if forward { first.checked_add_months(Months::new(1)) } else { first.checked_sub_months(Months::new(1)) }?;
+    let weeks = month_weeks(other);
+    let monday = weeks[row.min(weeks.len() - 1)];
+    // Days of the row inside the month: coming from the left, the first;
+    // from the right, the last.
+    let mut days = (0..7).filter_map(|i| monday.checked_add_days(Days::new(i))).filter(|day| day.month() == other.month());
+    if forward { days.next() } else { days.next_back() }
+}
+
+/// A week down (or up) `date`'s weekday column in its month, in the year
+/// view. From the column's end it's in the month below (or above) on
+/// screen, `columns` months on, on the same weekday nearest the side it came
+/// in from. Every month has each weekday, so there's always one.
+pub fn step_down(date: NaiveDate, forward: bool, columns: u32) -> Option<NaiveDate> {
+    let step = if forward { date.checked_add_days(Days::new(7)) } else { date.checked_sub_days(Days::new(7)) };
+    if let Some(next) = step
+        && next.month() == date.month()
+    {
+        return Some(next);
+    }
+    let first = date.with_day(1).expect("every month has a 1st");
+    let months = Months::new(columns.max(1));
+    let other = if forward { first.checked_add_months(months) } else { first.checked_sub_months(months) }?;
+    // The weekday's first week in the month, or from below, its last.
+    let mut days = (0..35)
+        .filter_map(|i| other.checked_add_days(Days::new(i)))
+        .filter(|day| day.month() == other.month() && day.weekday() == date.weekday());
+    if forward { days.next() } else { days.next_back() }
 }
 
 /// The Monday of `date`'s week.
@@ -348,6 +412,97 @@ mod tests {
             rest = &rest[len..];
         }
         action
+    }
+
+    #[test]
+    fn typing_colon_snake_starts_a_game_on_the_year_view() {
+        let mut cal = calendar();
+        send(&mut cal, ":snake");
+        assert!(cal.snake.is_none(), "not until Enter");
+        assert_eq!(cal.command.as_ref().unwrap().text, "snake");
+        send(&mut cal, "<cr>");
+        assert!(cal.command.is_none());
+        assert_eq!(cal.zoom, Zoom::Year);
+        let game = cal.snake.as_ref().unwrap();
+        assert_eq!(game.head(), date(2026, 10, 5));
+        assert_eq!(game.state, snake::State::Ready);
+    }
+
+    #[test]
+    fn other_commands_do_nothing() {
+        let mut cal = calendar();
+        // Each command's keys are typed, not run: "q" and "y" don't close
+        // or change the view.
+        assert_eq!(send(&mut cal, ":quiz<cr>"), Action::Stay);
+        assert!(cal.snake.is_none());
+        assert_eq!(cal.zoom, Zoom::Month);
+        send(&mut cal, ":snake<esc>");
+        assert!(cal.command.is_none() && cal.snake.is_none());
+        // Backspace on nothing closes the line, as in vim.
+        send(&mut cal, ":");
+        cal.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(cal.command.is_none());
+        assert_eq!(cal.cursor, date(2026, 10, 5));
+    }
+
+    #[test]
+    fn theres_no_command_line_while_choosing_a_deadline() {
+        let mut cal = picker(None);
+        send(&mut cal, ":snake<cr>");
+        assert!(cal.command.is_none() && cal.snake.is_none());
+    }
+
+    #[test]
+    fn the_game_keeps_the_calendars_keys_away_until_esc() {
+        let mut cal = calendar();
+        send(&mut cal, ":snake<cr>");
+        // None of these close, open a day, add, help, change the view or move the cursor.
+        for keys in ["q", "c", "<cr>", "a", "?", "t", "m", "w", "H", "L", "J", "K", ":"] {
+            assert_eq!(send(&mut cal, keys), Action::Stay, "{keys}");
+        }
+        assert!(cal.adding.is_none() && cal.command.is_none());
+        assert_eq!(cal.zoom, Zoom::Year);
+        assert_eq!(cal.cursor, date(2026, 10, 5));
+        // hjkl turn the snake instead of moving the cursor.
+        send(&mut cal, "j");
+        assert_eq!(cal.snake.as_ref().unwrap().state, snake::State::Playing);
+        assert_eq!(cal.cursor, date(2026, 10, 5));
+        // Esc ends the game, back on the year view where it was.
+        assert_eq!(send(&mut cal, "<esc>"), Action::Stay);
+        assert!(cal.snake.is_none());
+        assert_eq!(cal.zoom, Zoom::Year);
+        assert_eq!(cal.cursor, date(2026, 10, 5));
+        assert_eq!(send(&mut cal, "<esc>"), Action::Close);
+    }
+
+    #[test]
+    fn the_snake_moves_on_the_calendars_tick_with_its_columns() {
+        let start = std::time::Instant::now();
+        let mut cal = calendar();
+        cal.year_columns.set(4);
+        send(&mut cal, ":snake<cr>j");
+        cal.tick(start);
+        cal.tick(start + std::time::Duration::from_secs(1));
+        assert_eq!(cal.snake.as_ref().unwrap().head(), date(2026, 10, 12));
+        cal.tick(start + std::time::Duration::from_secs(2));
+        cal.tick(start + std::time::Duration::from_secs(3));
+        cal.tick(start + std::time::Duration::from_secs(4));
+        // 19, 26, then below October with four across is February 2027: a wall.
+        assert_eq!(cal.snake.as_ref().unwrap().state, snake::State::Lost);
+    }
+
+    #[test]
+    fn enter_plays_again_once_the_game_is_over() {
+        let mut cal = calendar();
+        cal.cursor = date(2026, 12, 31);
+        send(&mut cal, ":snake<cr>l");
+        cal.snake.as_mut().unwrap().step(3);
+        assert_eq!(cal.snake.as_ref().unwrap().state, snake::State::Lost);
+        send(&mut cal, "<cr>");
+        let game = cal.snake.as_ref().unwrap();
+        assert_eq!(game.state, snake::State::Ready);
+        assert_eq!(game.score, 0);
+        assert_eq!(game.head(), date(2026, 12, 31));
     }
 
     #[test]

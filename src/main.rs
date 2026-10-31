@@ -15,6 +15,7 @@ mod outline;
 mod reminder;
 mod search;
 mod setup;
+mod snake;
 mod store;
 mod tags;
 mod timeline;

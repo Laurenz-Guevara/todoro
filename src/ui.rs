@@ -24,6 +24,7 @@ use crate::notes::NotesEditor;
 use crate::options::{EDITOR_ABOUT, EDITOR_ROW, FOLDER_ABOUT, FOLDER_ROW, KEYS_ABOUT, KEYS_ROW, Options, TOGGLES};
 use crate::search::{self, Hit, Search};
 use crate::setup::Setup;
+use crate::snake::{self, Snake};
 use crate::workspaces::Picker;
 use crate::tags::{self, TagPicker};
 use crate::deadline::{self, Deadline};
@@ -737,6 +738,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let command = match &app.mode {
         Mode::Notes(editor) => editor.command.as_ref(),
         Mode::Normal => app.command.as_ref(),
+        Mode::Calendar(calendar) => calendar.command.as_ref(),
         _ => None,
     };
     if let Some(input) = command {
@@ -858,6 +860,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Search(_) => {
             ("SEARCH", Color::Yellow, &[("j/k select", 3), ("↵ go to item", 2), ("i type", 1), ("esc close", 4)])
         }
+        Mode::Calendar(calendar) if calendar.snake.as_ref().is_some_and(|game| game.over()) => {
+            ("SNAKE", Color::Green, &[("↵ play again", 2), ("esc quit", 1)])
+        }
+        Mode::Calendar(calendar) if calendar.snake.as_ref().is_some_and(|game| game.state == snake::State::Ready) => {
+            ("SNAKE", Color::Green, &[("hjkl to start", 2), ("esc quit", 1)])
+        }
+        Mode::Calendar(calendar) if calendar.snake.is_some() => ("SNAKE", Color::Green, &[("hjkl turn", 2), ("esc quit", 1)]),
         Mode::Calendar(calendar) if calendar.adding.is_some() && !app.tag_suggestions().is_empty() => {
             ("ADD", Color::Green, &[("tab complete tag", 3), ("↑/↓ choose", 1), ("enter save as typed", 2)])
         }
@@ -1217,6 +1226,25 @@ fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) 
         }
         None => (titles, hints, Color::Cyan),
     };
+    // A game of Snake shows its score as the title.
+    let (titles, hints, colour): (Vec<String>, &[&str], Color) = match &calendar.snake {
+        Some(game) => {
+            let score = format!("{SNAKE_FOOD} {}", game.score);
+            match game.state {
+                snake::State::Ready => {
+                    (vec![format!("Snake {} · {score}", game.year), score], &[" hjkl to start · esc quit ", " hjkl start ", " esc "], Color::Green)
+                }
+                snake::State::Playing => (vec![format!("Snake {} · {score}", game.year), score], &[" hjkl turn · esc quit ", " esc quit "], Color::Green),
+                snake::State::Lost => (vec![format!("Game over · {score}"), score], &[" ↵ play again · esc quit ", " ↵ again · esc "], Color::Red),
+                snake::State::Won => (
+                    vec![format!("You filled {}! · {score}", game.year), format!("You won · {score}"), score],
+                    &[" ↵ play again · esc quit ", " ↵ again · esc "],
+                    Color::Green,
+                ),
+            }
+        }
+        None => (titles, hints, colour),
+    };
     let title = titles.iter().find(|title| title.width() <= room).cloned().unwrap_or_else(|| truncate(&titles[0], room));
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -1366,7 +1394,9 @@ fn draw_year(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
     let used = columns * MONTH_WIDTH + (columns - 1) * 2;
     let left = area.x + area.width.saturating_sub(used) / 2;
     let visible_rows = ((area.height + 1) / (MONTH_HEIGHT + 1)).max(1);
-    let cursor_row = (calendar.cursor.month0() as u16) / columns;
+    // The game keeps the snake's head in view, as browsing does the cursor.
+    let focus = calendar.snake.as_ref().map_or(calendar.cursor, |game| game.head());
+    let cursor_row = (focus.month0() as u16) / columns;
     let first_row = (cursor_row + 1).saturating_sub(visible_rows);
 
     for month in 1..=12u32 {
@@ -1379,14 +1409,15 @@ fn draw_year(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
         let x = left + column * (MONTH_WIDTH + 2);
         let width = MONTH_WIDTH.min(area.right().saturating_sub(x));
         let height = MONTH_HEIGHT.min(area.bottom().saturating_sub(y));
-        let first = NaiveDate::from_ymd_opt(calendar.cursor.year(), month, 1).expect("valid month");
+        let first = NaiveDate::from_ymd_opt(focus.year(), month, 1).expect("valid month");
         draw_year_month(frame, app, calendar, first, Rect::new(x, y, width, height));
     }
 }
 
 fn draw_year_month(frame: &mut Frame, app: &App, calendar: &Calendar, first: NaiveDate, rect: Rect) {
+    let focus = calendar.snake.as_ref().map_or(calendar.cursor, |game| game.head());
     let mut name = Line::from(first.format("%B").to_string()).centered();
-    name = if first.month() == calendar.cursor.month() { name.cyan().bold() } else { name.bold() };
+    name = if first.month() == focus.month() { name.cyan().bold() } else { name.bold() };
     let mut lines = vec![name, Line::from("Mo Tu We Th Fr Sa Su").dim()];
     for monday in calendar::month_weeks(first) {
         let mut spans = Vec::new();
@@ -1397,6 +1428,10 @@ fn draw_year_month(frame: &mut Frame, app: &App, calendar: &Calendar, first: Nai
             }
             if day.month() != first.month() {
                 spans.push(Span::raw("  "));
+                continue;
+            }
+            if let Some(game) = &calendar.snake {
+                spans.push(snake_cell(game, day));
                 continue;
             }
             let items = app.store.items(day);
@@ -1417,6 +1452,29 @@ fn draw_year_month(frame: &mut Frame, app: &App, calendar: &Calendar, first: Nai
         lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines), rect);
+}
+
+/// The food in the calendar's game of Snake, which is also its score's icon.
+const SNAKE_FOOD: &str = "●";
+
+/// The snake's head: a much brighter green than its body. An exact colour,
+/// since a theme's "light green" can be barely brighter than its green.
+const SNAKE_HEAD: Color = Color::Rgb(170, 255, 140);
+
+/// A day in the game of Snake. The snake is the days under a green
+/// background (reversed text without colour), its head bright and bold, and
+/// red once the game is lost. The food replaces its day's number.
+fn snake_cell(game: &Snake, day: NaiveDate) -> Span<'static> {
+    let number = format!("{:>2}", day.day());
+    match game.cell(day) {
+        snake::Cell::Head => {
+            let bg = if game.state == snake::State::Lost { Color::Red } else { SNAKE_HEAD };
+            Span::styled(number, Style::new().fg(Color::Black).bg(bg).add_modifier(Modifier::BOLD))
+        }
+        snake::Cell::Body => Span::styled(number, Style::new().fg(Color::Black).bg(Color::Green)),
+        snake::Cell::Food => Span::styled(format!("{SNAKE_FOOD:>2}"), Style::new().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        snake::Cell::Empty => Span::styled(number, Style::new().fg(Color::DarkGray)),
+    }
 }
 
 /// Open items as normal, completed ones crossed out.
@@ -3475,6 +3533,13 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "l");
         shot(&app, "empty day");
+        type_str(&mut app, " c:snake");
+        shot(&app, "typing a command in the calendar");
+        press(&mut app, KeyCode::Enter);
+        if let Mode::Calendar(calendar) = &mut app.mode {
+            calendar.snake.as_mut().unwrap().set_food(NaiveDate::from_ymd_opt(2026, 10, 9).unwrap());
+        }
+        shot(&app, "snake");
         out
     }
 
@@ -3821,6 +3886,84 @@ mod tests {
     fn calendar_year_small_scrolls_to_the_selected_month() {
         let (app, _dir) = calendar_app("yLL");
         assert_snapshot!(render_sized(&app, 30, 24).backend());
+    }
+
+    /// The calendar's game of Snake, its food placed on `food` so the
+    /// snapshot doesn't depend on the random seed.
+    fn snake_app(food: NaiveDate) -> (App, tempfile::TempDir) {
+        let (mut app, dir) = calendar_app(":snake");
+        press(&mut app, KeyCode::Enter);
+        if let Mode::Calendar(calendar) = &mut app.mode {
+            calendar.snake.as_mut().unwrap().set_food(food);
+        }
+        (app, dir)
+    }
+
+    fn snake_steps(app: &mut App, steps: usize) {
+        if let Mode::Calendar(calendar) = &mut app.mode {
+            for _ in 0..steps {
+                calendar.snake.as_mut().unwrap().step(4);
+            }
+        }
+    }
+
+    #[test]
+    fn calendar_snake() {
+        let (mut app, _dir) = snake_app(NaiveDate::from_ymd_opt(2026, 10, 7).unwrap());
+        assert_snapshot!("calendar_snake_ready", render_sized(&app, 100, 30).backend());
+        // The snake starts on 3 to 5 October. Down to the 12th, then right
+        // to the 14th, passing under the food on the 7th.
+        type_str(&mut app, "j");
+        snake_steps(&mut app, 1);
+        type_str(&mut app, "l");
+        snake_steps(&mut app, 2);
+        let terminal = render_sized(&app, 100, 30);
+        assert_snapshot!("calendar_snake_playing", terminal.backend());
+        // The snake is drawn with colour: its head on the 14th, its body on
+        // the 13th and 12th.
+        let buffer = terminal.backend().buffer();
+        let with_bg = |bg: Color| -> Vec<String> {
+            let area = buffer.area;
+            let mut found = Vec::new();
+            // The calendar, not the status bar below it.
+            for y in area.top()..area.bottom() - 1 {
+                let row: String = (area.left()..area.right())
+                    .map(|x| if buffer[(x, y)].bg == bg { buffer[(x, y)].symbol().to_string() } else { "|".into() })
+                    .collect();
+                found.extend(row.split('|').filter(|cell| !cell.trim().is_empty()).map(|cell| cell.trim().to_string()));
+            }
+            found
+        };
+        assert_eq!(with_bg(SNAKE_HEAD), ["14"]);
+        assert_eq!(with_bg(Color::Green), ["12", "13"]);
+    }
+
+    #[test]
+    fn calendar_snake_eats_and_scores() {
+        let (mut app, _dir) = snake_app(NaiveDate::from_ymd_opt(2026, 10, 6).unwrap());
+        type_str(&mut app, "l");
+        snake_steps(&mut app, 1);
+        if let Mode::Calendar(calendar) = &mut app.mode {
+            let game = calendar.snake.as_mut().unwrap();
+            assert_eq!(game.score, 1);
+            game.set_food(NaiveDate::from_ymd_opt(2026, 11, 20).unwrap());
+        }
+        let screen = format!("{:?}", render_sized(&app, 100, 30).backend());
+        assert!(screen.contains("Snake 2026 · ● 1"), "{screen}");
+    }
+
+    #[test]
+    fn calendar_snake_game_over() {
+        let (mut app, _dir) = snake_app(NaiveDate::from_ymd_opt(2026, 11, 20).unwrap());
+        type_str(&mut app, "k");
+        // Up from Monday 5 October, with four months across: June's Mondays,
+        // then February's, then above February is 2025, a wall.
+        snake_steps(&mut app, 20);
+        let Mode::Calendar(calendar) = &app.mode else { panic!("the calendar should be open") };
+        let game = calendar.snake.as_ref().unwrap();
+        assert_eq!(game.state, snake::State::Lost);
+        assert_eq!(game.head(), NaiveDate::from_ymd_opt(2026, 2, 2).unwrap());
+        assert_snapshot!(render_sized(&app, 100, 30).backend());
     }
 
     #[test]

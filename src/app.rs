@@ -385,6 +385,8 @@ impl App {
         // view, which has its own).
         if let Mode::Calendar(calendar) = &self.mode
             && calendar.adding.is_none()
+            && calendar.command.is_none()
+            && calendar.snake.is_none()
             && self.plan_stash.is_none()
         {
             match key.code {
@@ -1932,7 +1934,7 @@ impl App {
             Mode::Search(search) => search.paste(text),
             Mode::Calendar(calendar) => {
                 let time = calendar.picking.as_mut().and_then(|picking| picking.time.as_mut());
-                if let Some(input) = calendar.adding.as_mut().or(time) {
+                if let Some(input) = calendar.adding.as_mut().or(calendar.command.as_mut()).or(time) {
                     input.paste(text);
                 }
             }
@@ -1990,6 +1992,7 @@ impl App {
     pub fn redraw_at(&self) -> Option<std::time::Instant> {
         match &self.mode {
             Mode::Notes(editor) => editor.flash_ends(),
+            Mode::Calendar(calendar) => calendar.snake.as_ref().and_then(|game| game.next_step()),
             Mode::Help { back, .. } => match back.as_ref() {
                 Mode::Notes(editor) => editor.flash_ends(),
                 _ => None,
@@ -1998,10 +2001,13 @@ impl App {
         }
     }
 
-    /// Ends anything timed (a copy's flash) whose time is up at `now`.
+    /// Ends anything timed (a copy's flash) whose time is up at `now`, and
+    /// moves the calendar's snake when it's due.
     pub fn tick(&mut self, now: std::time::Instant) {
-        if let Mode::Notes(editor) = &mut self.mode {
-            editor.expire_flash(now);
+        match &mut self.mode {
+            Mode::Notes(editor) => editor.expire_flash(now),
+            Mode::Calendar(calendar) => calendar.tick(now),
+            _ => {}
         }
     }
 
@@ -2995,6 +3001,47 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         type_str(&mut app, "u");
         assert!(app.store.items(tomorrow).is_empty());
+    }
+
+    #[test]
+    fn u_and_ctrl_r_do_nothing_during_the_calendars_game() {
+        let (mut app, _dir) = app_with(&[]);
+        let tomorrow = today().succ_opt().unwrap();
+        type_str(&mut app, " claplan");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, ":u");
+        assert_eq!(texts_on(&app, tomorrow), ["plan"], "u is typed into the command");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, ":snake");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "u");
+        ctrl(&mut app, 'r');
+        assert_eq!(texts_on(&app, tomorrow), ["plan"]);
+        assert!(calendar(&app).snake.is_some());
+    }
+
+    #[test]
+    fn the_app_wakes_and_ticks_for_the_calendars_snake() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, " c:snake");
+        press(&mut app, KeyCode::Enter);
+        // Waiting for a key, nothing's timed.
+        assert_eq!(app.redraw_at(), None);
+        type_str(&mut app, "l");
+        let start = std::time::Instant::now();
+        app.tick(start);
+        let at = app.redraw_at().expect("the snake's next move");
+        app.tick(at);
+        assert_eq!(calendar(&app).snake.as_ref().unwrap().head(), today().succ_opt().unwrap());
+    }
+
+    #[test]
+    fn pasting_into_the_calendars_command_line() {
+        let (mut app, _dir) = app_with(&[]);
+        type_str(&mut app, " c:");
+        app.handle_paste("snake").unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert!(calendar(&app).snake.is_some());
     }
 
     #[test]
