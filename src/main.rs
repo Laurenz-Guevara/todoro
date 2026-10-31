@@ -326,10 +326,14 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
     while !app.quit && !app.restart {
         app.now = Local::now().time();
         terminal.draw(|frame| ui::draw(frame, app))?;
-        // Wake up now and then even without a key, to notice midnight, or
-        // sooner when something on screen (a copy's flash) is due to change.
-        let wait = app.redraw_at().map_or(Duration::from_secs(30), |at| at.saturating_duration_since(Instant::now()));
-        if event::poll(wait.min(Duration::from_secs(30)))? {
+        // Wake up every second even without a key, to notice the todos file
+        // changing (todoro -a in another terminal) and midnight, or sooner
+        // when something on screen (a copy's flash) is due to change.
+        let wait = app.redraw_at().map_or(Duration::from_secs(1), |at| at.saturating_duration_since(Instant::now()));
+        let key_waiting = event::poll(wait.min(Duration::from_secs(1)))?;
+        // Before the key, so it acts on what's in the file now.
+        app.reload_if_changed()?;
+        if key_waiting {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key)?,
                 Event::Paste(text) => app.handle_paste(&text)?,

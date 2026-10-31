@@ -352,15 +352,45 @@ impl App {
 
     pub fn handle_key(&mut self, key: KeyEvent) -> io::Result<()> {
         self.clear_message();
+        let before = self.slot(self.selected);
         let result = self.key(key);
-        self.report_conflicts();
+        self.report_conflicts(before);
         result
     }
 
     /// Tells the user about notes files that changed outside todoro, which
     /// saving left alone. If those notes are open, they show the outside
     /// version, so the next key can't overwrite it.
-    fn report_conflicts(&mut self) {
+    ///
+    /// If a save merged into a todos file changed outside todoro, `selected`
+    /// (the item selected before, as the key saw it) is followed to where
+    /// it went, so notes being typed keep going to it. Anything else open
+    /// holds old positions, so it closes, back to the list. Undo history is
+    /// cleared, as undoing would bring back the old file.
+    fn report_conflicts(&mut self, selected: Option<Slot>) {
+        if let Some(merge) = self.store.take_merge() {
+            self.undo.clear();
+            self.redo.clear();
+            self.plan_undo.clear();
+            self.plan_redo.clear();
+            self.plan_stash = None;
+            self.notes_before = None;
+            self.pending.clear();
+            if !matches!(self.mode, Mode::Normal | Mode::Notes(_)) {
+                self.mode = Mode::Normal;
+            }
+            match selected.and_then(|slot| Some((slot.day, merge.index(slot.day, slot.index)?))) {
+                Some((day, index)) => self.select_stored(day, index),
+                None => self.clamp_selection(),
+            }
+            if merge.added {
+                self.message = Some("Changed elsewhere meanwhile: both kept, yours at the end".into());
+            }
+        }
+        if let Some(copy) = self.store.take_kept_outside() {
+            let name = copy.file_name().unwrap_or_default().to_string_lossy();
+            self.message = Some(format!("The todos file changed outside todoro to something that isn't todos. That version is in {name}."));
+        }
         let conflicts = self.store.take_conflicts();
         let Some(conflict) = conflicts.first() else { return };
         self.message = Some(format!(
@@ -2019,7 +2049,7 @@ impl App {
             Ok(_) => Some(format!("{command} closed with an error")),
             Err(error) => Some(format!("Couldn't open {command}: {error}. Change the editor in the options{}.", self.options_hint())),
         };
-        self.report_conflicts();
+        self.report_conflicts(Some(slot));
         Ok(())
     }
 
@@ -2029,8 +2059,9 @@ impl App {
     /// else it's ignored.
     pub fn handle_paste(&mut self, text: &str) -> io::Result<()> {
         self.clear_message();
+        let before = self.slot(self.selected);
         let result = self.paste_text(text);
-        self.report_conflicts();
+        self.report_conflicts(before);
         result
     }
 
@@ -2191,6 +2222,31 @@ impl App {
     /// pinned items over as at startup. It waits until you're back on the
     /// list, so nothing moves while you're typing or in a popup. Undo history
     /// is cleared, so `u` can't undo the carry-over by accident.
+    /// Rereads the todos file if something else changed it, such as
+    /// `todoro -a` or `-d` in another terminal, so the list shows it and the
+    /// next save doesn't overwrite it. Only on the list (`Normal` mode, with
+    /// no keys pending), as positions mustn't shift mid-edit; otherwise the
+    /// next save keeps the outside version beside it. The same item stays
+    /// selected where it can, and undo history is cleared, as undoing would
+    /// bring back the old file.
+    pub fn reload_if_changed(&mut self) -> io::Result<()> {
+        if !matches!(self.mode, Mode::Normal) || !self.pending.is_empty() || self.count.is_some() || !self.store.changed_on_disk() {
+            return Ok(());
+        }
+        let selected = self.slot(self.selected).map(|slot| self.store.items(slot.day)[slot.index].text.clone());
+        self.store.reload()?;
+        self.undo.clear();
+        self.redo.clear();
+        let rows = self.items();
+        let same = selected.and_then(|text| rows.iter().position(|item| item.text == text));
+        if let Some(row) = same {
+            self.selected = row;
+        }
+        self.clamp_selection();
+        self.report_conflicts(None);
+        Ok(())
+    }
+
     pub fn set_today(&mut self, today: NaiveDate) -> io::Result<()> {
         if today == self.today || !matches!(self.mode, Mode::Normal) {
             return Ok(());
@@ -6411,5 +6467,101 @@ mod tests {
         type_str(&mut app, "d");
         assert!(in_plan(&app));
         assert_eq!(items(&app), ["Gym", "Report", "Buy milk"]);
+    }
+
+    /// Changes the app's todos file as another todoro would, `todoro -a`.
+    fn add_outside(app: &App, text: &str) {
+        let mut other = Store::open(app.store.path().to_path_buf()).unwrap();
+        let end = other.open_count(today());
+        other.insert(today(), end, text.into()).unwrap();
+    }
+
+    #[test]
+    fn the_list_rereads_the_file_when_something_else_changes_it() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, "xj");
+        assert_eq!(app.items()[app.selected].text, "Buy milk");
+        add_outside(&app, "Book flights");
+        app.reload_if_changed().unwrap();
+        assert_eq!(items(&app), ["Call mom", "Book flights", "Buy milk"]);
+        // The same item is still selected, and undo can't bring back the old file.
+        assert_eq!(app.items()[app.selected].text, "Buy milk");
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Call mom", "Book flights", "Buy milk"]);
+        // Its next change keeps the outside one.
+        type_str(&mut app, "gg");
+        type_str(&mut app, "x");
+        assert_eq!(Store::open(app.store.path().to_path_buf()).unwrap().items(today()).len(), 3);
+        assert!(app.message.is_none());
+    }
+
+    #[test]
+    fn nothing_is_reread_unless_the_file_changed() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "x");
+        app.reload_if_changed().unwrap();
+        // Undo still works, as nothing was reread.
+        type_str(&mut app, "u");
+        assert!(!app.store.items(today())[0].done);
+    }
+
+    #[test]
+    fn mid_edit_the_file_isnt_reread_and_saving_keeps_both() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "a");
+        add_outside(&app, "Book flights");
+        app.reload_if_changed().unwrap();
+        assert!(matches!(app.mode, Mode::Insert { .. }));
+        type_str(&mut app, "Call mom");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(items(&app), ["Buy milk", "Book flights", "Call mom"]);
+        assert_eq!(Store::open(app.store.path().to_path_buf()).unwrap().items(today()).len(), 3);
+        assert!(app.message.as_ref().is_some_and(|message| message.contains("both kept")), "{:?}", app.message);
+        // Undo can't bring back the old file.
+        type_str(&mut app, "u");
+        assert_eq!(items(&app), ["Buy milk", "Book flights", "Call mom"]);
+    }
+
+    #[test]
+    fn notes_being_typed_follow_their_item_through_a_merge() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "i");
+        // Deleted elsewhere, so every index moves.
+        let mut other = Store::open(app.store.path().to_path_buf()).unwrap();
+        other.delete_block(today(), 0).unwrap();
+        type_str(&mut app, "Ask");
+        assert!(matches!(app.mode, Mode::Notes(_)));
+        assert_eq!(items(&app), ["Call mom", "Buy milk", "Call mom"]);
+        assert_eq!(app.selected, 2);
+        type_str(&mut app, " about Sunday");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        let notes: Vec<&str> = app.store.items(today()).iter().map(|item| item.notes.as_str()).collect();
+        assert_eq!(notes, ["", "", "Ask about Sunday"]);
+    }
+
+    #[test]
+    fn a_merge_closes_what_holds_old_positions() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, " p");
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+        add_outside(&app, "Book flights");
+        type_str(&mut app, "!");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(items(&app), ["Buy milk", "Call mom", "Book flights", "Buy milk"]);
+    }
+
+    #[test]
+    fn a_pending_key_waits_for_the_reread() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Call mom"]);
+        type_str(&mut app, "g");
+        add_outside(&app, "Book flights");
+        app.reload_if_changed().unwrap();
+        assert_eq!(items(&app), ["Buy milk", "Call mom"]);
+        type_str(&mut app, "g");
+        app.reload_if_changed().unwrap();
+        assert_eq!(items(&app), ["Buy milk", "Call mom", "Book flights"]);
     }
 }

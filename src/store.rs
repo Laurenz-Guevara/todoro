@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::cell::Cell;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -245,15 +246,49 @@ pub struct Store {
     /// Notes files changed outside todoro that a save left alone, to tell
     /// the user about.
     conflicts: Vec<Conflict>,
+    /// The todos file as this store last read or wrote it (`None` if there
+    /// was none), to notice when something else, like `todoro -a` in
+    /// another terminal, has changed it since.
+    on_disk: Option<String>,
+    /// The todos file's modification time and size when it was last read,
+    /// written or found unchanged, so checking it (every second, from the
+    /// app) reads it only once either changes, however big it is.
+    stamp: Cell<Option<Stamp>>,
+    /// Where a save kept the todos file's outside version, when it changed
+    /// but couldn't be read as todos, to tell the user about.
+    kept_outside: Option<PathBuf>,
+    /// How the last save merged this store's items into the file's outside
+    /// version, for the app to follow them.
+    merge: Option<Merge>,
+}
+
+/// How a save merged into a todos file that had changed outside todoro:
+/// the file's version was kept as it is, and each of the store's top-level
+/// items (with its sub-items) that wasn't in it exactly was added to the
+/// end of its day, so nothing either side had is lost; at worst an item
+/// changed on both sides shows twice.
+#[derive(Debug)]
+pub struct Merge {
+    /// Where each of the store's items went: (day, old index) to new index.
+    moved: HashMap<(String, usize), usize>,
+    /// Whether any item was added at the end, rather than all being found.
+    pub added: bool,
+}
+
+impl Merge {
+    /// Where the item that was at `index` on `day` is now.
+    pub fn index(&self, day: NaiveDate, index: usize) -> Option<usize> {
+        self.moved.get(&(key(day), index)).copied()
+    }
 }
 
 impl Store {
     /// Loads from `path`. A missing file is an empty store; it is created on first save.
     pub fn open(path: PathBuf) -> io::Result<Self> {
-        let raw: BTreeMap<String, Vec<RawItem>> = match fs::read_to_string(&path) {
-            Ok(s) => serde_json::from_str(&s).map_err(io::Error::other)?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(e) => return Err(e),
+        let on_disk = read_if_there(&path)?;
+        let raw: BTreeMap<String, Vec<RawItem>> = match &on_disk {
+            Some(s) => serde_json::from_str(s).map_err(io::Error::other)?,
+            None => BTreeMap::new(),
         };
         let mut days: BTreeMap<String, Vec<Item>> = raw
             .into_iter()
@@ -272,11 +307,98 @@ impl Store {
         let inline = days.values().flatten().any(|item| !item.notes.is_empty() && item.notes_file.is_none());
         let mut notes = NotesFiles::for_todos(&path);
         notes.load(&mut days)?;
-        let mut store = Self { path, days, notes, conflicts: Vec::new() };
+        let stamp = Cell::new(stamp(&path));
+        let mut store = Self { path, days, notes, conflicts: Vec::new(), on_disk, stamp, kept_outside: None, merge: None };
         if inline {
             store.save()?;
         }
         Ok(store)
+    }
+
+    /// Whether something else has changed the todos file since this store
+    /// last read or wrote it. A file that can't be read counts as unchanged.
+    pub fn changed_on_disk(&self) -> bool {
+        let now = stamp(&self.path);
+        if now.is_some() && now == self.stamp.get() {
+            return false;
+        }
+        let changed = read_if_there(&self.path).is_ok_and(|text| text != self.on_disk);
+        if !changed {
+            // Touched but the same: no need to read it again.
+            self.stamp.set(now);
+        }
+        changed
+    }
+
+    /// Reads the todos file again, and its notes, for what something else
+    /// changed in it, as on opening it. Conflicts not yet reported are kept.
+    pub fn reload(&mut self) -> io::Result<()> {
+        let mut fresh = Store::open(self.path.clone())?;
+        fresh.conflicts.append(&mut self.conflicts);
+        fresh.kept_outside = self.kept_outside.take();
+        fresh.merge = self.merge.take();
+        *self = fresh;
+        Ok(())
+    }
+
+    /// Where a save kept the todos file's outside version, if it had to:
+    /// the file changed outside todoro and couldn't be read as todos, so
+    /// nothing could be merged into it.
+    pub fn take_kept_outside(&mut self) -> Option<PathBuf> {
+        self.kept_outside.take()
+    }
+
+    /// How a save merged into the todos file, if it had changed outside
+    /// todoro since this store last read it (`Merge`).
+    pub fn take_merge(&mut self) -> Option<Merge> {
+        self.merge.take()
+    }
+
+    /// Takes `theirs`, the todos file as something else left it, as the
+    /// store's items, adding each of this store's top-level blocks that
+    /// isn't in it exactly to the end of its day (`Merge`).
+    fn merge_into(&mut self, theirs: Store) {
+        let Store { days: mut merged, notes, on_disk, .. } = theirs;
+        let mut moved = HashMap::new();
+        let mut added = false;
+        for (day, ours) in &self.days {
+            let target = merged.entry(day.clone()).or_default();
+            let mut matched = vec![false; target.len()];
+            // Each of our indices, and where it is in `target` before it's put in order.
+            let mut places = Vec::new();
+            let mut start = 0;
+            while start < ours.len() {
+                let end = outline::block_end(ours, start);
+                let block = &ours[start..end];
+                let found = (0..target.len()).find(|&at| {
+                    target[at].depth == 0
+                        && !matched[at]
+                        && target.get(at..at + block.len()) == Some(block)
+                        && outline::block_end(target, at) == at + block.len()
+                });
+                let at = found.unwrap_or_else(|| {
+                    added = true;
+                    let at = target.len();
+                    // Its notes get a file of their own, in case the file's
+                    // version still has the one they were in.
+                    target.extend(block.iter().cloned().map(|item| Item { notes_file: None, ..item }));
+                    matched.resize(target.len(), true);
+                    at
+                });
+                matched[at] = true;
+                places.extend((0..block.len()).map(|k| (start + k, at + k)));
+                start = end;
+            }
+            let order = outline::normalize(target);
+            for (ours, at) in places {
+                moved.insert((day.clone(), ours), order.get(at).copied().unwrap_or(at));
+            }
+        }
+        merged.retain(|_, items| !items.is_empty());
+        self.days = merged;
+        self.notes = notes;
+        self.on_disk = on_disk;
+        self.merge = Some(Merge { moved, added });
     }
 
     /// The todos file.
@@ -759,15 +881,66 @@ impl Store {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
-        // Notes first, since new ones get their file names here.
+        // Something else changed the file since it was read (todoro -a in
+        // another terminal): keep what it has, and add what this store has
+        // that it doesn't. If it isn't todos at all, keep it beside instead.
+        // A file that can't be read just now (Windows, mid-rename) doesn't
+        // stop the save.
+        if let Ok(Some(outside)) = read_if_there(&self.path)
+            && Some(&outside) != self.on_disk.as_ref()
+        {
+            match Store::open(self.path.clone()) {
+                Ok(theirs) => self.merge_into(theirs),
+                Err(_) => {
+                    let copy = free_copy_name(&self.path);
+                    fs::write(&copy, &outside)?;
+                    self.kept_outside = Some(copy);
+                }
+            }
+        }
+        // Notes next, since new ones get their file names here.
         let conflicts = self.notes.sync(&mut self.days)?;
         self.conflicts.extend(conflicts);
         // Write to a temp file and rename so a crash never leaves a half-written file.
         let tmp = self.path.with_extension("json.tmp");
         let nested: BTreeMap<&String, Vec<RawItem>> = self.days.iter().map(|(day, items)| (day, nest(items))).collect();
-        fs::write(&tmp, serde_json::to_string_pretty(&nested).map_err(io::Error::other)?)?;
-        fs::rename(tmp, &self.path)
+        let text = serde_json::to_string_pretty(&nested).map_err(io::Error::other)?;
+        fs::write(&tmp, &text)?;
+        fs::rename(tmp, &self.path)?;
+        self.on_disk = Some(text);
+        self.stamp.set(stamp(&self.path));
+        Ok(())
     }
+}
+
+/// A file's modification time and size.
+type Stamp = (std::time::SystemTime, u64);
+
+fn stamp(path: &std::path::Path) -> Option<Stamp> {
+    let metadata = fs::metadata(path).ok()?;
+    Some((metadata.modified().ok()?, metadata.len()))
+}
+
+/// The file at `path`, or `None` if there's none.
+fn read_if_there(path: &std::path::Path) -> io::Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// A name beside the todos file for a copy of its outside version that's
+/// not taken yet: `todos (conflict).json`, then `todos (conflict 2).json`.
+fn free_copy_name(path: &std::path::Path) -> PathBuf {
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    (1..)
+        .map(|n| match n {
+            1 => path.with_file_name(format!("{stem} (conflict).json")),
+            n => path.with_file_name(format!("{stem} (conflict {n}).json")),
+        })
+        .find(|copy| !copy.exists())
+        .expect("some name is free")
 }
 
 /// Where the completed top-level items start in a day's items.
@@ -792,6 +965,115 @@ mod tests {
 
     fn texts(store: &Store, day: NaiveDate) -> Vec<&str> {
         store.items(day).iter().map(|item| item.text.as_str()).collect()
+    }
+
+    #[test]
+    fn changes_from_elsewhere_are_noticed_and_reread() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Buy milk".into()).unwrap();
+        assert!(!store.changed_on_disk());
+        let mut other = Store::open(path.clone()).unwrap();
+        other.insert(today(), 1, "Call mom".into()).unwrap();
+        assert!(store.changed_on_disk());
+        store.reload().unwrap();
+        assert!(!store.changed_on_disk());
+        assert_eq!(texts(&store, today()), ["Buy milk", "Call mom"]);
+        // A file deleted from under it is a change too.
+        fs::remove_file(&path).unwrap();
+        assert!(store.changed_on_disk());
+    }
+
+    #[test]
+    fn a_file_rewritten_the_same_is_no_change() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Buy milk".into()).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, &text).unwrap();
+        assert!(!store.changed_on_disk());
+        assert!(!store.changed_on_disk());
+        // A change of the same size still shows, once its time differs.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        fs::write(&path, text.replace("Buy milk", "Buy salt")).unwrap();
+        assert!(store.changed_on_disk());
+    }
+
+    /// Changes the file at `path` as `todoro -a` or `-d` would.
+    fn elsewhere(path: &std::path::Path, change: impl FnOnce(&mut Store)) {
+        change(&mut Store::open(path.to_path_buf()).unwrap());
+    }
+
+    #[test]
+    fn saving_over_a_change_from_elsewhere_keeps_both() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Buy milk".into()).unwrap();
+        elsewhere(&path, |other| other.insert(today(), 1, "Call mom".into()).unwrap());
+        store.insert(today(), 1, "Pack".into()).unwrap();
+        // The file's version as it is, and what this store added at the end.
+        assert_eq!(texts(&store, today()), ["Buy milk", "Call mom", "Pack"]);
+        assert_eq!(texts(&Store::open(path.clone()).unwrap(), today()), ["Buy milk", "Call mom", "Pack"]);
+        let merge = store.take_merge().unwrap();
+        assert!(merge.added);
+        assert_eq!((merge.index(today(), 0), merge.index(today(), 1)), (Some(0), Some(2)));
+        // Its own saves after that are no merge.
+        store.toggle_done(today(), 0).unwrap();
+        assert!(store.take_merge().is_none());
+        assert_eq!(texts(&Store::open(path).unwrap(), today()), ["Call mom", "Pack", "Buy milk"]);
+    }
+
+    #[test]
+    fn when_unsure_a_merge_adds_rather_than_loses() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        for (i, text) in ["Buy milk", "Call mom", "Pay rent"].into_iter().enumerate() {
+            store.insert(today(), i, text.into()).unwrap();
+        }
+        // Deleted elsewhere, and edited on both sides.
+        elsewhere(&path, |other| {
+            other.delete_block(today(), 0).unwrap();
+            other.set_text(today(), 0, "Call mom tonight".into()).unwrap();
+        });
+        store.set_text(today(), 1, "Call dad".into()).unwrap();
+        let merged = Store::open(path).unwrap();
+        assert_eq!(texts(&merged, today()), ["Call mom tonight", "Pay rent", "Buy milk", "Call dad"]);
+    }
+
+    #[test]
+    fn a_merge_matches_whole_items_with_their_sub_items_and_notes() {
+        let (dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Plan the trip".into()).unwrap();
+        store.insert_at(today(), 1, vec![Item { text: "Book flights".into(), ..Item::default() }], 1).unwrap();
+        store.set_notes(today(), 0, "Lisbon".into()).unwrap();
+        elsewhere(&path, |other| other.insert(today(), 2, "Buy milk".into()).unwrap());
+        // A sub-item's notes change, so the whole item is added, with its
+        // notes in a file of their own.
+        store.set_notes(today(), 1, "Window seat".into()).unwrap();
+        assert_eq!(texts(&store, today()), ["Plan the trip", "Book flights", "Buy milk", "Plan the trip", "Book flights"]);
+        let merged = Store::open(path).unwrap();
+        let items = merged.items(today());
+        assert_eq!((items[0].notes.as_str(), items[1].notes.as_str()), ("Lisbon", ""));
+        assert_eq!((items[3].notes.as_str(), items[4].notes.as_str()), ("Lisbon", "Window seat"));
+        assert_ne!(items[0].notes_file, items[3].notes_file);
+        assert!(dir.path().join("notes").join("plan-the-trip.md").exists());
+    }
+
+    #[test]
+    fn a_file_changed_to_something_that_isnt_todos_is_kept_beside() {
+        let (dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Buy milk".into()).unwrap();
+        for (n, junk) in ["not json", "{ also not"].into_iter().enumerate() {
+            fs::write(&path, junk).unwrap();
+            store.toggle_done(today(), 0).unwrap();
+            let copy = if n == 0 { "todos (conflict).json" } else { "todos (conflict 2).json" };
+            assert_eq!(store.take_kept_outside(), Some(dir.path().join(copy)));
+            assert_eq!(fs::read_to_string(dir.path().join(copy)).unwrap(), junk);
+            assert_eq!(texts(&Store::open(path.clone()).unwrap(), today()), ["Buy milk"]);
+        }
     }
 
     #[test]

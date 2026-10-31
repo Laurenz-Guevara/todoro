@@ -64,6 +64,8 @@ todoro --version
 todoro --help
 ```
 
+todoro can stay open while you use these: it picks up the changes within a second. If you were in the middle of an edit, todoro keeps both versions rather than overwrite either: your change goes at the end of the list.
+
 ### Normal mode
 
 These are the default keys. You can change any of them, and the leader menu's, in your own `keys.toml`: see [Changing keys](#changing-keys).
