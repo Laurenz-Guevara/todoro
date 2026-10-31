@@ -57,6 +57,9 @@ pub fn releases(changelog: &str) -> Vec<Release<'_>> {
 
 /// The popup listing release notes.
 pub struct ChangelogView {
+    /// The changelog shown: a newer release's, fetched for `:update`, or
+    /// this one's if `None`.
+    pub text: Option<String>,
     /// Only releases newer than this, for "what's new"; all of them if `None`.
     pub since: Option<(u32, u32, u32)>,
     /// At most this many of the newest, on a first start, with a link to the
@@ -72,7 +75,7 @@ pub struct ChangelogView {
 
 impl ChangelogView {
     pub fn all() -> Self {
-        Self { since: None, limit: None, scroll: 0, height: Cell::new(0), total: Cell::new(0) }
+        Self { text: None, since: None, limit: None, scroll: 0, height: Cell::new(0), total: Cell::new(0) }
     }
 
     /// The newest few releases, for a first start.
@@ -82,7 +85,7 @@ impl ChangelogView {
 
     /// Whether there are older releases than the ones shown, to link to.
     pub fn more(&self) -> bool {
-        self.limit.is_some_and(|limit| releases(CHANGELOG).len() > limit)
+        self.limit.is_some_and(|limit| releases(self.changelog()).len() > limit)
     }
 
     /// What's new since `version`.
@@ -90,9 +93,18 @@ impl ChangelogView {
         Self { since: Some(version), ..Self::all() }
     }
 
+    /// What's new since `version` in `changelog`, a newer release's.
+    pub fn fetched(changelog: String, version: (u32, u32, u32)) -> Self {
+        Self { text: Some(changelog), ..Self::since(version) }
+    }
+
+    fn changelog(&self) -> &str {
+        self.text.as_deref().unwrap_or(CHANGELOG)
+    }
+
     /// The releases to show.
-    pub fn releases(&self) -> Vec<Release<'static>> {
-        releases(CHANGELOG)
+    pub fn releases(&self) -> Vec<Release<'_>> {
+        releases(self.changelog())
             .into_iter()
             .filter(|release| self.since.is_none_or(|since| release.version > since))
             .take(self.limit.unwrap_or(usize::MAX))

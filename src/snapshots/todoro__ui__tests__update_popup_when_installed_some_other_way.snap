@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 16).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1╭ todoro 99.0.0 is out ────────────────────────────────╮ │"
+"│ │ 99.0.0 - 2027-01-01                                  │ │"
+"│ │ Features                                             │ │"
+"│ │                                                      │ │"
+"│ │ • Everything is better                               │ │"
+"│ │                                                      │ │"
+"│ │ This todoro wasn't installed with its installer, so  │ │"
+"│ │ update it the way you installed it. With cargo, run: │ │"
+"│ │ cargo install --git                                  │ │"
+"│ │ https://github.com/Laurenz-Guevara/todoro            │ │"
+"│ │                                                      │ │"
+"│ │                                                      │ │"
+"│ │                                                      │ │"
+"╰─╰─────────────── j/k scroll · esc close ────────── All ╯─╯"
+" UPDATE   j/k scroll  esc close                             "

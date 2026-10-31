@@ -22,7 +22,17 @@ pub fn app_with(items: &[&str]) -> (App, TempDir) {
     }
     let mut app = App::new(store, today());
     app.clipboard = crate::clipboard::Clipboard::Memory(Vec::new());
+    app.fetcher = offline();
     (app, dir)
+}
+
+/// Never asks GitHub: tests that want an answer set their own.
+pub fn offline() -> crate::update::Fetcher {
+    crate::update::Fetcher {
+        latest: || Err("no network in tests".into()),
+        changelog: |_| Err("no network in tests".into()),
+        installed: || crate::update::Install::Other,
+    }
 }
 
 /// An app on `today()` in a todoro folder with these workspaces, each with
@@ -38,6 +48,7 @@ pub fn app_with_workspaces(names: &[&str]) -> (App, TempDir) {
     let store = Store::open(folder.todos_path(names[0])).unwrap();
     let mut app = App::new(store, today());
     app.clipboard = crate::clipboard::Clipboard::Memory(Vec::new());
+    app.fetcher = offline();
     app.workspaces = Some(folder);
     app.workspace = Some(names[0].to_string());
     (app, dir)

@@ -289,6 +289,7 @@ pub fn sections(keymap: &Keymap) -> Vec<Shown> {
             list.push(Row::new(format!("42{last} / :42"), "Go to item 42", None));
         }
     }
+    list.push(Row::new(":update", "Check for a newer todoro: see what's new, then update or not", None));
     let leader = keymap.leader_name();
     let menu = Command::all()
         .flat_map(|command| {

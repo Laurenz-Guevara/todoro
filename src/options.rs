@@ -23,6 +23,15 @@ pub struct Settings {
     /// Show deadline times on the 12-hour clock (`11PM`), not the 24-hour
     /// one (`23:00`).
     pub twelve_hour: bool,
+    /// Don't check once a day for a newer version (the option shows it the
+    /// other way round, as "Check for updates", on by default).
+    pub no_update_check: bool,
+    /// The day the check last found out, so it's once a day.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_checked: Option<String>,
+    /// The newer version it found, to mention until it's installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
     /// Open empty notes in normal mode, rather than ready to type.
     pub empty_notes_normal: bool,
     /// Open notes that have text ready to type at their end, rather than in
@@ -83,6 +92,13 @@ pub const TOGGLES: &[Toggle] = &[
         description: "Show deadline times like 11PM instead of 23:00. You can type either.",
         get: |s| s.twelve_hour,
         set: |s, on| s.twelve_hour = on,
+    },
+    Toggle {
+        section: "Updates",
+        label: "Check for updates",
+        description: "Once a day, when todoro opens, see if there's a newer version and say so in the status bar. It never installs one: :update does, when you choose.",
+        get: |s| !s.no_update_check,
+        set: |s, on| s.no_update_check = !on,
     },
     Toggle {
         section: "Notes",
@@ -457,9 +473,12 @@ mod tests {
     #[test]
     fn everything_is_off_by_default() {
         assert_eq!(Settings::default(), Settings { semantic_icons: false, no_colour: false, last_seen_version: None, ..Settings::default() });
+        // Every option is off, but checking for updates, which is on: its
+        // setting is stored the other way round, so it starts off too.
         for toggle in TOGGLES {
-            assert!(!(toggle.get)(&Settings::default()));
+            assert_eq!((toggle.get)(&Settings::default()), toggle.label == "Check for updates", "{}", toggle.label);
         }
+        assert!(!Settings::default().no_update_check);
     }
 
     #[test]

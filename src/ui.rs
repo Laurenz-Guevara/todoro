@@ -31,6 +31,7 @@ use crate::deadline::{self, Deadline};
 use crate::reminder::{self, Reminder};
 use crate::viewer::{Scope, Viewer};
 use crate::markdown;
+use crate::update;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let [main, status] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
@@ -67,6 +68,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Search(search) => draw_search(frame, app, search),
         Mode::Options(options) => draw_options(frame, app, options),
         Mode::Changelog(view) => draw_changelog(frame, view),
+        Mode::Update(popup) => draw_update(frame, popup),
         Mode::Workspaces(picker) => draw_workspaces(frame, app, picker),
         Mode::Tags(picker) => draw_tags(frame, app, picker),
         Mode::Remind(picker) => draw_remind(frame, app, picker),
@@ -913,6 +915,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             &[("↵ open", 3), ("a new", 2), ("d delete", 1), ("esc close", 4)],
         ),
         Mode::Changelog(_) => ("NEWS", Color::Cyan, &[("j/k scroll", 1), ("esc close", 2)]),
+        Mode::Update(popup) => match &**popup {
+            update::Popup::Checking => ("UPDATE", Color::Cyan, &[("esc cancel", 1)]),
+            update::Popup::Newer { install: update::Install::Installer, .. } => {
+                ("UPDATE", Color::Cyan, &[("y update", 3), ("n not now", 2), ("j/k scroll", 1)])
+            }
+            update::Popup::Newer { .. } => ("UPDATE", Color::Cyan, &[("j/k scroll", 1), ("esc close", 2)]),
+        },
         Mode::Options(options) if options.searching => {
             ("OPTIONS", Color::Blue, &[("type to search", 0), ("enter keep", 2), ("esc clear", 1)])
         }
@@ -990,10 +999,23 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
     let label = format!(" {mode} ");
-    let hints = fit_hints(hints, (area.width as usize).saturating_sub(label.width() + 2));
+    let room = (area.width as usize).saturating_sub(label.width() + 2);
+    // A newer version, on the list, at the right end, leaving room for hints.
+    let notice = app.update_available().filter(|_| matches!(app.mode, Mode::Normal)).and_then(|version| {
+        [format!("v{version} available · :update"), format!("v{version} · :update")]
+            .into_iter()
+            .find(|notice| notice.width() + 2 + MIN_HINTS_WIDTH <= room)
+    });
+    let hints = fit_hints(hints, room.saturating_sub(notice.as_ref().map_or(0, |notice| notice.width() + 2)));
     let line = Line::from(vec![label.bold().fg(Color::Black).bg(color), "  ".into(), hints.dim()]);
     frame.render_widget(Paragraph::new(line), area);
+    if let Some(notice) = notice {
+        frame.render_widget(Line::from(notice.yellow()).right_aligned(), area);
+    }
 }
+
+/// How much of the status bar hints keep beside the update notice.
+const MIN_HINTS_WIDTH: usize = 24;
 
 /// Joins `hints` with two spaces, dropping the lowest-priority ones (the
 /// rightmost of equals) until the line fits in `width`.
@@ -2504,9 +2526,7 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
 }
 
 fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
-    let screen = frame.area();
-    let area = centered(screen, screen.width.saturating_sub(4).min(76), screen.height.saturating_sub(2));
-    let room = area.width.saturating_sub(2) as usize;
+    let room = frame.area().width.saturating_sub(4).min(76).saturating_sub(2) as usize;
     let whats_new = format!(" What's new in todoro {} ", changes::VERSION);
     let welcome = format!(" Welcome to todoro {} ", changes::VERSION);
     let title = if view.since.is_some() {
@@ -2516,6 +2536,62 @@ fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
     } else {
         fit_first(&[" Changelog ", " News "], room)
     };
+    draw_release_notes(frame, view, title, &[" j/k scroll · esc close ", " esc close "], &[]);
+}
+
+/// `:update`'s popup: checking, then the newer version's notes and whether
+/// to install it.
+fn draw_update(frame: &mut Frame, popup: &update::Popup) {
+    match popup {
+        update::Popup::Checking => {
+            let screen = frame.area();
+            let area = centered(screen, screen.width.saturating_sub(4).min(44), 3);
+            let block = Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(Color::Cyan))
+                .title(" Update ".bold())
+                .padding(Padding::horizontal(1));
+            let inner = block.inner(area);
+            frame.render_widget(Clear, area);
+            frame.render_widget(block, area);
+            let text = fit_first(&["Checking for a newer todoro…", "Checking…"], inner.width as usize);
+            frame.render_widget(Paragraph::new(text).dim(), inner);
+        }
+        update::Popup::Newer { version, notes, install } => {
+            let room = frame.area().width.saturating_sub(4).min(76).saturating_sub(2) as usize;
+            let long = format!(" todoro {version} is out ");
+            let title = fit_first(&[long.as_str(), " Update ", " New "], room);
+            let ask = format!(
+                "Press y to update from {} to {version} now, or n to stay on {}. todoro restarts on the new version.",
+                changes::VERSION,
+                changes::VERSION
+            );
+            match install {
+                update::Install::Installer => draw_release_notes(
+                    frame,
+                    notes,
+                    title,
+                    &[" y update · n not now · j/k scroll ", " y update · n not now ", " y · n "],
+                    &[(ask.as_str(), Style::new().fg(Color::Green))],
+                ),
+                update::Install::Other => draw_release_notes(
+                    frame,
+                    notes,
+                    title,
+                    &[" j/k scroll · esc close ", " esc close "],
+                    &[(update::UPDATE_IT_YOURSELF, Style::new().fg(Color::Yellow))],
+                ),
+            }
+        }
+    }
+}
+
+/// Release notes in a popup, with `title`, the first of `hints` that fits,
+/// and `footer` paragraphs after the notes.
+fn draw_release_notes(frame: &mut Frame, view: &ChangelogView, title: &str, hints: &[&str], footer: &[(&str, Style)]) {
+    let screen = frame.area();
+    let area = centered(screen, screen.width.saturating_sub(4).min(76), screen.height.saturating_sub(2));
+    let room = area.width.saturating_sub(2) as usize;
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(Color::Cyan))
@@ -2538,6 +2614,10 @@ fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
         let older = format!("{lead}: {}", changes::RELEASES_URL);
         lines.extend(wrap(&older, width, usize::MAX).into_iter().map(|part| Line::from(part).dim()));
     }
+    for (text, style) in footer {
+        lines.push(Line::default());
+        lines.extend(wrap(text, width, usize::MAX).into_iter().map(|part| Line::from(Span::styled(part, *style))));
+    }
 
     let height = inner.height as usize;
     view.height.set(height);
@@ -2549,7 +2629,7 @@ fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
     // hint centred in the room left beside it.
     let position = format!(" {} ", scroll_position(scroll, max));
     let hint_room = room.saturating_sub(2 * (position.width() + 1));
-    let hint = fit_first(&[" j/k scroll · esc close ", " esc close "], hint_room);
+    let hint = fit_first(hints, hint_room);
     let block = block
         .title_bottom(Line::from(hint).centered().dim())
         .title_bottom(Line::from(position).right_aligned().dim());
@@ -3642,6 +3722,14 @@ mod tests {
             calendar.snake.as_mut().unwrap().set_food(NaiveDate::from_ymd_opt(2026, 10, 9).unwrap());
         }
         shot(&app, "snake");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        app.mode = Mode::Update(Box::new(crate::update::Popup::Checking));
+        shot(&app, "checking for an update");
+        let changelog = "# Changelog\n\n## [99.0.0] - 2027-01-01\n\n- Everything is better\n";
+        let other = crate::update::Install::Other;
+        app.mode = Mode::Update(Box::new(crate::update::Popup::newer("99.0.0".into(), changelog.into(), other)));
+        shot(&app, "an update");
         out
     }
 
@@ -4453,6 +4541,58 @@ mod tests {
         app.tick(ends);
         assert!(flashing(&app).is_empty());
         assert_eq!(app.redraw_at(), None);
+    }
+
+    fn newer_release() -> crate::update::Popup {
+        let changelog = "# Changelog\n\n## [99.0.0] - 2027-01-01\n\n### Features\n\n- Everything is better\n";
+        crate::update::Popup::newer("99.0.0".into(), changelog.into(), crate::update::Install::Installer)
+    }
+
+    #[test]
+    fn update_popup_checking() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.mode = Mode::Update(Box::new(crate::update::Popup::Checking));
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn update_popup_with_whats_new() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.mode = Mode::Update(Box::new(newer_release()));
+        let terminal = render_sized(&app, 60, 16);
+        let buffer = terminal.backend().buffer();
+        // This version changes each release, so it shows as X.Y.Z.
+        let screen: Vec<String> = (0..16).map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>()).collect();
+        insta::assert_snapshot!(screen.join("\n").replace(crate::changelog::VERSION, "X.Y.Z"));
+    }
+
+    #[test]
+    fn update_popup_when_installed_some_other_way() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        let crate::update::Popup::Newer { version, notes, .. } = newer_release() else { panic!("newer") };
+        app.mode = Mode::Update(Box::new(crate::update::Popup::Newer { version, notes, install: crate::update::Install::Other }));
+        assert_snapshot!(render_sized(&app, 60, 16).backend());
+    }
+
+    #[test]
+    fn an_available_update_shows_at_the_end_of_the_status_bar() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.settings.update_available = Some("99.0.0".into());
+        let status = |app: &App, width: u16| {
+            let terminal = render_sized(app, width, 6);
+            let buffer = terminal.backend().buffer().clone();
+            (0..width).map(|x| buffer[(x, 5)].symbol().to_string()).collect::<String>()
+        };
+        assert!(status(&app, 80).trim_end().ends_with("v99.0.0 available · :update"), "{}", status(&app, 80));
+        assert!(status(&app, 60).trim_end().ends_with("v99.0.0 · :update"), "{}", status(&app, 60));
+        // Too narrow, the hints keep the room.
+        assert!(!status(&app, 30).contains("99"), "{}", status(&app, 30));
+        // Not with the option off, nor once it's not newer.
+        app.settings.no_update_check = true;
+        assert!(!status(&app, 80).contains("99"));
+        app.settings.no_update_check = false;
+        app.settings.update_available = Some("0.0.1".into());
+        assert!(!status(&app, 80).contains("available"));
     }
 
     #[test]

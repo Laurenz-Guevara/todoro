@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "screen.join(\"\\n\").replace(crate::changelog::VERSION, \"X.Y.Z\")"
+---
+╭───────────── Monday, October 5 2026 (today) ─────────────╮
+│1╭ todoro 99.0.0 is out ────────────────────────────────╮ │
+│ │ 99.0.0 - 2027-01-01                                  │ │
+│ │ Features                                             │ │
+│ │                                                      │ │
+│ │ • Everything is better                               │ │
+│ │                                                      │ │
+│ │ Press y to update from X.Y.Z to 99.0.0 now, or n to  │ │
+│ │ stay on X.Y.Z. todoro restarts on the new version.   │ │
+│ │                                                      │ │
+│ │                                                      │ │
+│ │                                                      │ │
+│ │                                                      │ │
+│ │                                                      │ │
+╰─╰───────── y update · n not now · j/k scroll ───── All ╯─╯
+ UPDATE   y update  n not now  j/k scroll

@@ -20,6 +20,7 @@ use crate::outline;
 use crate::reminder;
 use crate::search::{self, Search};
 use crate::tags::{self, TagPicker};
+use crate::update;
 use crate::viewer::{self, Viewer};
 use crate::store::{Item, Priority, Snapshot, Store};
 use crate::workspaces::{self, Picker, Workspaces};
@@ -59,6 +60,8 @@ pub enum Mode {
     Workspaces(Picker),
     /// Release notes: what's new after an update, or all of them.
     Changelog(ChangelogView),
+    /// `:update`: checking for a newer todoro, then its notes.
+    Update(Box<update::Popup>),
     /// The `#` list of every tag.
     Tags(TagPicker),
     /// Fuzzy search over every day's items.
@@ -180,6 +183,15 @@ pub struct App {
     /// When items were copied on the list (`yy`), and their rows, with
     /// their sub-items', while they flash to show it.
     pub list_flash: Option<(std::time::Instant, Vec<usize>)>,
+    /// Where newer versions are asked for: GitHub, or something else in tests.
+    pub fetcher: update::Fetcher,
+    /// The day's check for a newer version, while it's running.
+    update_check: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// `:update`'s check, while it's running.
+    update_find: Option<std::sync::mpsc::Receiver<Result<update::Found, String>>>,
+    /// The version to install, once chosen in `:update`'s popup, for the
+    /// event loop in `main.rs`, which owns the terminal the installer needs.
+    pub install_update: Option<String>,
     message_ends: Option<std::time::Instant>,
     /// Where `yy` in the viewer copies to.
     pub clipboard: Clipboard,
@@ -239,6 +251,10 @@ impl App {
             message: None,
             message_brief: false,
             list_flash: None,
+            fetcher: update::Fetcher::github(),
+            update_check: None,
+            update_find: None,
+            install_update: None,
             message_ends: None,
             clipboard: Clipboard::System,
             register: Vec::new(),
@@ -679,6 +695,17 @@ impl App {
                     self.mode = Mode::Normal;
                 }
             }
+            Mode::Update(popup) => match popup.handle_key(key) {
+                update::Action::Stay => {}
+                update::Action::Close => {
+                    self.mode = Mode::Normal;
+                    self.update_find = None;
+                }
+                update::Action::Install(version) => {
+                    self.mode = Mode::Normal;
+                    self.install_update = Some(version);
+                }
+            },
             Mode::Workspaces(picker) => {
                 let (Some(folder), Some(current)) = (&self.workspaces, &self.workspace) else {
                     self.mode = Mode::Normal;
@@ -1771,6 +1798,10 @@ impl App {
                     "deadline" => self.open_deadline(),
                     "remind" | "reminder" => self.open_reminder(),
                     "overdue" => self.mode = Mode::Search(Box::new(Search::overdue())),
+                    "update" => {
+                        self.mode = Mode::Update(Box::new(update::Popup::Checking));
+                        self.update_find = Some(update::find(self.fetcher));
+                    }
                     line => {
                         if let Ok(n) = line.parse::<usize>() {
                             let len = self.slots().len();
@@ -2196,12 +2227,73 @@ impl App {
             _ => None,
         };
         let list_flash = self.list_flash.as_ref().map(|(since, _)| *since + crate::notes::FLASH);
-        [timed, list_flash, self.message_ends].into_iter().flatten().min()
+        // Soon, while :update waits for GitHub's answer.
+        let checking = self.update_find.as_ref().map(|_| std::time::Instant::now() + std::time::Duration::from_millis(100));
+        [timed, list_flash, checking, self.message_ends].into_iter().flatten().min()
     }
 
     /// Ends anything timed (a copy's flash) whose time is up at `now`, and
     /// moves the calendar's snake when it's due.
+    /// Starts the day's check for a newer version, unless the option is off
+    /// or it's been done today. It only finds out: the status bar then says
+    /// one is available, and `:update` installs it.
+    pub fn start_update_check(&mut self) {
+        let today = self.today.format("%Y-%m-%d").to_string();
+        if !self.settings.no_update_check && self.settings.update_checked.as_deref() != Some(today.as_str()) {
+            self.update_check = Some(update::check(self.fetcher));
+        }
+    }
+
+    /// A newer version to mention in the status bar, if the option is on.
+    pub fn update_available(&self) -> Option<&str> {
+        let version = self.settings.update_available.as_deref()?;
+        (!self.settings.no_update_check && update::is_newer(version)).then_some(version)
+    }
+
+    /// Takes in what the background checks for a newer version found, if
+    /// they're done.
+    fn receive_updates(&mut self) {
+        if let Some(Ok(answer)) = self.update_check.as_ref().map(|check| check.try_recv()) {
+            self.update_check = None;
+            // Offline, it asks again next time todoro opens.
+            if let Ok(version) = answer {
+                self.settings.update_checked = Some(self.today.format("%Y-%m-%d").to_string());
+                self.settings.update_available = update::is_newer(&version).then_some(version);
+                self.save_settings_quietly();
+            }
+        }
+        if let Some(Ok(answer)) = self.update_find.as_ref().map(|find| find.try_recv()) {
+            self.update_find = None;
+            if !matches!(&self.mode, Mode::Update(popup) if matches!(**popup, update::Popup::Checking)) {
+                return;
+            }
+            self.mode = Mode::Normal;
+            match answer {
+                Ok(update::Found::UpToDate) => {
+                    self.settings.update_available = None;
+                    self.save_settings_quietly();
+                    self.brief_message(format!("todoro {} is the latest version", changelog::VERSION));
+                }
+                Ok(update::Found::Newer { version, changelog }) => {
+                    self.settings.update_available = Some(version.clone());
+                    self.save_settings_quietly();
+                    self.mode = Mode::Update(Box::new(update::Popup::newer(version, changelog, (self.fetcher.installed)())));
+                }
+                Err(error) => self.brief_message(format!("Couldn't check for updates: {error}")),
+            }
+        }
+    }
+
+    /// Saves the settings, if there's a file for them, ignoring a failure:
+    /// for what todoro notes down itself, which it can find out again.
+    fn save_settings_quietly(&self) {
+        if let Some(path) = &self.settings_path {
+            let _ = self.settings.save(path);
+        }
+    }
+
     pub fn tick(&mut self, now: std::time::Instant) {
+        self.receive_updates();
         match &mut self.mode {
             Mode::Notes(editor) => editor.expire_flash(now),
             Mode::View(viewer) => viewer.expire_flash(now),
@@ -6711,5 +6803,124 @@ mod tests {
         type_str(&mut app, "g");
         app.reload_if_changed().unwrap();
         assert_eq!(items(&app), ["Buy milk", "Call mom", "Book flights"]);
+    }
+
+    /// A newer todoro on "GitHub", with its notes, for the update tests.
+    fn newer_on_github() -> update::Fetcher {
+        update::Fetcher {
+            latest: || Ok("99.0.0".into()),
+            changelog: |_| Ok("# Changelog\n\n## [99.0.0] - 2027-01-01\n\n- Everything is better\n".into()),
+            installed: || update::Install::Installer,
+        }
+    }
+
+    /// Waits for the background checks to answer, as the event loop would.
+    fn settle(app: &mut App) {
+        for _ in 0..400 {
+            app.tick(std::time::Instant::now());
+            if app.update_find.is_none() && app.update_check.is_none() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("no answer");
+    }
+
+    fn colon(app: &mut App, command: &str) {
+        type_str(app, &format!(":{command}"));
+        press(app, KeyCode::Enter);
+    }
+
+    #[test]
+    fn colon_update_shows_whats_new_and_installs_only_on_y() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.fetcher = newer_on_github();
+        colon(&mut app, "update");
+        assert!(matches!(&app.mode, Mode::Update(popup) if matches!(**popup, update::Popup::Checking)));
+        settle(&mut app);
+        let Mode::Update(popup) = &app.mode else { panic!("the update popup") };
+        let update::Popup::Newer { version, notes, .. } = &**popup else { panic!("a newer version") };
+        assert_eq!(version, "99.0.0");
+        assert_eq!(notes.releases()[0].notes, "- Everything is better");
+        assert_eq!(app.settings.update_available.as_deref(), Some("99.0.0"));
+        // n stays on this version.
+        type_str(&mut app, "n");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.install_update, None);
+        // y asks the event loop to install it.
+        colon(&mut app, "update");
+        settle(&mut app);
+        type_str(&mut app, "y");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.install_update.as_deref(), Some("99.0.0"));
+    }
+
+    #[test]
+    fn colon_update_says_when_its_the_latest_or_github_cant_be_reached() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.fetcher = update::Fetcher { latest: || Ok(changelog::VERSION.into()), ..newer_on_github() };
+        app.settings.update_available = Some("99.0.0".into());
+        colon(&mut app, "update");
+        settle(&mut app);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.message, Some(format!("todoro {} is the latest version", changelog::VERSION)));
+        assert_eq!(app.settings.update_available, None);
+        app.fetcher = crate::test_util::offline();
+        colon(&mut app, "update");
+        settle(&mut app);
+        assert_eq!(app.message.as_deref(), Some("Couldn't check for updates: no network in tests"));
+    }
+
+    #[test]
+    fn esc_while_checking_ignores_the_answer() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.fetcher = newer_on_github();
+        colon(&mut app, "update");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        settle(&mut app);
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn installed_some_other_way_the_popup_says_how_to_update_and_y_does_nothing() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.fetcher = update::Fetcher { installed: || update::Install::Other, ..newer_on_github() };
+        colon(&mut app, "update");
+        settle(&mut app);
+        type_str(&mut app, "y");
+        assert!(matches!(app.mode, Mode::Update(_)));
+        assert_eq!(app.install_update, None);
+    }
+
+    #[test]
+    fn the_daily_check_only_notes_a_newer_version() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.fetcher = newer_on_github();
+        app.start_update_check();
+        settle(&mut app);
+        assert_eq!(app.settings.update_checked.as_deref(), Some("2026-10-05"));
+        assert_eq!(app.update_available(), Some("99.0.0"));
+        assert!(matches!(app.mode, Mode::Normal), "nothing opens, and nothing is installed");
+        assert_eq!(app.install_update, None);
+        // Once a day.
+        app.fetcher = update::Fetcher { latest: || panic!("asked twice in a day"), ..newer_on_github() };
+        app.start_update_check();
+        assert!(app.update_check.is_none());
+        // Not at all with the option off, which hides what was found too.
+        app.settings.update_checked = None;
+        app.settings.no_update_check = true;
+        app.start_update_check();
+        assert!(app.update_check.is_none());
+        assert_eq!(app.update_available(), None);
+    }
+
+    #[test]
+    fn offline_the_daily_check_tries_again_next_time() {
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        app.start_update_check();
+        settle(&mut app);
+        assert_eq!(app.settings.update_checked, None);
+        assert_eq!(app.update_available(), None);
     }
 }

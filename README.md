@@ -35,6 +35,14 @@ Both put `todoro` in `~/.local/bin` and add it to your `PATH` if needed, so you 
 
 You can also download the program yourself from the [latest release](https://github.com/Laurenz-Guevara/todoro/releases/latest): there are builds for Linux and macOS (Intel and ARM) and Windows. Unpack it and put `todoro` (or `todoro.exe`) somewhere on your `PATH`.
 
+### Updating
+
+Type `:update` in todoro. It checks for a newer version and, if there is one, shows what's new in it: press `y` to update, and todoro installs it and restarts on it, or `n` to stay on the version you have. If you installed todoro from source or by hand, it shows what's new and how to update it yourself.
+
+Once a day, when you open todoro, it also checks whether there's a newer version, and if there is, says so at the right of the status bar, like `v1.0.0 available · :update`. It never installs anything by itself. Turn **Check for updates** off in the options to stop it checking.
+
+Both ask GitHub with `curl`, which comes with macOS, Linux and Windows 10 and later.
+
 ### From source
 
 With Rust 1.88 or newer (install it with [rustup](https://rustup.rs)):
@@ -120,6 +128,7 @@ These are the default keys. You can change any of them, and the leader menu's, i
 | `Space` `p` | Plan the day: give items a start and end time |
 | `?` | Show all keybindings |
 | `q` / `:q` | Quit |
+| `:update` | Check for a newer todoro: see what's new, then update or not |
 
 Keys you use all the time have one key each. Less frequent commands are behind `Space`: press it and a menu along the bottom shows what each next key does, like which-key in Neovim. Each key you type narrows it down to the commands that still match, and runs the one it finishes. A key that matches nothing closes the menu, as does `Esc`; `Backspace` steps back a key.
 
@@ -363,6 +372,10 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 - **Pin new items:** new items, from the list or the calendar, start pinned, so they move on to today until they're done. Off by default. Pasted items keep their own pin.
 - **12-hour clock:** show deadline times like `11PM` instead of `23:00`. Off by default. You can type times either way.
+
+**Updates**
+
+- **Check for updates:** once a day, when todoro opens, check for a newer version and say so in the status bar. On by default. It never installs anything; `:update` does, when you choose.
 
 **Notes**
 

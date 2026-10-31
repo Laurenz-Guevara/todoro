@@ -19,6 +19,7 @@ mod reminder;
 mod search;
 mod setup;
 mod snake;
+mod update;
 mod store;
 mod tags;
 mod timeline;
@@ -148,6 +149,8 @@ fn main() -> io::Result<()> {
         }
     }
 
+    // A Windows update leaves the old exe beside the new one.
+    update::tidy_up();
     let mut terminal = ratatui::init();
     // Have pasted text arrive in one piece rather than as typed keys. Old
     // Windows consoles can't, and then pasting works as typing, as before.
@@ -174,6 +177,7 @@ fn main() -> io::Result<()> {
         }
         app.store.roll_over(today)?;
         app.show_whats_new()?;
+        app.start_update_check();
         run(&mut terminal, &mut app)?;
         if !app.restart {
             return Ok(());
@@ -344,9 +348,52 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
             let result = edit_in(terminal, &command, &path);
             app.finish_external_edit(result)?;
         }
+        if let Some(version) = app.install_update.take() {
+            install_update(terminal, app, &version)?;
+        }
         app.tick(Instant::now());
         app.set_today(Local::now().date_naive())?;
     }
+    Ok(())
+}
+
+/// Hands the terminal to the installer for `version`, chosen in `:update`,
+/// then starts the new todoro in place of this one. If the install fails,
+/// it says why and comes back.
+fn install_update(terminal: &mut ratatui::DefaultTerminal, app: &mut App, version: &str) -> io::Result<()> {
+    enhance_keys(false);
+    let _ = execute!(io::stdout(), DisableBracketedPaste);
+    ratatui::restore();
+    println!("Updating todoro from {} to {version}…\n", changelog::VERSION);
+    // Where this todoro is, while it's still there to ask.
+    let exe = std::env::current_exe();
+    let message = match update::install(version) {
+        Ok(()) => {
+            // Its notes were just read, so the new version needn't show them.
+            app.settings.last_seen_version = Some(version.to_string());
+            app.settings.update_available = None;
+            if let Some(path) = &app.settings_path {
+                let _ = app.settings.save(path);
+            }
+            println!("\nUpdated. Starting todoro {version}…");
+            let error = match exe {
+                Ok(exe) => update::restart(exe),
+                Err(error) => error,
+            };
+            format!("Updated to {version}, but couldn't start it: {error}. Quit and open todoro again.")
+        }
+        Err(error) => {
+            println!("\nCouldn't update: {error}. Press Enter to go back to todoro.");
+            let _ = io::stdin().read_line(&mut String::new());
+            format!("Couldn't update: {error}")
+        }
+    };
+    terminal::enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    let _ = execute!(io::stdout(), EnableBracketedPaste);
+    enhance_keys(true);
+    terminal.clear()?;
+    app.message = Some(message);
     Ok(())
 }
 
