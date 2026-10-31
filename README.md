@@ -50,6 +50,8 @@ This puts `todoro` in `~/.cargo/bin`, which rustup adds to your `PATH`.
 ```sh
 todoro             # open todoro
 todoro -l          # print today's list (also --list), as todoro would show it
+todoro -a Buy milk # add an item to today's list (also --add)
+todoro -a Book flights -p 2   # add it as a sub-item of item 2, as -l numbers it (also --parent)
 todoro -wl         # list the workspaces (also --workspaces), * marking the current one
 todoro -w work     # switch to the work workspace (also --workspace): todoro and -l use it
 todoro --where     # print the todoro folder, e.g. to back it up: cp -r "$(todoro --where)" /backup/

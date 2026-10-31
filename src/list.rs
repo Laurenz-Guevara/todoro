@@ -1,10 +1,66 @@
-//! `todoro --list`: today's list as plain text, for the terminal or scripts.
+//! Today's list from the command line: `todoro --list` prints it as plain
+//! text, for the terminal or scripts, and `todoro --add` adds to it.
+
+use std::io;
 
 use chrono::{NaiveDate, NaiveTime};
 
 use crate::outline;
 use crate::store::{Item, Store};
 use crate::ui::{DEADLINE_MARKER, NOTES_MARKER, PINNED_MARKER, REMINDER_MARKER, SUB_DONE, SUB_OPEN, priority_icon};
+
+/// Where an item is stored: its day and its index there.
+type Stored = (NaiveDate, usize);
+
+/// Where today's top-level items are stored, in the order todoro shows
+/// them: the open ones (numbered from 1 on screen) and the completed ones.
+/// Pinned and overdue items from earlier days come first, then items whose
+/// reminder is due, then the day's own.
+fn roots(store: &Store, today: NaiveDate, now: NaiveTime) -> (Vec<Stored>, Vec<Stored>) {
+    let mut roots = store.carried_to(today, today);
+    roots.extend(store.reminded_on(today, today, now));
+    let items = store.items(today);
+    let mut at = 0;
+    while at < items.len() {
+        roots.push((today, at));
+        at = outline::block_end(items, at);
+    }
+    roots.into_iter().partition(|&(day, index)| !store.items(day)[index].done)
+}
+
+/// `todoro -a TEXT`: adds an item to the end of today's open items, or with
+/// `parent`, the number of an open item as `todoro -l` shows it, as that
+/// item's last sub-item (showing it, if its sub-items were folded away).
+/// New top-level items are pinned if `pin` (the "Pin new items" option), as
+/// in todoro. Returns what to print, or why it couldn't.
+pub fn add(store: &mut Store, today: NaiveDate, now: NaiveTime, text: &str, parent: Option<usize>, pin: bool) -> io::Result<Result<String, String>> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Err("Give the item's text, like: todoro -a Buy milk".into()));
+    }
+    let Some(number) = parent else {
+        let index = store.open_count(today);
+        store.insert_at(today, index, vec![Item { text: text.into(), pinned: pin, ..Item::default() }], 0)?;
+        let number = roots(store, today, now).0.len();
+        return Ok(Ok(format!("Added {number}. {text}")));
+    };
+    let (open, _) = roots(store, today, now);
+    let Some(&(day, index)) = number.checked_sub(1).and_then(|at| open.get(at)) else {
+        let there = match open.len() {
+            0 => "There are no open items on today's list.".to_string(),
+            1 => "Only item 1 is open on today's list.".to_string(),
+            n => format!("Today's open items are 1 to {n}."),
+        };
+        return Ok(Err(format!("There's no item {number} to add under. {there} todoro -l lists them.")));
+    };
+    let parent = store.items(day)[index].clone();
+    if parent.folded {
+        store.set_folded(day, index, false)?;
+    }
+    let end = outline::block_end(store.items(day), index);
+    store.insert_at(day, end, vec![Item { text: text.into(), ..Item::default() }], parent.depth + 1)?;
+    Ok(Ok(format!("Added under {number}. {}: {text}", parent.text)))
+}
 
 /// What todoro shows on `today` at `now`, as text: the date (and the
 /// workspace, if there is one), then the open items numbered as on screen
@@ -18,15 +74,7 @@ pub fn today(store: &Store, today: NaiveDate, now: NaiveTime, twelve_hour: bool,
     }
     out.push('\n');
 
-    let mut roots = store.carried_to(today, today);
-    roots.extend(store.reminded_on(today, today, now));
-    let items = store.items(today);
-    let mut at = 0;
-    while at < items.len() {
-        roots.push((today, at));
-        at = outline::block_end(items, at);
-    }
-    let (open, done): (Vec<_>, Vec<_>) = roots.into_iter().partition(|&(day, index)| !store.items(day)[index].done);
+    let (open, done) = roots(store, today, now);
 
     if open.is_empty() && done.is_empty() {
         out.push_str("\nNothing on today's list.\n");
@@ -164,6 +212,84 @@ mod tests {
         assert_eq!(listed, "Monday 5 October 2026\n\n1. Renew passport ⚲\n2. Buy milk\n");
         // Still stored on its own day.
         assert_eq!(store.items(earlier)[0].text, "Renew passport");
+    }
+
+    fn texts(store: &Store, day: NaiveDate) -> Vec<(usize, String, bool)> {
+        store.items(day).iter().map(|item| (item.depth, item.text.clone(), item.pinned)).collect()
+    }
+
+    #[test]
+    fn adding_goes_after_the_open_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store(&dir);
+        for (i, text) in ["Buy milk", "Call mom"].into_iter().enumerate() {
+            store.insert(day(), i, text.into()).unwrap();
+        }
+        store.toggle_done(day(), 1).unwrap();
+        assert_eq!(add(&mut store, day(), noon(), "  Pay rent ", None, false).unwrap(), Ok("Added 2. Pay rent".into()));
+        assert_eq!(texts(&store, day()), [(0, "Buy milk".into(), false), (0, "Pay rent".into(), false), (0, "Call mom".into(), false)]);
+        // Saved, like any change.
+        let reopened = Store::open(dir.path().join("todos.json")).unwrap();
+        assert_eq!(texts(&reopened, day()), texts(&store, day()));
+    }
+
+    #[test]
+    fn adding_pins_with_the_option_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store(&dir);
+        add(&mut store, day(), noon(), "Renew passport", None, true).unwrap().unwrap();
+        assert_eq!(texts(&store, day()), [(0, "Renew passport".into(), true)]);
+    }
+
+    #[test]
+    fn adding_a_sub_item_under_a_numbered_item() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store(&dir);
+        for (i, text) in ["Buy milk", "Plan the trip"].into_iter().enumerate() {
+            store.insert(day(), i, text.into()).unwrap();
+        }
+        store.insert_at(day(), 2, vec![Item { text: "Book flights".into(), ..Item::default() }], 1).unwrap();
+        store.set_folded(day(), 1, true).unwrap();
+        let added = add(&mut store, day(), noon(), "Pack", Some(2), true).unwrap();
+        assert_eq!(added, Ok("Added under 2. Plan the trip: Pack".into()));
+        // The last sub-item, never pinned, and unfolded to show it.
+        assert_eq!(texts(&store, day())[1..], [(0, "Plan the trip".into(), false), (1, "Book flights".into(), false), (1, "Pack".into(), false)]);
+        assert!(!store.items(day())[1].folded);
+    }
+
+    #[test]
+    fn numbers_count_items_carried_from_earlier_days() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store(&dir);
+        let earlier = day().pred_opt().unwrap();
+        store.insert(earlier, 0, "Renew passport".into()).unwrap();
+        store.toggle_pinned(earlier, 0).unwrap();
+        store.insert(day(), 0, "Buy milk".into()).unwrap();
+        // 1 is the pinned item from yesterday, where it's still stored.
+        add(&mut store, day(), noon(), "Find the old one", Some(1), false).unwrap().unwrap();
+        assert_eq!(texts(&store, earlier)[1], (1, "Find the old one".into(), false));
+        assert_eq!(add(&mut store, day(), noon(), "Milk", None, false).unwrap(), Ok("Added 3. Milk".into()));
+    }
+
+    #[test]
+    fn adding_nothing_or_under_an_item_that_isnt_there_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = store(&dir);
+        let Err(message) = add(&mut store, day(), noon(), "  ", None, false).unwrap() else { panic!("should fail") };
+        assert!(message.contains("todoro -a Buy milk"));
+        let Err(message) = add(&mut store, day(), noon(), "Pack", Some(1), false).unwrap() else { panic!("should fail") };
+        assert_eq!(message, "There's no item 1 to add under. There are no open items on today's list. todoro -l lists them.");
+        store.insert(day(), 0, "Buy milk".into()).unwrap();
+        store.insert(day(), 1, "Call mom".into()).unwrap();
+        let Err(message) = add(&mut store, day(), noon(), "Pack", Some(3), false).unwrap() else { panic!("should fail") };
+        assert!(message.contains("open items are 1 to 2"), "{message}");
+        let Err(message) = add(&mut store, day(), noon(), "Pack", Some(0), false).unwrap() else { panic!("should fail") };
+        assert!(message.contains("no item 0"));
+        // Completed items aren't numbered, so nothing goes under them.
+        store.toggle_done(day(), 1).unwrap();
+        let Err(message) = add(&mut store, day(), noon(), "Pack", Some(2), false).unwrap() else { panic!("should fail") };
+        assert!(message.contains("Only item 1 is open"), "{message}");
+        assert_eq!(store.items(day()).len(), 2, "nothing added");
     }
 
     #[test]

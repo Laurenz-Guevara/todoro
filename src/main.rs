@@ -60,6 +60,25 @@ fn main() -> io::Result<()> {
             print!("{}", list_today(&settings, todoro_file)?);
             return Ok(());
         }
+        cli::Run::Add { text, parent } => {
+            let outcome = match open_for_command_line(&settings, todoro_file)? {
+                Ok((mut store, _)) => {
+                    let now = Local::now();
+                    list::add(&mut store, now.date_naive(), now.time(), &text, parent, settings.pin_new_items)?
+                }
+                Err(message) => Err(message),
+            };
+            match outcome {
+                Ok(message) => {
+                    println!("{message}");
+                    return Ok(());
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    std::process::exit(1);
+                }
+            }
+        }
         cli::Run::Workspaces => {
             let dir = settings.data_dir.as_deref().expect("checked by cli::parse");
             println!("{}", workspaces::list_command(dir, settings.workspace.as_deref())?);
@@ -134,20 +153,29 @@ fn main() -> io::Result<()> {
 /// Today's list as text, from `TODORO_FILE` or the workspace todoro would
 /// open. It only reads: nothing is set up, saved or moved on.
 fn list_today(settings: &Settings, todoro_file: Option<PathBuf>) -> io::Result<String> {
-    let (path, workspace) = match (todoro_file, &settings.data_dir) {
-        (Some(file), _) => (file, None),
-        (None, Some(dir)) => match workspaces::pick(dir, settings.workspace.as_deref())? {
-            Some(name) => (Workspaces::new(dir.clone()).todos_path(&name), Some(name)),
-            None => return Ok("There are no workspaces yet. Run todoro to make one.\n".into()),
-        },
-        (None, None) => return Ok("todoro isn't set up yet. Run todoro to choose a folder.\n".into()),
+    let (store, workspace) = match open_for_command_line(settings, todoro_file)? {
+        Ok(opened) => opened,
+        Err(message) => return Ok(format!("{message}\n")),
     };
-    let store = Store::open(path)?;
     let now = Local::now();
     // The workspace's name helps only when there's more than one.
     let several = settings.data_dir.as_ref().is_some_and(|dir| Workspaces::new(dir.clone()).list().is_ok_and(|names| names.len() > 1));
     let workspace = workspace.filter(|_| several);
     Ok(list::today(&store, now.date_naive(), now.time(), settings.twelve_hour, workspace.as_deref()))
+}
+
+/// The todos a command-line flag works on: `TODORO_FILE`, or the workspace
+/// todoro would open, with its name. Or why there are none yet.
+fn open_for_command_line(settings: &Settings, todoro_file: Option<PathBuf>) -> io::Result<Result<(Store, Option<String>), String>> {
+    let (path, workspace) = match (todoro_file, &settings.data_dir) {
+        (Some(file), _) => (file, None),
+        (None, Some(dir)) => match workspaces::pick(dir, settings.workspace.as_deref())? {
+            Some(name) => (Workspaces::new(dir.clone()).todos_path(&name), Some(name)),
+            None => return Ok(Err("There are no workspaces yet. Run todoro to make one.".into())),
+        },
+        (None, None) => return Ok(Err("todoro isn't set up yet. Run todoro to choose a folder.".into())),
+    };
+    Ok(Ok((Store::open(path)?, workspace)))
 }
 
 /// Whether the terminal reports keys like Shift+Enter apart, once asked.

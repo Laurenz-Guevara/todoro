@@ -14,6 +14,8 @@ With no option, todoro opens. Press ? inside it for every key.
 
 Options:
   -l, --list                 Print today's list
+  -a, --add TEXT             Add an item to today's list
+  -a TEXT -p N               Add it as a sub-item of item N (as -l numbers it)
   -wl, --workspaces          List the workspaces, * marking the current one
   -w, --workspace NAME       Switch to a workspace: todoro and -l use it
   --where                    Print the todoro folder, where every workspace is kept
@@ -43,6 +45,9 @@ pub enum Run {
     App,
     /// Print today's list and stop.
     List,
+    /// Add an item to today's list, under the open item numbered `parent`
+    /// if there is one, and stop.
+    Add { text: String, parent: Option<usize> },
     /// List the workspaces and stop.
     Workspaces,
     /// Switch to this workspace (`None` when no name was given) and stop.
@@ -67,6 +72,11 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
         }
         _ => {}
     }
+    if let Some(flag) = args.first()
+        && (flag == "-a" || flag == "--add")
+    {
+        return add(&args[1..], keys);
+    }
     match args {
         [] => Run::App,
         [flag] if flag == "-w" || flag == "--workspace" => Run::Switch(None),
@@ -88,6 +98,34 @@ pub fn parse(args: &[String], settings: &Settings, todoro_file: Option<&Path>, k
         },
         _ => Run::Fail(format!("todoro: give at most one option\n\n{}", help(keys)), 2),
     }
+}
+
+/// `-a TEXT`, with `-p N` (or `--parent N`) anywhere after it for a
+/// sub-item. The words left are the text, joined as typed apart; after `--`
+/// every word is text, even `-p`.
+fn add(args: &[String], keys: Option<&Path>) -> Run {
+    let mut words: Vec<&str> = Vec::new();
+    let mut parent = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--" => {
+                words.extend(rest.by_ref().map(String::as_str));
+            }
+            "-p" | "--parent" => match rest.next().map(|number| number.parse::<usize>()) {
+                Some(Ok(number)) => parent = Some(number),
+                Some(Err(_)) | None => {
+                    return Run::Fail("todoro: -p takes the number of the item to add under, like: todoro -a Pack -p 2".into(), 2);
+                }
+            },
+            word => words.push(word),
+        }
+    }
+    let text = words.join(" ");
+    if text.trim().is_empty() {
+        return Run::Fail(format!("todoro: give the item's text, like: todoro -a Buy milk\n\n{}", help(keys)), 2);
+    }
+    Run::Add { text, parent }
 }
 
 #[cfg(test)]
@@ -152,6 +190,37 @@ mod tests {
         assert!(matches!(run(&["-w", "work", "home"], &settings, None), Run::Fail(_, 2)));
         let Run::Print(help) = run(&["--help"], &settings, None) else { panic!("help") };
         assert!(help.contains("-wl, --workspaces") && help.contains("-w, --workspace NAME"));
+    }
+
+    fn add(args: &[&str]) -> Run {
+        run(args, &Settings::default(), None)
+    }
+
+    #[test]
+    fn add_takes_the_rest_as_text() {
+        assert_eq!(add(&["-a", "Buy", "milk"]), Run::Add { text: "Buy milk".into(), parent: None });
+        assert_eq!(add(&["--add", "Buy milk"]), Run::Add { text: "Buy milk".into(), parent: None });
+    }
+
+    #[test]
+    fn p_adds_under_a_numbered_item_wherever_it_goes() {
+        let flights = Run::Add { text: "Book flights".into(), parent: Some(2) };
+        assert_eq!(add(&["-a", "Book", "flights", "-p", "2"]), flights);
+        assert_eq!(add(&["-a", "-p", "2", "Book", "flights"]), flights);
+        assert_eq!(add(&["-a", "Book", "--parent", "2", "flights"]), flights);
+        // After --, -p is text.
+        assert_eq!(add(&["-a", "--", "Check", "-p", "2"]), Run::Add { text: "Check -p 2".into(), parent: None });
+        assert_eq!(add(&["-a", "Pack", "--", "-p", "2"]), Run::Add { text: "Pack -p 2".into(), parent: None });
+    }
+
+    #[test]
+    fn add_needs_text_and_p_a_number() {
+        assert!(matches!(add(&["-a"]), Run::Fail(message, 2) if message.contains("item's text")));
+        assert!(matches!(add(&["-a", "-p", "2"]), Run::Fail(message, 2) if message.contains("item's text")));
+        assert!(matches!(add(&["-a", "Pack", "-p"]), Run::Fail(message, 2) if message.contains("number")));
+        assert!(matches!(add(&["-a", "Pack", "-p", "two"]), Run::Fail(message, 2) if message.contains("number")));
+        let Run::Print(help) = add(&["--help"]) else { panic!("help") };
+        assert!(help.contains("-a, --add TEXT") && help.contains("-p N"));
     }
 
     #[test]
