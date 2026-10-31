@@ -206,7 +206,9 @@ pub const SECTIONS: &[Section] = &[
         title: "Calendar",
         bindings: &[
             ("h j k l", "Move by day and week, following the layout"),
+            ("h j k l (year)", "Within the month, then on to the next one"),
             ("H / L", "Previous / next month"),
+            ("J / K (year)", "The month below / above"),
             ("t", "Jump to today"),
             ("w / m / y", "Week / month / year view"),
             ("a", "Add an item to the selected day"),

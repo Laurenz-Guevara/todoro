@@ -320,7 +320,7 @@ The list shows an item's time on the day it's planned for, like `09:00–09:30`.
 
 | Key | Action |
 |---|---|
-| `h` `j` `k` `l` | Move by day and week. In the month and year views `h`/`l` move a day and `j`/`k` a week; the week view lists days top to bottom, so there `j`/`k` move a day and `h`/`l` a week |
+| `h` `j` `k` `l` | Move by day and week. In the month view `h`/`l` move a day and `j`/`k` a week. In the year view they move around the grid of months: `h`/`l` along the week's row and `j`/`k` down and up the weekday's column, within the month, then on to the month beside, above or below it on screen. `J`/`K` there jump to the month below or above, as `H`/`L` do to the month before or after. The week view lists days top to bottom, so there `j`/`k` move a day and `h`/`l` a week |
 | `H` / `L` | Previous / next month |
 | `t` | Jump to today |
 | `w` / `m` / `y` | Week / month / year view |

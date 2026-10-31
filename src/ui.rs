@@ -1193,7 +1193,7 @@ fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) 
             vec![cursor.format("%B %Y").to_string(), cursor.format("%b %Y").to_string()],
             &[" h/l day · j/k week · H/L month ", " H/L month "],
         ),
-        Zoom::Year => (vec![cursor.format("%Y").to_string()], &[" h/l day · j/k week · H/L month ", " H/L month "]),
+        Zoom::Year => (vec![cursor.format("%Y").to_string()], &[" hjkl move · H/L month ", " H/L month "]),
     };
     // Choosing a deadline says what for, and shows its own keys.
     let (titles, hints, colour): (Vec<String>, &[&str], Color) = match &calendar.picking {
@@ -1362,6 +1362,7 @@ fn draw_year(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
     const MONTH_WIDTH: u16 = 20;
     const MONTH_HEIGHT: u16 = 8;
     let columns = ((area.width + 2) / (MONTH_WIDTH + 2)).clamp(1, 4);
+    calendar.year_columns.set(columns.into());
     let used = columns * MONTH_WIDTH + (columns - 1) * 2;
     let left = area.x + area.width.saturating_sub(used) / 2;
     let visible_rows = ((area.height + 1) / (MONTH_HEIGHT + 1)).max(1);
@@ -3820,6 +3821,28 @@ mod tests {
     fn calendar_year_small_scrolls_to_the_selected_month() {
         let (app, _dir) = calendar_app("yLL");
         assert_snapshot!(render_sized(&app, 30, 24).backend());
+    }
+
+    #[test]
+    fn year_view_j_follows_the_months_across_as_last_drawn() {
+        let cursor = |app: &App| match &app.mode {
+            Mode::Calendar(calendar) => calendar.cursor,
+            _ => panic!("the calendar should be open"),
+        };
+        let (mut app, _dir) = calendar_app("y");
+        // Monday 26 October is the last Monday in October.
+        for _ in 0..3 {
+            type_str(&mut app, "j");
+        }
+        // Wide enough for four months across: below October is February.
+        render_sized(&app, 100, 30);
+        type_str(&mut app, "j");
+        assert_eq!(cursor(&app), NaiveDate::from_ymd_opt(2027, 2, 1).unwrap());
+        type_str(&mut app, "k");
+        // Resized to one month across: below October is November.
+        render_sized(&app, 30, 24);
+        type_str(&mut app, "j");
+        assert_eq!(cursor(&app), NaiveDate::from_ymd_opt(2026, 11, 2).unwrap());
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! The calendar: a week, month or year at a glance, for planning ahead.
 
+use std::cell::Cell;
+
 use chrono::{Datelike, Days, Months, NaiveDate};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
@@ -24,6 +26,9 @@ pub struct Calendar {
     /// Choosing a deadline for an item (`@`), or a day to be reminded of
     /// it (`r` then `c`), rather than browsing.
     pub picking: Option<Picking>,
+    /// How many months the year view last drew side by side, which `j` and
+    /// `k` follow to the month above or below. Set while drawing.
+    pub year_columns: Cell<u32>,
 }
 
 /// Choosing a deadline or a reminder: the day with the calendar, then a time.
@@ -69,7 +74,7 @@ pub enum Action {
 
 impl Calendar {
     pub fn new(cursor: NaiveDate, today: NaiveDate) -> Self {
-        Self { zoom: Zoom::Month, cursor, today, adding: None, picking: None }
+        Self { zoom: Zoom::Month, cursor, today, adding: None, picking: None, year_columns: Cell::new(1) }
     }
 
     /// The year view, to choose a deadline for the item stored at `day`,
@@ -95,7 +100,7 @@ impl Calendar {
             error: None,
         };
         let cursor = current.map_or(cursor, |deadline| deadline.date);
-        Self { zoom: Zoom::Year, cursor, today, adding: None, picking: Some(picking) }
+        Self { zoom: Zoom::Year, cursor, today, adding: None, picking: Some(picking), year_columns: Cell::new(1) }
     }
 
     /// The year view, to choose a day to be reminded of the item stored at
@@ -176,12 +181,22 @@ impl Calendar {
 
         // h j k l follow the layout: the week view lists days top to bottom,
         // while the month and year views are grids of weeks.
+        // The year view is a grid of months, so there each key stays in the
+        // month until its edge, then crosses to the month beside, above or
+        // below it.
         let (across, down) = if self.zoom == Zoom::Week { (7, 1) } else { (1, 7) };
         match key.code {
+            KeyCode::Char('h') | KeyCode::Left if self.zoom == Zoom::Year => self.move_across_year(false),
+            KeyCode::Char('l') | KeyCode::Right if self.zoom == Zoom::Year => self.move_across_year(true),
+            KeyCode::Char('k') | KeyCode::Up if self.zoom == Zoom::Year => self.move_down_year(false),
+            KeyCode::Char('j') | KeyCode::Down if self.zoom == Zoom::Year => self.move_down_year(true),
             KeyCode::Char('h') | KeyCode::Left => self.move_days(-across),
             KeyCode::Char('l') | KeyCode::Right => self.move_days(across),
             KeyCode::Char('k') | KeyCode::Up => self.move_days(-down),
             KeyCode::Char('j') | KeyCode::Down => self.move_days(down),
+            // A whole row of months up or down the year view's grid.
+            KeyCode::Char('K') if self.zoom == Zoom::Year => self.move_months(-(self.year_columns.get().max(1) as i32)),
+            KeyCode::Char('J') if self.zoom == Zoom::Year => self.move_months(self.year_columns.get().max(1) as i32),
             KeyCode::Char('H') => self.move_months(-1),
             KeyCode::Char('L') => self.move_months(1),
             KeyCode::Char('t') => self.cursor = self.today,
@@ -204,6 +219,61 @@ impl Calendar {
             self.cursor.checked_add_days(Days::new(days as u64))
         };
         self.cursor = moved.unwrap_or(self.cursor);
+    }
+
+    /// Moves a day along the cursor's week row in its month. From the row's
+    /// end it goes to the same row of the next (or previous) month, as near
+    /// as that month has, landing on the side it came in from.
+    fn move_across_year(&mut self, forward: bool) {
+        let cursor = self.cursor;
+        let step = if forward { cursor.succ_opt() } else { cursor.pred_opt() };
+        if let Some(next) = step
+            && next.month() == cursor.month()
+            && week_start(next) == week_start(cursor)
+        {
+            self.cursor = next;
+            return;
+        }
+        let first = cursor.with_day(1).expect("every month has a 1st");
+        let row = month_weeks(cursor).iter().position(|&monday| monday == week_start(cursor)).unwrap_or(0);
+        let other = if forward { first.checked_add_months(Months::new(1)) } else { first.checked_sub_months(Months::new(1)) };
+        let Some(other) = other else { return };
+        let weeks = month_weeks(other);
+        let monday = weeks[row.min(weeks.len() - 1)];
+        let in_month = |day: NaiveDate| day.month() == other.month();
+        // Days of the row inside the month: coming from the left, the first;
+        // from the right, the last.
+        let mut days = (0..7).filter_map(|i| monday.checked_add_days(Days::new(i))).filter(|&day| in_month(day));
+        let landing = if forward { days.next() } else { days.last() };
+        if let Some(day) = landing {
+            self.cursor = day;
+        }
+    }
+
+    /// Moves a week down (or up) the cursor's weekday column in its month.
+    /// From the column's end it goes to the month below (or above) on screen,
+    /// `year_columns` months on, to the same weekday nearest the side it
+    /// came in from. Every month has each weekday, so there's always one.
+    fn move_down_year(&mut self, forward: bool) {
+        let cursor = self.cursor;
+        let step = if forward { cursor.checked_add_days(Days::new(7)) } else { cursor.checked_sub_days(Days::new(7)) };
+        if let Some(next) = step
+            && next.month() == cursor.month()
+        {
+            self.cursor = next;
+            return;
+        }
+        let first = cursor.with_day(1).expect("every month has a 1st");
+        let months = Months::new(self.year_columns.get().max(1));
+        let other = if forward { first.checked_add_months(months) } else { first.checked_sub_months(months) };
+        let Some(other) = other else { return };
+        let in_month = |day: &NaiveDate| day.month() == other.month();
+        // The weekday's first week in the month, or from below, its last.
+        let mut days = (0..35).filter_map(|i| other.checked_add_days(Days::new(i))).filter(in_month).filter(|day| day.weekday() == cursor.weekday());
+        let landing = if forward { days.next() } else { days.last() };
+        if let Some(day) = landing {
+            self.cursor = day;
+        }
     }
 
     /// Moves to the same day of another month, or its last day if shorter.
@@ -295,6 +365,131 @@ mod tests {
         send(&mut cal, "y");
         send(&mut cal, "hk");
         assert_eq!(cal.cursor, date(2026, 10, 5));
+    }
+
+    #[test]
+    fn h_and_l_in_the_year_view_stay_on_the_week_row_and_cross_months() {
+        let mut cal = calendar();
+        send(&mut cal, "y");
+        // October 2026's second row runs Mon 5 to Sun 11.
+        send(&mut cal, "l");
+        assert_eq!(cal.cursor, date(2026, 10, 6));
+        send(&mut cal, "hh");
+        // From Monday 5, h goes to September's second row (7 to 13), at its right end.
+        assert_eq!(cal.cursor, date(2026, 9, 13));
+        send(&mut cal, "l");
+        // And l from its right end comes back to October's second row, at its left.
+        assert_eq!(cal.cursor, date(2026, 10, 5));
+    }
+
+    #[test]
+    fn year_rows_that_start_or_end_mid_week_land_inside_the_month() {
+        let mut cal = calendar();
+        send(&mut cal, "y");
+        // October 2026 starts on a Thursday, so its first row is 1 to 4.
+        cal.cursor = date(2026, 10, 1);
+        send(&mut cal, "h");
+        // September's first row is Tue 1 to Sun 6.
+        assert_eq!(cal.cursor, date(2026, 9, 6));
+        send(&mut cal, "l");
+        assert_eq!(cal.cursor, date(2026, 10, 1));
+        // November's first row is just Sun 1, so l from Sun 4 lands there.
+        cal.cursor = date(2026, 10, 4);
+        send(&mut cal, "l");
+        assert_eq!(cal.cursor, date(2026, 11, 1));
+        // November has six rows and October five, so h from the sixth
+        // (just Mon 30) goes to October's last row, at Sat 31.
+        cal.cursor = date(2026, 11, 30);
+        send(&mut cal, "h");
+        assert_eq!(cal.cursor, date(2026, 10, 31));
+        // Across the end of the year, and back.
+        cal.cursor = date(2026, 12, 31);
+        send(&mut cal, "l");
+        assert_eq!(cal.cursor, date(2027, 1, 25));
+        send(&mut cal, "h");
+        assert_eq!(cal.cursor, date(2026, 12, 31));
+    }
+
+    #[test]
+    fn j_and_k_in_the_year_view_stay_in_the_month_and_cross_to_the_one_below() {
+        let mut cal = calendar();
+        send(&mut cal, "y");
+        cal.year_columns.set(3);
+        // Monday 5 October: j goes down October's Mondays, 12, 19, 26.
+        send(&mut cal, "jjj");
+        assert_eq!(cal.cursor, date(2026, 10, 26));
+        // Below October, three months on, is January 2027: its first Monday.
+        send(&mut cal, "j");
+        assert_eq!(cal.cursor, date(2027, 1, 4));
+        // And k comes back up to October's last Monday.
+        send(&mut cal, "k");
+        assert_eq!(cal.cursor, date(2026, 10, 26));
+        // Up from October's first Monday is July's last, 27.
+        cal.cursor = date(2026, 10, 5);
+        send(&mut cal, "k");
+        assert_eq!(cal.cursor, date(2026, 7, 27));
+    }
+
+    #[test]
+    fn j_and_k_in_the_year_view_follow_the_columns_drawn() {
+        let mut cal = calendar();
+        send(&mut cal, "y");
+        // One month across: below October is November. Sat 31 to Sat 7.
+        cal.cursor = date(2026, 10, 31);
+        send(&mut cal, "j");
+        assert_eq!(cal.cursor, date(2026, 11, 7));
+        // Four across: above Thursday 1 October is June's last Thursday, 25.
+        cal.year_columns.set(4);
+        cal.cursor = date(2026, 10, 1);
+        send(&mut cal, "k");
+        assert_eq!(cal.cursor, date(2026, 6, 25));
+    }
+
+    #[test]
+    fn capital_j_and_k_in_the_year_view_move_to_the_month_above_or_below() {
+        let mut cal = calendar();
+        send(&mut cal, "y");
+        cal.year_columns.set(3);
+        cal.cursor = date(2026, 10, 31);
+        // Below October is January: the same day, 31.
+        send(&mut cal, "J");
+        assert_eq!(cal.cursor, date(2027, 1, 31));
+        // Above January is October; above October, July.
+        send(&mut cal, "KK");
+        assert_eq!(cal.cursor, date(2026, 7, 31));
+        // Above July is April, which has no 31st, so its last day.
+        send(&mut cal, "K");
+        assert_eq!(cal.cursor, date(2026, 4, 30));
+        // With one month across, J is the next month, like L.
+        cal.year_columns.set(1);
+        send(&mut cal, "J");
+        assert_eq!(cal.cursor, date(2026, 5, 30));
+    }
+
+    #[test]
+    fn capital_j_and_k_do_nothing_in_the_month_and_week_views() {
+        let mut cal = calendar();
+        cal.year_columns.set(3);
+        send(&mut cal, "JK");
+        assert_eq!(cal.cursor, date(2026, 10, 5));
+        send(&mut cal, "wJK");
+        assert_eq!(cal.cursor, date(2026, 10, 5));
+    }
+
+    #[test]
+    fn j_and_k_in_the_month_view_still_move_a_week_across_months() {
+        let mut cal = calendar();
+        cal.year_columns.set(3);
+        cal.cursor = date(2026, 10, 26);
+        send(&mut cal, "j");
+        assert_eq!(cal.cursor, date(2026, 11, 2));
+    }
+
+    #[test]
+    fn h_and_l_in_the_month_view_still_move_a_day_across_weeks() {
+        let mut cal = calendar();
+        send(&mut cal, "h");
+        assert_eq!(cal.cursor, date(2026, 10, 4));
     }
 
     #[test]
