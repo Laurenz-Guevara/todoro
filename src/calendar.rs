@@ -35,6 +35,9 @@ pub struct Calendar {
     /// A game of Snake on the year view, which keeps every other key away
     /// until `Esc` ends it.
     pub snake: Option<Snake>,
+    /// Whether the year view shows the selected day's items beside the
+    /// months (`p`).
+    pub preview: bool,
 }
 
 /// Choosing a deadline or a reminder: the day with the calendar, then a time.
@@ -80,7 +83,7 @@ pub enum Action {
 
 impl Calendar {
     pub fn new(cursor: NaiveDate, today: NaiveDate) -> Self {
-        Self { zoom: Zoom::Month, cursor, today, adding: None, picking: None, year_columns: Cell::new(1), command: None, snake: None }
+        Self { zoom: Zoom::Month, cursor, today, adding: None, picking: None, year_columns: Cell::new(1), command: None, snake: None, preview: false }
     }
 
     /// The year view, to choose a deadline for the item stored at `day`,
@@ -106,7 +109,7 @@ impl Calendar {
             error: None,
         };
         let cursor = current.map_or(cursor, |deadline| deadline.date);
-        Self { zoom: Zoom::Year, cursor, today, adding: None, picking: Some(picking), year_columns: Cell::new(1), command: None, snake: None }
+        Self { zoom: Zoom::Year, cursor, today, adding: None, picking: Some(picking), year_columns: Cell::new(1), command: None, snake: None, preview: false }
     }
 
     /// The year view, to choose a day to be reminded of the item stored at
@@ -230,6 +233,9 @@ impl Calendar {
             KeyCode::Char('w') => self.zoom = Zoom::Week,
             KeyCode::Char('m') => self.zoom = Zoom::Month,
             KeyCode::Char('y') => self.zoom = Zoom::Year,
+            // Only the year view has a preview, and choosing a day for a
+            // deadline needs the room.
+            KeyCode::Char('p') if self.zoom == Zoom::Year && self.picking.is_none() => self.preview = !self.preview,
             KeyCode::Char('a') => self.adding = Some(LineInput::default()),
             KeyCode::Char(':') if self.picking.is_none() => self.command = Some(LineInput::default()),
             KeyCode::Char('?') => return Action::Help,
@@ -885,5 +891,43 @@ mod tests {
         assert_eq!(send(&mut cal, "d"), Action::Stay);
         send(&mut cal, "<cr>");
         assert_eq!(cal.picking.as_ref().unwrap().time.as_ref().unwrap().text, "09:00");
+    }
+
+    #[test]
+    fn p_toggles_the_preview_in_the_year_view_only() {
+        let mut cal = calendar();
+        assert!(!cal.preview);
+        // Not in the month or week view.
+        send(&mut cal, "p");
+        assert!(!cal.preview);
+        send(&mut cal, "w");
+        send(&mut cal, "p");
+        assert!(!cal.preview);
+        send(&mut cal, "y");
+        send(&mut cal, "p");
+        assert!(cal.preview);
+        // Moving between days leaves it on, and the zoom doesn't forget it.
+        send(&mut cal, "ll");
+        assert!(cal.preview);
+        send(&mut cal, "m");
+        send(&mut cal, "y");
+        assert!(cal.preview);
+        send(&mut cal, "p");
+        assert!(!cal.preview);
+    }
+
+    #[test]
+    fn p_does_nothing_while_adding_picking_or_playing() {
+        let mut cal = calendar();
+        send(&mut cal, "yaplan");
+        assert!(!cal.preview);
+        assert_eq!(cal.adding.as_ref().unwrap().text, "plan");
+        send(&mut cal, "<esc>");
+        let mut cal = Calendar::for_deadline((date(2026, 10, 5), 0), "Report", None, date(2026, 10, 5), date(2026, 10, 5), false);
+        send(&mut cal, "p");
+        assert!(!cal.preview);
+        let mut cal = calendar();
+        send(&mut cal, "y:snake<cr>p");
+        assert!(!cal.preview);
     }
 }

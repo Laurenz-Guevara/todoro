@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Flex, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Margin, Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
@@ -989,6 +989,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Color::Yellow,
             &[("↵ choose day", 3), ("y/m/w view", 0), ("esc cancel", 1), ("? help", 4)],
         ),
+        Mode::Calendar(calendar) if calendar.zoom == Zoom::Year => (
+            "CALENDAR",
+            Color::Cyan,
+            if calendar.preview {
+                &[("p hide preview", 0), ("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("? help", 5)]
+            } else {
+                &[("p preview", 0), ("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("? help", 5)]
+            },
+        ),
         Mode::Calendar(_) => (
             "CALENDAR",
             Color::Cyan,
@@ -1343,8 +1352,109 @@ fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) 
     match calendar.zoom {
         Zoom::Week => draw_week(frame, app, calendar, inner),
         Zoom::Month => draw_month(frame, app, calendar, inner),
+        // Browsing the year, the selected day's items show beside the months.
+        Zoom::Year if calendar.preview && calendar.picking.is_none() && calendar.snake.is_none() => match year_preview_split(inner) {
+            Some((year, divider, preview)) => {
+                draw_year(frame, app, calendar, year);
+                for y in divider.top()..divider.bottom() {
+                    frame.render_widget(Line::from("│").dark_gray().centered(), Rect { y, height: 1, ..divider });
+                }
+                draw_day_preview(frame, app, calendar.cursor, preview);
+            }
+            None => draw_year(frame, app, calendar, inner),
+        },
         Zoom::Year => draw_year(frame, app, calendar, inner),
     }
+}
+
+/// Each month's size in the year view, and the space between months.
+const YEAR_MONTH_WIDTH: u16 = 20;
+const YEAR_MONTH_HEIGHT: u16 = 8;
+const YEAR_MONTH_GAP: u16 = 2;
+
+/// The narrowest the selected day's items can be beside the year, and the
+/// width of the divider between them.
+const YEAR_PREVIEW_MIN: u16 = 28;
+const YEAR_DIVIDER: u16 = 3;
+
+/// Splits the year view's `area` into the months, a divider and the selected
+/// day's items beside them, or `None` without room for both. The months keep
+/// as many columns as fit while leaving the items their least width, and the
+/// items take the rest.
+fn year_preview_split(area: Rect) -> Option<(Rect, Rect, Rect)> {
+    if area.height < YEAR_MONTH_HEIGHT {
+        return None;
+    }
+    // A column of space at each edge, off the window's border.
+    let area = area.inner(Margin::new(1, 0));
+    let columns = (1..=4u16).rev().find(|&columns| {
+        let months = columns * YEAR_MONTH_WIDTH + (columns - 1) * YEAR_MONTH_GAP;
+        months + YEAR_DIVIDER + YEAR_PREVIEW_MIN <= area.width
+    })?;
+    let months = columns * YEAR_MONTH_WIDTH + (columns - 1) * YEAR_MONTH_GAP;
+    let [year, divider, preview] =
+        Layout::horizontal([Constraint::Length(months), Constraint::Length(YEAR_DIVIDER), Constraint::Fill(1)]).areas(area);
+    Some((year, divider, preview))
+}
+
+/// A day's items for the year view, in the manner of the search's preview:
+/// the date, how many items, a rule, then the items as the list numbers them
+/// with sub-items indented under a `↳`. Long items wrap, and when not all
+/// fit the rest is counted.
+fn draw_day_preview(frame: &mut Frame, app: &App, day: NaiveDate, area: Rect) {
+    let width = area.width as usize;
+    let items = app.store.items(day);
+    let date = fit_first(&[day.format("%A %-d %B %Y").to_string().as_str(), &day.format("%a %-d %b %Y").to_string()], width).to_string();
+    let open = items.iter().filter(|item| item.depth == 0 && !item.done).count();
+    let done = items.iter().filter(|item| item.depth == 0 && item.done).count();
+    let about = if items.is_empty() {
+        Line::from("Nothing on this day").dark_gray()
+    } else {
+        let mut about = vec![format!("{open} open").cyan()];
+        if done > 0 {
+            about.push(format!(" · {done} done").dark_gray());
+        }
+        if day == app.today {
+            about.push(" · today".green());
+        }
+        Line::from(about)
+    };
+    let head = vec![Line::from(truncate(&date, width).bold()), about, Line::from("─".repeat(width)).dark_gray()];
+    let [head_area, body] = Layout::vertical([Constraint::Length(head.len() as u16), Constraint::Fill(1)]).areas(area);
+    frame.render_widget(Paragraph::new(head), head_area);
+
+    let height = body.height as usize;
+    let mut number = 0;
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, item) in items.iter().enumerate() {
+        let prefix = if item.depth > 0 {
+            format!("{}{} ", "  ".repeat(item.depth), if item.done { "✓" } else { "↳" })
+        } else if item.done {
+            "  ✓ ".to_string()
+        } else {
+            number += 1;
+            format!("{number:>2}. ")
+        };
+        let indent = " ".repeat(prefix.width());
+        let parts = wrap(&item.text, width.saturating_sub(prefix.width()).max(1), usize::MAX);
+        let rows: Vec<Line> = parts
+            .into_iter()
+            .enumerate()
+            .map(|(row, part)| {
+                let lead = if row == 0 { prefix.clone().dark_gray() } else { indent.clone().into() };
+                Line::from(vec![lead, Span::styled(part, item_style(item))])
+            })
+            .collect();
+        // Leave a row for the count unless this is the last item and fits.
+        let last = i + 1 == items.len();
+        if lines.len() + rows.len() + usize::from(!last) > height {
+            lines.truncate(height.saturating_sub(1));
+            lines.push(Line::from(format!("+{} more", items.len() - i)).dim());
+            break;
+        }
+        lines.extend(rows);
+    }
+    frame.render_widget(Paragraph::new(lines), body);
 }
 
 /// A day's top-level items: the calendar leaves sub-items out, to keep
@@ -1474,8 +1584,8 @@ fn draw_month_day(frame: &mut Frame, app: &App, calendar: &Calendar, day: NaiveD
 /// as fit. Days with open items are highlighted. If they don't all fit, the
 /// rows scroll to keep the selected month in view.
 fn draw_year(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
-    const MONTH_WIDTH: u16 = 20;
-    const MONTH_HEIGHT: u16 = 8;
+    const MONTH_WIDTH: u16 = YEAR_MONTH_WIDTH;
+    const MONTH_HEIGHT: u16 = YEAR_MONTH_HEIGHT;
     let columns = ((area.width + 2) / (MONTH_WIDTH + 2)).clamp(1, 4);
     calendar.year_columns.set(columns.into());
     let used = columns * MONTH_WIDTH + (columns - 1) * 2;
@@ -4073,6 +4183,92 @@ mod tests {
     }
 
     #[test]
+    fn calendar_year_previews_the_selected_day() {
+        // Wide enough for every month with the day's items beside them.
+        let (app, _dir) = calendar_app("yllp");
+        let screen = format!("{:?}", render_sized(&app, 130, 30).backend());
+        assert!(screen.contains("Wednesday 7 October 2026"), "{screen}");
+        assert!(screen.contains("2 open"), "{screen}");
+        assert!(screen.contains("1. Dentist 3pm"), "{screen}");
+        assert!(screen.contains("2. Pick up parcel"), "{screen}");
+        assert_snapshot!(render_sized(&app, 130, 30).backend());
+    }
+
+    #[test]
+    fn calendar_year_preview_gives_up_months_before_its_room() {
+        let (app, _dir) = calendar_app("yllp");
+        assert_snapshot!(render_sized(&app, 100, 30).backend());
+    }
+
+    #[test]
+    fn calendar_year_preview_of_an_empty_day() {
+        let (app, _dir) = calendar_app("ylp");
+        let screen = format!("{:?}", render_sized(&app, 100, 30).backend());
+        assert!(screen.contains("Nothing on this day"), "{screen}");
+    }
+
+    #[test]
+    fn calendar_year_preview_shows_sub_items_wraps_and_counts_the_rest() {
+        let (mut app, _dir) = calendar_app("");
+        let day = NaiveDate::from_ymd_opt(2026, 10, 7).unwrap();
+        app.store.insert(day, 2, "Sub task".into()).unwrap();
+        app.store.indent(day, 2).unwrap();
+        app.store.insert(day, 3, "An item long enough that it has to wrap onto another line".into()).unwrap();
+        type_str(&mut app, "yllp");
+        let screen = format!("{:?}", render_sized(&app, 100, 30).backend());
+        assert!(screen.contains("↳ Sub task"), "{screen}");
+        assert!(screen.contains("An item long enough"), "{screen}");
+        assert!(!screen.contains("more"), "{screen}");
+        // With little room, what doesn't fit is counted.
+        for n in 0..12 {
+            app.store.insert(day, 4 + n, format!("Extra {n}")).unwrap();
+        }
+        let screen = format!("{:?}", render_sized(&app, 100, 20).backend());
+        assert!(screen.contains("more"), "{screen}");
+    }
+
+    #[test]
+    fn calendar_year_preview_only_when_asked_for_in_the_year_view() {
+        let nothing = |app: &App, width: u16| format!("{:?}", render_sized(app, width, 30).backend()).contains("Nothing on this day");
+        // The year view starts without it, and `p` turns it on and off.
+        let (mut app, _dir) = calendar_app("yl");
+        assert!(!nothing(&app, 130));
+        type_str(&mut app, "p");
+        assert!(nothing(&app, 130));
+        type_str(&mut app, "p");
+        assert!(!nothing(&app, 130));
+        // Not in the month view, even when it was turned on in the year's.
+        type_str(&mut app, "pm");
+        assert!(!nothing(&app, 130));
+        type_str(&mut app, "p");
+        assert!(!nothing(&app, 130));
+        // Nor when there's no room beside the months.
+        type_str(&mut app, "y");
+        assert!(nothing(&app, 130));
+        assert!(!nothing(&app, 50));
+        // Nor while choosing a deadline, where the year needs all its room.
+        let (mut app, _dir) = app_with(&["Buy milk"]);
+        type_str(&mut app, "@p");
+        let screen = format!("{:?}", render_sized(&app, 130, 30).backend());
+        assert!(screen.contains("Deadline for") && !screen.contains("Monday 5 October 2026"), "{screen}");
+    }
+
+    #[test]
+    fn calendar_year_status_bar_names_the_preview_key() {
+        let (mut app, _dir) = calendar_app("y");
+        let bar = |app: &App| {
+            let terminal = render_sized(app, 100, 30);
+            let buffer = terminal.backend().buffer();
+            (0..100).map(|x| buffer[(x, 29)].symbol().to_string()).collect::<String>()
+        };
+        assert!(bar(&app).contains("p preview"), "{}", bar(&app));
+        type_str(&mut app, "p");
+        assert!(bar(&app).contains("p hide preview"), "{}", bar(&app));
+        type_str(&mut app, "m");
+        assert!(!bar(&app).contains("preview"), "{}", bar(&app));
+    }
+
+    #[test]
     fn calendar_year_small_scrolls_to_the_selected_month() {
         let (app, _dir) = calendar_app("yLL");
         assert_snapshot!(render_sized(&app, 30, 24).backend());
@@ -4168,7 +4364,7 @@ mod tests {
             type_str(&mut app, "j");
         }
         // Wide enough for four months across: below October is February.
-        render_sized(&app, 100, 30);
+        render_sized(&app, 130, 30);
         type_str(&mut app, "j");
         assert_eq!(cursor(&app), NaiveDate::from_ymd_opt(2027, 2, 1).unwrap());
         type_str(&mut app, "k");

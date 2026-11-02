@@ -215,6 +215,7 @@ pub const SECTIONS: &[Section] = &[
             ("J / K (year)", "The month below / above"),
             ("t", "Jump to today"),
             ("w / m / y", "Week / month / year view"),
+            ("p (year)", "Preview the selected day's items beside the months, on or off"),
             ("a", "Add an item to the selected day"),
             ("Enter", "Open the selected day's list"),
             ("u / Ctrl+R", "Undo / redo"),
