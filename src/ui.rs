@@ -993,15 +993,15 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             "CALENDAR",
             Color::Cyan,
             if calendar.preview {
-                &[("p hide preview", 0), ("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("? help", 5)]
+                &[("p hide preview", 0), ("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("x done", 1), ("? help", 5)]
             } else {
-                &[("p preview", 0), ("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("? help", 5)]
+                &[("p preview", 0), ("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("x done", 1), ("? help", 5)]
             },
         ),
         Mode::Calendar(_) => (
             "CALENDAR",
             Color::Cyan,
-            &[("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("? help", 5)],
+            &[("a add", 4), ("↵ open day", 3), ("w/m/y view", 2), ("t today", 1), ("x done", 1), ("? help", 5)],
         ),
         Mode::Help { .. } => {
             ("HELP", Color::Magenta, &[("type to search", 0), ("↑/↓ scroll", 1), ("esc close", 2)])

@@ -217,6 +217,7 @@ pub const SECTIONS: &[Section] = &[
             ("w / m / y", "Week / month / year view"),
             ("p (year)", "Preview the selected day's items beside the months, on or off"),
             ("a", "Add an item to the selected day"),
+            ("x", "Complete every item on the selected day (or reopen them all)"),
             ("Enter", "Open the selected day's list"),
             ("u / Ctrl+R", "Undo / redo"),
             ("?", "Show this help"),
@@ -443,7 +444,7 @@ mod tests {
 
     #[test]
     fn single_key_matches_key_names_only() {
-        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x", "Setting a reminder (r): x", "Planning the day (Space p): x / d"]);
+        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x", "Setting a reminder (r): x", "Planning the day (Space p): x / d", "Calendar: x"]);
         assert_eq!(found("?"), ["List: ?", "Notes: ?", "Calendar: ?"]);
         assert_eq!(found("$"), ["Notes: 0 / $"]);
         assert!(found("v").contains(&"List: V / v".to_string()));

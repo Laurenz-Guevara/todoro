@@ -358,6 +358,7 @@ The list shows an item's time on the day it's planned for, like `09:00–09:30`.
 | `w` / `m` / `y` | Week / month / year view |
 | `p` | In the year view, preview the selected day's items beside the months (again to hide) |
 | `a` | Add an item to the selected day, without leaving the calendar |
+| `x` | Complete every item on the selected day, or reopen them all if they're already complete |
 | `Enter` | Open the selected day's list |
 | `u` / `Ctrl+R` | Undo / redo |
 | `Esc` / `q` / `c` | Back to the list, on the day you were on |

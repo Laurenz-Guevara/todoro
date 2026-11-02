@@ -648,6 +648,16 @@ impl App {
                     let index = self.store.open_count(day);
                     self.add_item(Place { day, index, depth: 0 }, text)?;
                 }
+                calendar::Action::Complete(day) => {
+                    // The top-level items, which the calendar shows; each
+                    // takes its sub-items with it.
+                    let items = self.store.items(day);
+                    let tops: Vec<usize> = (0..items.len()).filter(|&i| items[i].depth == 0).collect();
+                    let done = tops.iter().any(|&i| !items[i].done);
+                    if !tops.is_empty() {
+                        self.store.set_done_many(day, &tops, done)?;
+                    }
+                }
                 calendar::Action::SetDeadline { day, index, deadline } => {
                     self.mode = Mode::Normal;
                     self.store.set_deadline(day, index, deadline)?;
@@ -5646,6 +5656,52 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.items()[0].reminder, Some(days_before(2)));
+    }
+
+    #[test]
+    fn x_in_the_calendar_completes_the_selected_day_and_reopens_it() {
+        let (mut app, _dir) = app_with(&["One", "Two", "Three"]);
+        app.store.toggle_done(today(), 2).unwrap();
+        let other = today() + Days::new(1);
+        app.store.insert(other, 0, "Elsewhere".into()).unwrap();
+        type_str(&mut app, " cx");
+        assert!(app.store.items(today()).iter().all(|item| item.done), "some were open, so all are completed");
+        assert!(!app.store.items(other)[0].done, "other days are left alone");
+        assert!(matches!(app.mode, Mode::Calendar(_)), "the calendar stays open");
+        type_str(&mut app, "x");
+        assert!(app.store.items(today()).iter().all(|item| !item.done), "all were complete, so all reopen");
+        // Undo puts back the completed day, then the original.
+        type_str(&mut app, "u");
+        assert!(app.store.items(today()).iter().all(|item| item.done));
+    }
+
+    #[test]
+    fn x_in_the_calendar_takes_sub_items_along_and_follows_the_selected_day() {
+        let (mut app, _dir) = app_with(&["Parent"]);
+        type_str(&mut app, "oChild");
+        press(&mut app, KeyCode::Enter);
+        let next = today() + Days::new(1);
+        app.store.insert(next, 0, "Tomorrow".into()).unwrap();
+        type_str(&mut app, " clx");
+        assert!(!app.store.items(today()).iter().any(|item| item.done));
+        assert!(app.store.items(next)[0].done);
+        type_str(&mut app, "hx");
+        assert_eq!(app.store.items(today()).iter().map(|item| item.done).collect::<Vec<_>>(), [true, true]);
+    }
+
+    #[test]
+    fn x_in_the_calendar_on_an_empty_day_does_nothing() {
+        let (mut app, _dir) = app_with(&["One"]);
+        type_str(&mut app, " clx");
+        assert!(matches!(app.mode, Mode::Calendar(_)));
+        assert!(!app.store.items(today()).iter().any(|item| item.done));
+    }
+
+    #[test]
+    fn x_while_choosing_a_deadline_does_not_complete_anything() {
+        let (mut app, _dir) = app_with(&["One"]);
+        type_str(&mut app, "@x");
+        assert!(!app.store.items(today())[0].done);
     }
 
     #[test]

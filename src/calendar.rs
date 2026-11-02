@@ -73,6 +73,8 @@ pub enum Action {
     Open(NaiveDate),
     /// Add an item to the end of this day's open items.
     Add(NaiveDate, String),
+    /// Complete every item on this day, or reopen them if all are complete.
+    Complete(NaiveDate),
     /// Set (or with `None`, remove) the deadline of the item stored at
     /// `day`, `index`.
     SetDeadline { day: NaiveDate, index: usize, deadline: Option<Deadline> },
@@ -237,6 +239,8 @@ impl Calendar {
             // deadline needs the room.
             KeyCode::Char('p') if self.zoom == Zoom::Year && self.picking.is_none() => self.preview = !self.preview,
             KeyCode::Char('a') => self.adding = Some(LineInput::default()),
+            // Choosing a deadline is not for changing items.
+            KeyCode::Char('x') if self.picking.is_none() => return Action::Complete(self.cursor),
             KeyCode::Char(':') if self.picking.is_none() => self.command = Some(LineInput::default()),
             KeyCode::Char('?') => return Action::Help,
             KeyCode::Enter => return Action::Open(self.cursor),
@@ -929,5 +933,26 @@ mod tests {
         let mut cal = calendar();
         send(&mut cal, "y:snake<cr>p");
         assert!(!cal.preview);
+    }
+
+    #[test]
+    fn x_completes_the_selected_day_in_every_view() {
+        // The key to the next day: the week view lists days top to bottom.
+        for (view, next) in [("w", "j"), ("m", "l"), ("y", "l")] {
+            let mut cal = calendar();
+            send(&mut cal, view);
+            assert_eq!(send(&mut cal, "x"), Action::Complete(date(2026, 10, 5)), "{view}");
+            send(&mut cal, next);
+            assert_eq!(send(&mut cal, "x"), Action::Complete(date(2026, 10, 6)), "{view}");
+        }
+    }
+
+    #[test]
+    fn x_does_nothing_while_adding_or_choosing_a_deadline() {
+        let mut cal = calendar();
+        send(&mut cal, "ax");
+        assert_eq!(cal.adding.as_ref().unwrap().text, "x");
+        let mut cal = Calendar::for_deadline((date(2026, 10, 5), 0), "Report", None, date(2026, 10, 5), date(2026, 10, 5), false);
+        assert_eq!(send(&mut cal, "x"), Action::Stay);
     }
 }
