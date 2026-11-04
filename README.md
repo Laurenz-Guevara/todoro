@@ -400,6 +400,10 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 - **Semantic priority icons:** show `∧` High, `–` Medium and `∨` Low beside triaged items, as well as the coloured number, for anyone who can't tell the colours apart.
 - **No colours:** draw everything in your terminal's own colours. Highlights such as the selected item use reversed text instead. This starts on if you set the standard [`NO_COLOR`](https://no-color.org) environment variable, until you change it here.
 
+**Appearance**
+
+- **Zen mode:** hide the key hints on every screen: the status bar's (`a add`, `e edit`, …) and the line along the bottom of the list, plan, calendar, popups and the rest (`h ← prev day · …`, `esc close`). The `Space` menu and `?` still show every key, and questions such as the delete prompt keep theirs. Off by default.
+
 **Items**
 
 - **Pin new items:** new items, from the list or the calendar, start pinned, so they move on to today until they're done. Off by default. Pasted items keep their own pin.

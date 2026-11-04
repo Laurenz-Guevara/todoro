@@ -61,15 +61,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     match &app.mode {
         Mode::ConfirmDelete { rows } => draw_confirm(frame, app, rows),
-        Mode::Help { help, .. } => draw_help(frame, help),
+        Mode::Help { help, .. } => draw_help(frame, help, app.settings.zen_mode),
         Mode::Calendar(calendar) if calendar.adding.is_some() => draw_adding(frame, app, calendar),
         Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.time.is_some()) => {
             draw_deadline_time(frame, app, calendar)
         }
         Mode::Search(search) => draw_search(frame, app, search),
         Mode::Options(options) => draw_options(frame, app, options),
-        Mode::Changelog(view) => draw_changelog(frame, view),
-        Mode::Update(popup) => draw_update(frame, popup),
+        Mode::Changelog(view) => draw_changelog(frame, view, app.settings.zen_mode),
+        Mode::Update(popup) => draw_update(frame, popup, app.settings.zen_mode),
         Mode::Workspaces(picker) => draw_workspaces(frame, app, picker),
         Mode::Tags(picker) => draw_tags(frame, app, picker),
         Mode::Remind(picker) => draw_remind(frame, app, picker),
@@ -118,8 +118,10 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     );
     let mut block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .title(title.clone().centered())
-        .title_bottom(Line::from(hint).centered().dim());
+        .title(title.clone().centered());
+    if !app.settings.zen_mode {
+        block = block.title_bottom(Line::from(hint).centered().dim());
+    }
     // How many items are overdue in the top-right corner, wherever you are:
     // they're on today's list, but this shows on any day.
     let overdue = app.store.overdue_count(app.today, app.now);
@@ -571,7 +573,7 @@ fn draw_notes(frame: &mut Frame, app: &App, editor: &NotesEditor, area: Rect) {
     let room = (area.width as usize).saturating_sub(4);
     let title = format!("{}{}", row_label(app, app.selected), app.items()[app.selected].text);
     let title = format!(" {} ", truncate(&title, room.saturating_sub(2)));
-    let hint = fit_first(&[" esc/q back to list ", " esc back "], area.width.saturating_sub(2) as usize);
+    let hint = fit_hint(app, &[" esc/q back to list ", " esc back "], area.width.saturating_sub(2) as usize);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .title(Line::from(title.bold()).centered())
@@ -650,7 +652,7 @@ fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
     } else {
         &[" j/k scroll · i edit · yy copy · esc back ", " i edit · yy copy · esc back ", " i edit · esc back ", " esc back "]
     };
-    let hint = fit_first(hints, hint_room);
+    let hint = fit_hint(app, hints, hint_room);
     let block = block
         .title_bottom(Line::from(hint).centered().dim())
         .title_bottom(Line::from(position).right_aligned().dim());
@@ -1063,7 +1065,11 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             .into_iter()
             .find(|notice| notice.width() + 2 + MIN_HINTS_WIDTH <= room)
     });
-    let hints = fit_hints(hints, room.saturating_sub(notice.as_ref().map_or(0, |notice| notice.width() + 2)));
+    let hints = if app.settings.zen_mode {
+        String::new()
+    } else {
+        fit_hints(hints, room.saturating_sub(notice.as_ref().map_or(0, |notice| notice.width() + 2)))
+    };
     let line = Line::from(vec![label.bold().fg(Color::Black).bg(color), "  ".into(), hints.dim()]);
     frame.render_widget(Paragraph::new(line), area);
     if let Some(notice) = notice {
@@ -1100,6 +1106,12 @@ fn list_key(app: &App, command: Command) -> String {
         Some(binding) => hint_key(&keymap::show_keys(&binding.keys)),
         None => "–".into(),
     }
+}
+
+/// A key hint for a border: the first of `options` that fits in `width`, or
+/// nothing in zen mode.
+fn fit_hint<'a>(app: &App, options: &[&'a str], width: usize) -> &'a str {
+    if app.settings.zen_mode { "" } else { fit_first(options, width) }
 }
 
 /// The first of `options` that fits in `width`, or nothing.
@@ -1323,7 +1335,7 @@ fn draw_tags(frame: &mut Frame, app: &App, picker: &TagPicker) {
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(TAG_COLOUR))
         .title(" Tags ".bold())
-        .title_bottom(Line::from(fit_first(&[" ↵ show items · esc close ", " esc close "], room)).centered().dim())
+        .title_bottom(Line::from(fit_hint(app, &[" ↵ show items · esc close ", " esc close "], room)).centered().dim())
         .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
@@ -1422,7 +1434,7 @@ fn draw_calendar(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) 
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(colour))
         .title(Line::from(format!(" {title} ").bold()).centered())
-        .title_bottom(Line::from(fit_first(hints, area.width.saturating_sub(2) as usize)).centered().dim());
+        .title_bottom(Line::from(fit_hint(app, hints, area.width.saturating_sub(2) as usize)).centered().dim());
     let inner = block.inner(area);
     frame.render_widget(block, area);
     match calendar.zoom {
@@ -1820,7 +1832,7 @@ fn draw_deadline_time(frame: &mut Frame, app: &App, calendar: &Calendar) {
         calendar.cursor.format(" %a %-d %b ").to_string(),
     ];
     let title = titles.iter().find(|title| title.width() <= room + 2).cloned().unwrap_or_default();
-    let hint = fit_first(&[" enter save · esc pick another day ", " enter save · esc back ", " enter "], room + 2);
+    let hint = fit_hint(app, &[" enter save · esc pick another day ", " enter save · esc back ", " enter "], room + 2);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(Color::Yellow))
@@ -1853,7 +1865,11 @@ fn draw_plan(frame: &mut Frame, app: &App, area: Rect) {
         _ => false,
     };
     // The side keys go to is bright; the other is dim.
-    let title = if on_timeline { " Timeline · H list " } else { " Timeline · L to move here " };
+    let title = match (app.settings.zen_mode, on_timeline) {
+        (true, _) => " Timeline ",
+        (false, true) => " Timeline · H list ",
+        (false, false) => " Timeline · L to move here ",
+    };
     draw_timeline(frame, app, side, title, selected, None);
     if !on_timeline {
         dim_border(frame.buffer_mut(), side);
@@ -2259,8 +2275,8 @@ fn draw_remind(frame: &mut Frame, app: &App, picker: &reminder::Picker) {
         None => fit_first(&[" Remind me ", " Remind "], room + 2).to_string(),
     };
     let hint = match &picker.amount {
-        Some(_) => fit_first(&[" enter save · esc back ", " enter "], room + 2),
-        None => fit_first(&[" esc cancel ", " esc "], room + 2),
+        Some(_) => fit_hint(app, &[" enter save · esc back ", " enter "], room + 2),
+        None => fit_hint(app, &[" esc cancel ", " esc "], room + 2),
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -2321,7 +2337,7 @@ fn draw_repeat(frame: &mut Frame, app: &App, picker: &repeat::Picker, main: Rect
         let titled = titles.iter().find(|title| title.width() <= room).cloned().unwrap_or_else(|| title[1].to_string());
         let block = window
             .title(Line::from(titled.bold()).centered())
-            .title_bottom(Line::from(fit_first(hints, room)).centered().dim());
+            .title_bottom(Line::from(fit_hint(app, hints, room)).centered().dim());
         frame.render_widget(Clear, main);
         frame.render_widget(block, main);
         draw_repeat_year(frame, app, shown, picker.from, start, split.months);
@@ -2349,7 +2365,7 @@ fn draw_repeat(frame: &mut Frame, app: &App, picker: &repeat::Picker, main: Rect
     let area = centered(screen, width, height);
     let block = window
         .title(fit_first(&title, room + 2).bold())
-        .title_bottom(Line::from(fit_first(hints, room + 2)).centered().dim())
+        .title_bottom(Line::from(fit_hint(app, hints, room + 2)).centered().dim())
         .padding(Padding::horizontal(1));
     let inner = block.inner(area);
     frame.render_widget(Clear, area);
@@ -2644,7 +2660,9 @@ fn draw_search(frame: &mut Frame, app: &App, search: &Search) {
         .border_style(Style::new().fg(Color::Yellow))
         .title(title.bold())
         .title_bottom(
-            Line::from(if search.typing {
+            Line::from(if app.settings.zen_mode {
+                ""
+            } else if search.typing {
                 fit_first(&[" ↑/↓ select · ↵ go to item · esc stop typing ", " ↵ go · esc stop typing ", " esc "], room)
             } else {
                 fit_first(
@@ -3029,7 +3047,9 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
         .border_style(Style::new().fg(Color::Blue))
         .title(" Options ".bold())
         .title_bottom(
-            Line::from(if options.searching {
+            Line::from(if app.settings.zen_mode {
+                ""
+            } else if options.searching {
                 fit_first(&[" type to search · enter keep · esc clear ", " enter keep · esc clear ", " esc "], room)
             } else {
                 fit_first(&[" j/k move · space toggle · / search · esc close ", " space toggle · / search ", " / search · esc ", " esc "], room)
@@ -3057,7 +3077,7 @@ fn draw_options(frame: &mut Frame, app: &App, options: &Options) {
     }
 }
 
-fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
+fn draw_changelog(frame: &mut Frame, view: &ChangelogView, zen: bool) {
     let room = frame.area().width.saturating_sub(4).min(76).saturating_sub(2) as usize;
     let whats_new = format!(" What's new in todoro {} ", changes::VERSION);
     let welcome = format!(" Welcome to todoro {} ", changes::VERSION);
@@ -3068,12 +3088,12 @@ fn draw_changelog(frame: &mut Frame, view: &ChangelogView) {
     } else {
         fit_first(&[" Changelog ", " News "], room)
     };
-    draw_release_notes(frame, view, title, &[" j/k scroll · esc close ", " esc close "], &[]);
+    draw_release_notes(frame, view, title, zen, &[" j/k scroll · esc close ", " esc close "], &[]);
 }
 
 /// `:update`'s popup: checking, then the newer version's notes and whether
 /// to install it.
-fn draw_update(frame: &mut Frame, popup: &update::Popup) {
+fn draw_update(frame: &mut Frame, popup: &update::Popup, zen: bool) {
     match popup {
         update::Popup::Checking => {
             let screen = frame.area();
@@ -3103,6 +3123,7 @@ fn draw_update(frame: &mut Frame, popup: &update::Popup) {
                     frame,
                     notes,
                     title,
+                    zen,
                     &[" y update · n not now · j/k scroll ", " y update · n not now ", " y · n "],
                     &[(ask.as_str(), Style::new().fg(Color::Green))],
                 ),
@@ -3110,6 +3131,7 @@ fn draw_update(frame: &mut Frame, popup: &update::Popup) {
                     frame,
                     notes,
                     title,
+                    zen,
                     &[" j/k scroll · esc close ", " esc close "],
                     &[(update::UPDATE_IT_YOURSELF, Style::new().fg(Color::Yellow))],
                 ),
@@ -3120,7 +3142,7 @@ fn draw_update(frame: &mut Frame, popup: &update::Popup) {
 
 /// Release notes in a popup, with `title`, the first of `hints` that fits,
 /// and `footer` paragraphs after the notes.
-fn draw_release_notes(frame: &mut Frame, view: &ChangelogView, title: &str, hints: &[&str], footer: &[(&str, Style)]) {
+fn draw_release_notes(frame: &mut Frame, view: &ChangelogView, title: &str, zen: bool, hints: &[&str], footer: &[(&str, Style)]) {
     let screen = frame.area();
     let area = centered(screen, screen.width.saturating_sub(4).min(76), screen.height.saturating_sub(2));
     let room = area.width.saturating_sub(2) as usize;
@@ -3161,7 +3183,7 @@ fn draw_release_notes(frame: &mut Frame, view: &ChangelogView, title: &str, hint
     // hint centred in the room left beside it.
     let position = format!(" {} ", scroll_position(scroll, max));
     let hint_room = room.saturating_sub(2 * (position.width() + 1));
-    let hint = fit_first(hints, hint_room);
+    let hint = if zen { "" } else { fit_first(hints, hint_room) };
     let block = block
         .title_bottom(Line::from(hint).centered().dim())
         .title_bottom(Line::from(position).right_aligned().dim());
@@ -3338,7 +3360,9 @@ fn draw_workspaces(frame: &mut Frame, app: &App, picker: &Picker) {
     } else {
         (fit_first(&[" Workspaces ", " Spaces "], room), Color::Cyan)
     };
-    let hint = if picker.adding.is_some() || picker.deleting.is_some() {
+    let hint = if app.settings.zen_mode {
+        ""
+    } else if picker.adding.is_some() || picker.deleting.is_some() {
         fit_first(&[" enter confirm · esc back ", " esc back "], room)
     } else {
         fit_first(&[" ↵ open · a new · d delete · esc close ", " ↵ open · esc ", " esc "], room)
@@ -3363,7 +3387,7 @@ fn draw_workspaces(frame: &mut Frame, app: &App, picker: &Picker) {
     }
 }
 
-fn draw_help(frame: &mut Frame, help: &Help) {
+fn draw_help(frame: &mut Frame, help: &Help, zen: bool) {
     let screen = frame.area();
     let area = centered(screen, screen.width.saturating_sub(4).min(72), screen.height.saturating_sub(2));
     let block = Block::bordered()
@@ -3371,7 +3395,7 @@ fn draw_help(frame: &mut Frame, help: &Help) {
         .border_style(Style::new().fg(Color::Magenta))
         .title(" Keybindings ".bold())
         .title_bottom(
-            Line::from(fit_first(&[" ↑/↓ scroll · esc close ", " esc close "], area.width.saturating_sub(2) as usize))
+            Line::from(if zen { "" } else { fit_first(&[" ↑/↓ scroll · esc close ", " esc close "], area.width.saturating_sub(2) as usize) })
                 .centered()
                 .dim(),
         )
@@ -3480,6 +3504,63 @@ mod tests {
         let (mut app, _dir) = app_with(&["Buy milk", "Write report", "Call mom"]);
         type_str(&mut app, "j");
         assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn zen_mode_hides_the_key_hints() {
+        let (mut app, _dir) = app_with(&["Buy milk", "Write report"]);
+        let text = |app: &App| format!("{}", render(app).backend());
+        assert!(text(&app).contains("prev day") && text(&app).contains("a add"));
+        app.settings.zen_mode = true;
+        let zen = text(&app);
+        assert!(!zen.contains("prev day") && !zen.contains("a add") && !zen.contains("help"));
+        assert!(zen.contains("NORMAL") && zen.contains("Buy milk"));
+        assert_snapshot!(render(&app).backend());
+    }
+
+    #[test]
+    fn zen_mode_hides_the_key_hints_on_every_screen() {
+        // Each opens a screen or popup that normally says what its keys do.
+        let screens = [
+            ("", "list"),
+            (" p", "plan"),
+            (" t", "timeline"),
+            (" c", "calendar"),
+            (" cp", "calendar with a preview"),
+            (" v", "notes viewer"),
+            (" e", "day viewer"),
+            (" o", "options"),
+            (" w", "workspaces"),
+            (" n", "patch notes"),
+            (" r", "repeat"),
+            (" st", "tags"),
+            ("  ", "search"),
+            ("?", "help"),
+            (" ", "leader menu"),
+            ("@", "deadline calendar"),
+            ("r", "reminder"),
+            ("a", "adding"),
+            ("V", "selecting"),
+        ];
+        let text = |app: &App| format!("{}", render_sized(app, 100, 24).backend());
+        for (keys, name) in screens {
+            let (mut app, _dir) = app_with(&["Buy milk #home", "Write report"]);
+            type_str(&mut app, keys);
+            let plain = text(&app);
+            app.settings.zen_mode = true;
+            let zen = text(&app);
+            let hints = ["esc ", "↵ ", "j/k ", "hjkl", "prev day", "a add", "set time", "esc"];
+            if name != "leader menu" && name != "help" {
+                assert!(hints.iter().any(|hint| plain.contains(hint)), "{name}: has no hints to hide\n{plain}");
+            }
+            assert_ne!(zen, plain, "{name}: zen mode changed nothing");
+            for hint in ["esc ", "↵ ", "j/k ", "hjkl", "prev day", "a add", "set time"] {
+                if name == "leader menu" || name == "help" {
+                    break;
+                }
+                assert!(!zen.contains(hint), "{name}: still shows {hint:?}\n{zen}");
+            }
+        }
     }
 
     #[test]

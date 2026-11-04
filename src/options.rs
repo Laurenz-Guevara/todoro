@@ -20,6 +20,9 @@ pub struct Settings {
     pub no_colour: bool,
     /// Start new items pinned, so they move on to today until they're done.
     pub pin_new_items: bool,
+    /// Hide the key hints: the ones along the list's border and in the
+    /// status bar.
+    pub zen_mode: bool,
     /// Show deadline times on the 12-hour clock (`11PM`), not the 24-hour
     /// one (`23:00`).
     pub twelve_hour: bool,
@@ -85,6 +88,13 @@ pub const TOGGLES: &[Toggle] = &[
         description: "Draw everything in the terminal's own colours. Highlights use reversed text.",
         get: |s| s.no_colour,
         set: |s, on| s.no_colour = on,
+    },
+    Toggle {
+        section: "Appearance",
+        label: "Zen mode",
+        description: "Hide the key hints along the list's border and in the status bar. ? still shows every key.",
+        get: |s| s.zen_mode,
+        set: |s, on| s.zen_mode = on,
     },
     Toggle {
         section: "Items",
@@ -503,6 +513,7 @@ mod tests {
         }
         assert!(!Settings::default().no_update_check);
         assert!(!Settings::default().no_calendar_repeats);
+        assert!(!Settings::default().zen_mode);
     }
 
     #[test]
@@ -750,7 +761,7 @@ mod tests {
         let mut options = in_work();
         press(&mut options, KeyCode::Char('/'));
         type_into(&mut options, "ITEMS new");
-        assert_eq!(options.visible(), [2], "Pin new items");
+        assert_eq!(options.visible(), [3], "Pin new items");
         // A section name finds its rows.
         let mut options = in_work();
         press(&mut options, KeyCode::Char('/'));
@@ -794,7 +805,7 @@ mod tests {
         press(&mut options, KeyCode::Char('/'));
         type_into(&mut options, "12-hour");
         press(&mut options, KeyCode::Enter);
-        assert_eq!(press(&mut options, KeyCode::Char(' ')), Action::Toggle(3));
+        assert_eq!(press(&mut options, KeyCode::Char(' ')), Action::Toggle(4));
     }
 
     #[test]
