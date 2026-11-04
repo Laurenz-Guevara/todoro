@@ -18,11 +18,12 @@ use crate::options::{self, Options, Settings, TOGGLES};
 use crate::timeline::{self, Plan, TimeSlot, Typing};
 use crate::outline;
 use crate::reminder;
+use crate::repeat;
 use crate::search::{self, Search};
 use crate::tags::{self, TagPicker};
 use crate::update;
 use crate::viewer::{self, Viewer};
-use crate::store::{Item, Priority, Snapshot, Store};
+use crate::store::{Item, Priority, Snapshot, Store, TEMPLATES};
 use crate::workspaces::{self, Picker, Workspaces};
 
 /// How long a brief message (like `yy`'s "No notes to copy") shows for.
@@ -70,6 +71,8 @@ pub enum Mode {
     Calendar(Box<Calendar>),
     /// The `r` popup, to choose when to be reminded of the selected item.
     Remind(reminder::Picker),
+    /// The `Space r` popup, to choose how the selected item repeats.
+    Repeat(repeat::Picker),
     /// The `Space` popup of less frequent commands, narrowing as keys are typed.
     Leader(Leader),
     /// The day as a timeline, items with a time as blocks (`Space t`).
@@ -272,24 +275,29 @@ impl App {
     /// days also show, first, the pinned items from earlier days that will have
     /// moved to them by then. Usually startup has already moved them to today,
     /// but one can land on a past day mid-session, e.g. moved there with `<`.
-    /// Then come items from later days whose reminder is due by then.
+    /// Then come items from later days whose reminder is due by then, and
+    /// previews of the repeating items that will be copied to the day when
+    /// it comes (`App::preview`).
     pub fn slots(&self) -> Vec<Slot> {
         let roots: Vec<(NaiveDate, usize)> = if self.day >= self.today {
             let carried = self.store.carried_to(self.day, self.today).into_iter();
             let reminded = self.store.reminded_on(self.day, self.today, self.now).into_iter();
-            carried.chain(reminded).collect()
+            let repeats = self.store.repeats_on(self.day, self.today).into_iter();
+            carried.chain(reminded).chain(repeats).collect()
         } else {
             Vec::new()
         };
         // Each top-level item, then what shows of its sub-items. Planning
         // and the timeline are about what's left to do, so they leave out
-        // what's completed (and a completed item's sub-items are too).
+        // what's completed (and a completed item's sub-items are too). A
+        // preview's copy will be open, whatever the item it's from.
         let hide_done = self.planning_view();
         let shown = |day: NaiveDate, start: usize| {
             let items = self.store.items(day);
+            let preview = day == TEMPLATES;
             outline::visible_block(items, start)
                 .into_iter()
-                .filter(move |&index| !(hide_done && items[index].done))
+                .filter(move |&index| !(hide_done && items[index].done && !preview))
                 .map(move |index| Slot { day, index })
         };
         let mut slots: Vec<Slot> = Vec::new();
@@ -337,9 +345,90 @@ impl App {
             .unwrap_or(slots.len().saturating_sub(1))
     }
 
-    /// The items shown for the current day, in screen order.
-    pub fn items(&self) -> Vec<&Item> {
-        self.slots().into_iter().map(|slot| &self.store.items(slot.day)[slot.index]).collect()
+    /// The items shown for the current day, in screen order: a preview as
+    /// its copy will be.
+    pub fn items(&self) -> Vec<std::borrow::Cow<'_, Item>> {
+        self.slots().into_iter().map(|slot| self.shown(slot)).collect()
+    }
+
+    /// The item at `slot` as it shows on the day on screen: the item, or for
+    /// a preview, its copy as it will be added.
+    pub fn shown(&self, slot: Slot) -> std::borrow::Cow<'_, Item> {
+        if self.preview(slot) {
+            std::borrow::Cow::Owned(self.store.preview(slot.index, self.day))
+        } else {
+            std::borrow::Cow::Borrowed(&self.store.items(slot.day)[slot.index])
+        }
+    }
+
+    /// Whether the row at `slot` previews a repeating item's copy, which
+    /// isn't added until its day: it's its template, or one of its
+    /// sub-items (`Store::repeats_on`).
+    pub fn preview(&self, slot: Slot) -> bool {
+        slot.day == TEMPLATES
+    }
+
+    /// The template of the series the item at `row` is in, and whether
+    /// it's a preview, if it's a preview or a copy of a top-level item
+    /// that still repeats: what deleting it asks about.
+    pub fn series_at(&self, row: usize) -> Option<(usize, bool)> {
+        let slot = self.slot(row)?;
+        let item = &self.store.items(slot.day)[slot.index];
+        if item.depth > 0 || (!self.preview(slot) && item.repeat.is_none()) {
+            return None;
+        }
+        Some((self.store.template_of(slot.day, slot.index)?, self.preview(slot)))
+    }
+
+    /// The items of the block at `slot` and where it starts in them, for
+    /// showing it whole: the day's items, or a preview's copies.
+    pub fn block(&self, slot: Slot) -> (std::borrow::Cow<'_, [Item]>, usize) {
+        let items = self.store.items(slot.day);
+        if self.preview(slot) {
+            let end = outline::block_end(items, slot.index);
+            let copies = (slot.index..end).map(|index| self.store.preview(index, self.day)).collect();
+            (std::borrow::Cow::Owned(copies), 0)
+        } else {
+            (std::borrow::Cow::Borrowed(items), slot.index)
+        }
+    }
+
+    /// What the calendar shows on `day`, in outline order, each with whether
+    /// it's a preview of a repeat's copy: those first, as on the list
+    /// (unless the options turn them off), then the items stored on it.
+    pub fn calendar_items(&self, day: NaiveDate) -> Vec<(std::borrow::Cow<'_, Item>, bool)> {
+        let mut shown = Vec::new();
+        if !self.settings.no_calendar_repeats {
+            for (templates, start) in self.store.repeats_on(day, self.today) {
+                let end = outline::block_end(self.store.items(templates), start);
+                shown.extend((start..end).map(|index| (std::borrow::Cow::Owned(self.store.preview(index, day)), true)));
+            }
+        }
+        shown.extend(self.store.items(day).iter().map(|item| (std::borrow::Cow::Borrowed(item), false)));
+        shown
+    }
+
+    /// Says a preview can't be changed, and how to change what it repeats.
+    fn preview_message(&mut self) {
+        let how = self.keymap.key_for(Command::Repeat).map_or(String::new(), |key| format!(" {key} changes how it repeats."));
+        self.message = Some(format!("This is a preview: it's added on the day.{how}"));
+    }
+
+    /// Says when the series of the template at `at` adds its next copy,
+    /// after `begin`, which is said first.
+    fn say_next(&mut self, at: usize, begin: &str) {
+        let Some(template) = self.store.items(TEMPLATES).get(at) else { return };
+        let next = template
+            .repeat
+            .zip(template.made)
+            .and_then(|(repeat, made)| (1..).map_while(|n| made.checked_add_days(chrono::Days::new(n))).take(5000).find(|&day| repeat.occurs_on(day) && !template.skips.contains(&day)));
+        self.message = Some(match next {
+            Some(next) => {
+                let when = crate::deadline::Deadline { date: next, time: None }.describe(self.today, self.settings.twelve_hour);
+                format!("{begin}. Next: {when}")
+            }
+            None => format!("{begin}. That was the last"),
+        });
     }
 
     /// How many shown items come from other days: earlier ones, or later
@@ -450,7 +539,24 @@ impl App {
         // The list's keys and the leader menu's run commands, changed by
         // keys.toml. Undo and redo aren't changes to record themselves.
         if let Some(resolved) = self.resolve(key) {
-            let Some((command, count)) = resolved else { return Ok(()) };
+            // The leader menu closed without running anything: back to the
+            // plan, if it was opened from there.
+            let Some((command, count)) = resolved else {
+                self.back_to_plan();
+                return Ok(());
+            };
+            // From the plan view, the leader menu only sets repeats: the rest
+            // would leave the plan, which isn't saved yet. What it changes is
+            // part of the plan, recorded when that's saved.
+            if self.plan_stash.is_some() {
+                if command == Command::Repeat {
+                    self.run(command, count)?;
+                } else {
+                    self.message = Some("Not while planning: w saves the plan first.".into());
+                }
+                self.back_to_plan();
+                return Ok(());
+            }
             match command {
                 Command::Undo => return self.undo(),
                 Command::Redo => return self.redo(),
@@ -487,6 +593,7 @@ impl App {
                 | Mode::Visual { .. }
                 | Mode::Calendar(_)
                 | Mode::Remind(_)
+                | Mode::Repeat(_)
         ))
             .then(|| self.state());
         self.mode_key(key)?;
@@ -546,6 +653,12 @@ impl App {
         if self.complete_tag(key) {
             return Ok(());
         }
+        // Deleting one item that repeats: which row, its template, and
+        // whether it's a preview.
+        let series_delete = match &self.mode {
+            Mode::ConfirmDelete { rows } if rows.len() == 1 => self.series_at(rows[0]).map(|(at, preview)| (rows[0], at, preview)),
+            _ => None,
+        };
         match &mut self.mode {
             Mode::Normal if self.command.is_some() => self.command_key(key.code),
             // Handled in `resolve`.
@@ -578,6 +691,37 @@ impl App {
                         }
                     }
                 }
+            }
+            // A preview: skip the day, or end the series there.
+            Mode::ConfirmDelete { .. } if series_delete.is_some_and(|(_, _, preview)| preview) => {
+                let (_, at, _) = series_delete.expect("checked");
+                match key.code {
+                    KeyCode::Char('d') => {
+                        self.mode = Mode::Normal;
+                        self.store.skip(at, self.day)?;
+                        let day = crate::deadline::Deadline { date: self.day, time: None }.describe(self.today, self.settings.twelve_hour);
+                        self.say_next(at, &format!("Skipped {day}"));
+                    }
+                    KeyCode::Char('s') => {
+                        self.mode = Mode::Normal;
+                        self.store.end_series(at, self.day)?;
+                        self.say_next(at, "Stopped repeating from here");
+                    }
+                    KeyCode::Char('c') | KeyCode::Esc => self.mode = Mode::Normal,
+                    _ => {}
+                }
+                self.clamp_selection();
+            }
+            // A copy: delete just it, or stop the series too.
+            Mode::ConfirmDelete { .. } if key.code == KeyCode::Char('s') && series_delete.is_some() => {
+                let (row, at, _) = series_delete.expect("checked");
+                let slot = self.slot(row).expect("a series' row has a slot");
+                self.mode = Mode::Normal;
+                self.register = self.store.remove_many(slot.day, &[slot.index])?;
+                self.store.end_series(at, slot.day)?;
+                self.message = Some("Deleted, and stopped repeating".into());
+                self.selected = row;
+                self.clamp_selection();
             }
             Mode::ConfirmDelete { rows } => match key.code {
                 KeyCode::Char('d') => {
@@ -697,6 +841,19 @@ impl App {
                             self.settings.twelve_hour,
                         );
                         self.mode = Mode::Calendar(Box::new(calendar));
+                    }
+                }
+            }
+            Mode::Repeat(picker) => {
+                let (day, index) = (picker.day, picker.index);
+                match picker.handle_key(key.code) {
+                    repeat::Action::Stay => {}
+                    repeat::Action::Close => self.mode = Mode::Normal,
+                    repeat::Action::Set(repeat) => {
+                        // The time typed (or kept), for each copy on its day.
+                        let times = picker.times;
+                        self.mode = Mode::Normal;
+                        self.set_repeat(day, index, repeat, times)?;
                     }
                 }
             }
@@ -1029,6 +1186,40 @@ impl App {
         let slot = self.slot(self.selected);
         let len = self.slots().len();
         let times = count.unwrap_or(1);
+        // A preview of a repeat's copy only shows what's to come: what would
+        // change it would change the item it's from. Adding and pasting
+        // beside a top-level one go to the day, so they're fine.
+        if let Some(slot) = slot.filter(|&slot| self.preview(slot)) {
+            let top = self.store.items(slot.day)[slot.index].depth == 0;
+            let changes = match command {
+                // Asks whether to skip the day or stop repeating.
+                Command::Add | Command::AddSeveral | Command::PasteBelow | Command::PasteAbove | Command::Delete => !top,
+                Command::MoveDown
+                | Command::MoveUp
+                | Command::MoveToPrevDay
+                | Command::MoveToNextDay
+                | Command::AddSub
+                | Command::AddSubs
+                | Command::Indent
+                | Command::Outdent
+                | Command::Edit
+                | Command::EditCleared
+                | Command::ToggleDone
+                | Command::TogglePin
+                | Command::Deadline
+                | Command::Reminder
+                | Command::Triage
+                | Command::Select
+                | Command::ViewNotes
+                | Command::ViewAll
+                | Command::OpenNotes => true,
+                _ => false,
+            };
+            if changes {
+                self.preview_message();
+                return Ok(());
+            }
+        }
         match command {
             Command::First => self.selected = count.map_or(0, |n| self.row_for_number(n)),
             Command::Last => self.selected = count.map_or(len.saturating_sub(1), |n| self.row_for_number(n)),
@@ -1183,6 +1374,7 @@ impl App {
             Command::PatchNotes => self.mode = Mode::Changelog(ChangelogView::all()),
             Command::Timeline => self.mode = Mode::Timeline { scroll: None },
             Command::Plan => self.open_plan(),
+            Command::Repeat => self.open_repeat(),
         }
         Ok(())
     }
@@ -1230,7 +1422,13 @@ impl App {
     /// Whether the item at `slot` can be given a time: an open, top-level one.
     fn plannable(&self, slot: Slot) -> bool {
         let item = &self.store.items(slot.day)[slot.index];
-        item.depth == 0 && !item.done
+        item.depth == 0 && !item.done && !self.preview(slot)
+    }
+
+    /// When the item at `slot` is planned for on the day on screen, if it
+    /// is (a preview's time moved to it).
+    pub fn time_on_day(&self, slot: Slot) -> Option<TimeSlot> {
+        self.shown(slot).time.filter(|time| time.date == self.day)
     }
 
     /// Moves the selection from a sub-item to the top-level item it's under.
@@ -1251,8 +1449,7 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(row, slot)| {
-                let item = &self.store.items(slot.day)[slot.index];
-                let time = item.time.filter(|time| item.depth == 0 && time.date == self.day)?;
+                let time = self.time_on_day(*slot).filter(|_| self.store.items(slot.day)[slot.index].depth == 0)?;
                 Some((time.start, time.end, row))
             })
             .collect();
@@ -1267,7 +1464,7 @@ impl App {
         let timed: Vec<(usize, TimeSlot)> = self
             .timeline_blocks()
             .into_iter()
-            .filter_map(|row| Some((row, self.store.items(slots[row].day)[slots[row].index].time?)))
+            .filter_map(|row| Some((row, self.time_on_day(slots[row])?)))
             .collect();
         timeline::place(&timed)
             .into_iter()
@@ -1329,7 +1526,7 @@ impl App {
         let slots = self.slots();
         let untimed = |row: usize| {
             let slot = slots[row];
-            self.plannable(slot) && !self.store.items(slot.day)[slot.index].time.is_some_and(|time| time.date == self.day)
+            self.plannable(slot) && self.time_on_day(slot).is_none()
         };
         (self.selected + 1..slots.len()).chain(0..self.selected).find(|&row| untimed(row))
     }
@@ -1454,6 +1651,8 @@ impl App {
                     && self.plannable(slot)
                 {
                     plan_typing(&mut self.mode);
+                } else if self.slot(self.selected).is_some_and(|slot| self.preview(slot)) {
+                    self.preview_message();
                 } else {
                     self.message = Some("Only open, top-level items get a time.".into());
                 }
@@ -1461,7 +1660,9 @@ impl App {
             // Clear the item's time.
             KeyCode::Char('c') => {
                 self.select_root();
-                if let Some(slot) = self.slot(self.selected)
+                if self.slot(self.selected).is_some_and(|slot| self.preview(slot)) {
+                    self.preview_message();
+                } else if let Some(slot) = self.slot(self.selected)
                     && self.store.items(slot.day)[slot.index].time.is_some()
                 {
                     self.store.set_time(slot.day, slot.index, None)?;
@@ -1495,7 +1696,9 @@ impl App {
             }
             // Triage, as on the list, part of the plan like its times.
             KeyCode::Char('!') => {
-                if let Some(slot) = self.slot(self.selected) {
+                if self.slot(self.selected).is_some_and(|slot| self.preview(slot)) {
+                    self.preview_message();
+                } else if let Some(slot) = self.slot(self.selected) {
                     self.store.cycle_priority(slot.day, slot.index)?;
                     if let Mode::Plan { plan, .. } = &mut self.mode {
                         plan.changed = true;
@@ -1508,7 +1711,7 @@ impl App {
                 let timed: Vec<Slot> = self
                     .slots()
                     .into_iter()
-                    .filter(|slot| self.store.items(slot.day)[slot.index].time.is_some_and(|time| time.date == self.day))
+                    .filter(|&slot| !self.preview(slot) && self.time_on_day(slot).is_some())
                     .collect();
                 for slot in &timed {
                     self.store.set_time(slot.day, slot.index, None)?;
@@ -1534,8 +1737,9 @@ impl App {
 
     /// The list's keys that work in the plan view too, as `keys.toml` has
     /// them, with counts: moving, reordering, copying and pasting,
-    /// indenting, folding, pinning, deadlines, reminders and selecting.
-    /// Those that open something come back to the plan once it's done.
+    /// indenting, folding, pinning, deadlines, reminders, selecting and the
+    /// leader menu (for `Space r`). Those that open something come back to
+    /// the plan once it's done.
     fn plan_list_key(&mut self, event: KeyEvent) -> io::Result<()> {
         let Some((command, count)) = self.resolve_list(Key::from_event(event)) else { return Ok(()) };
         match command {
@@ -1553,11 +1757,16 @@ impl App {
             | Command::TogglePin
             | Command::Deadline
             | Command::Reminder
-            | Command::Select => {
+            | Command::Select
+            | Command::Leader => {
                 if let Mode::Plan { plan, before } = std::mem::replace(&mut self.mode, Mode::Normal) {
                     self.plan_stash = Some((plan, before));
                 }
                 self.run(command, count)?;
+                // The leader menu from here only sets repeats.
+                if let Mode::Leader(leader) = &mut self.mode {
+                    leader.only = Some(Command::Repeat);
+                }
                 self.back_to_plan();
             }
             _ => {}
@@ -1637,6 +1846,48 @@ impl App {
         let Some(slot) = self.slot(self.selected) else { return };
         let current = self.store.items(slot.day)[slot.index].reminder;
         self.mode = Mode::Remind(reminder::Picker::new((slot.day, slot.index), current));
+    }
+
+    /// Opens the popup to choose how the selected item repeats.
+    fn open_repeat(&mut self) {
+        let Some(slot) = self.slot(self.selected) else { return };
+        let item = self.shown(slot).into_owned();
+        if item.depth > 0 {
+            self.message = Some("Sub-items repeat with the item they're under: repeat that instead.".into());
+            return;
+        }
+        // An item in a series changes it, counting from where it did.
+        let template = self.store.template_of(slot.day, slot.index).and_then(|at| self.store.items(TEMPLATES).get(at));
+        let current = template.and_then(|template| template.repeat).filter(|_| item.repeat.is_some());
+        let mut picker = repeat::Picker::new((slot.day, slot.index), current);
+        picker.from = current.map_or(slot.day, |repeat| repeat.from);
+        picker.after = template.and_then(|template| template.made).unwrap_or(slot.day.max(self.today.pred_opt().unwrap_or(self.today)));
+        picker.times = item.time.map(|time| (time.start, time.end));
+        self.mode = Mode::Repeat(picker);
+    }
+
+    /// Makes the item at `day`, `index` repeat (or stop, with `None`),
+    /// each copy at `times`, and says when it comes next. If it repeats
+    /// today and is from an earlier day, today's copy is added now, as it
+    /// would be at midnight.
+    fn set_repeat(
+        &mut self,
+        day: NaiveDate,
+        index: usize,
+        repeat: Option<repeat::Repeat>,
+        times: Option<(NaiveTime, NaiveTime)>,
+    ) -> io::Result<()> {
+        let template = self.store.set_repeat(day, index, repeat, times, self.today)?;
+        match (repeat, template) {
+            (Some(repeat), Some(at)) => self.say_next(at, &format!("Repeats {}", repeat.describe())),
+            _ => self.message = Some("Stopped repeating".into()),
+        }
+        self.store.roll_over(self.today)?;
+        if day != TEMPLATES {
+            self.select_stored(day, index);
+        }
+        self.clamp_selection();
+        Ok(())
     }
 
     /// Opens the year calendar to choose the selected item's deadline.
@@ -1807,6 +2058,7 @@ impl App {
                     "q" | "q!" | "wq" | "wq!" | "x" | "x!" => self.quit = true,
                     "deadline" => self.open_deadline(),
                     "remind" | "reminder" => self.open_reminder(),
+                    "repeat" => self.open_repeat(),
                     "overdue" => self.mode = Mode::Search(Box::new(Search::overdue())),
                     "update" => {
                         self.mode = Mode::Update(Box::new(update::Popup::Checking));
@@ -1851,8 +2103,17 @@ impl App {
         let rows: Vec<usize> = self.visual_rows(anchor).collect();
         let len = self.slots().len();
         let first = rows[0];
-        let items: Vec<Item> = rows.iter().map(|&row| self.items()[row].clone()).collect();
+        let items: Vec<Item> = rows.iter().map(|&row| self.items()[row].clone().into_owned()).collect();
         let groups = self.group_by_day(&rows);
+        // Previews of repeats can be copied, but not changed.
+        let slots = self.slots();
+        if matches!(code, KeyCode::Char('x' | 'm' | '!' | 'd' | 'H' | 'L'))
+            && rows.iter().any(|&row| slots.get(row).is_some_and(|&slot| self.preview(slot)))
+        {
+            self.mode = Mode::Normal;
+            self.preview_message();
+            return Ok(());
+        }
         match code {
             KeyCode::Esc | KeyCode::Char('V' | 'v') => {}
             KeyCode::Char('j') | KeyCode::Down => {
@@ -2018,9 +2279,12 @@ impl App {
     /// workspace left. It's remembered for next time.
     pub fn switch_workspace(&mut self, name: String) -> io::Result<()> {
         let Some(folder) = &self.workspaces else { return Ok(()) };
-        let mut store = Store::open(folder.todos_path(&name))?;
-        store.roll_over(self.today)?;
+        let store = Store::open(folder.todos_path(&name))?;
         self.store = store;
+        // Today's copies, and what ended while it wasn't open.
+        self.mode = Mode::Normal;
+        self.store.roll_over(self.today)?;
+        self.auto_complete_at(self.today.and_time(self.now))?;
         self.mode = Mode::Normal;
         self.show_day(self.today);
         self.undo.clear();
@@ -2402,11 +2666,47 @@ impl App {
         Ok(())
     }
 
+    /// Completes repeating items whose time has passed: now, while todoro
+    /// is open (called every second).
+    pub fn auto_complete(&mut self) -> io::Result<()> {
+        self.auto_complete_at(self.today.and_time(self.now))
+    }
+
+    /// Completes each copy of a repeating item whose end passed by `now`
+    /// (`Store::auto_complete`), unless the options say not to. Not while
+    /// anything else is open, as it moves items; they're caught up on
+    /// afterwards.
+    pub fn auto_complete_at(&mut self, now: chrono::NaiveDateTime) -> io::Result<()> {
+        if self.settings.no_auto_complete
+            || !matches!(self.mode, Mode::Normal)
+            || !self.pending.is_empty()
+            || self.count.is_some()
+            || self.command.is_some()
+        {
+            return Ok(());
+        }
+        // Stay on the selected item, wherever completing moves it.
+        let selected = self.slot(self.selected).map(|slot| (slot.day, self.store.items(slot.day)[slot.index].clone()));
+        if !self.store.auto_complete(now)? {
+            return Ok(());
+        }
+        if let Some((day, item)) = selected {
+            let same = |other: &Item| other.text == item.text && other.series == item.series && other.depth == item.depth;
+            if let Some(row) = self.slots().iter().position(|slot| slot.day == day && same(&self.store.items(day)[slot.index])) {
+                self.selected = row;
+            }
+        }
+        self.clamp_selection();
+        Ok(())
+    }
+
     pub fn set_today(&mut self, today: NaiveDate) -> io::Result<()> {
         if today == self.today || !matches!(self.mode, Mode::Normal) {
             return Ok(());
         }
+        // The new day's copies, and what ended on the days gone.
         self.store.roll_over(today)?;
+        self.auto_complete_at(today.and_time(NaiveTime::MIN))?;
         if self.day == self.today {
             self.show_day(today);
         }
@@ -2445,7 +2745,7 @@ mod tests {
     }
 
     fn items(app: &App) -> Vec<&str> {
-        app.items().into_iter().map(|item| item.text.as_str()).collect()
+        app.slots().into_iter().map(|slot| app.store.items(slot.day)[slot.index].text.as_str()).collect()
     }
 
     #[test]
@@ -5596,6 +5896,477 @@ mod tests {
         let (mut app, _dir) = app_with(&[]);
         type_str(&mut app, "E");
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    fn mondays_and_thursdays(from: NaiveDate) -> repeat::Repeat {
+        repeat::Repeat::from_stored(&format!("1w mon,thu from {}", from.format("%Y-%m-%d"))).unwrap()
+    }
+
+    #[test]
+    fn space_r_makes_an_item_repeat_on_days_of_the_week() {
+        let (mut app, _dir) = app_with(&["Team meeting", "Water plants"]);
+        // Monday starts chosen; Thursday is three to the right.
+        type_str(&mut app, " r");
+        assert!(matches!(app.mode, Mode::Repeat(_)));
+        type_str(&mut app, "wlll ");
+        press(&mut app, KeyCode::Enter);
+        // Then a time, if it's to have one; nothing typed skips it.
+        assert!(matches!(&app.mode, Mode::Repeat(picker) if picker.timing.is_some()));
+        press(&mut app, KeyCode::Enter);
+        // Then its last day, if it ends.
+        assert!(matches!(&app.mode, Mode::Repeat(picker) if matches!(picker.timing, Some(repeat::Timing::Until(_)))));
+        press(&mut app, KeyCode::Enter);
+        // Asked first.
+        assert!(matches!(&app.mode, Mode::Repeat(picker) if picker.confirming));
+        assert_eq!(app.items()[0].repeat, None);
+        type_str(&mut app, "y");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].repeat, Some(mondays_and_thursdays(today())));
+        assert_eq!(app.message.as_deref(), Some("Repeats every Mon, Thu. Next: Thu"));
+        // One change to undo.
+        type_str(&mut app, "u");
+        assert_eq!(app.items()[0].repeat, None);
+    }
+
+    #[test]
+    fn a_repeat_can_be_given_its_time_as_its_set() {
+        let (mut app, _dir) = app_with(&["Stand-up"]);
+        type_str(&mut app, " rw");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "10:15");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "10:45");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "y");
+        let time = app.items()[0].time.unwrap();
+        assert_eq!((time.date, time.describe(false)), (today(), "10:15–10:45".to_string()));
+        assert!(app.items()[0].repeat.is_some());
+        // Next week's preview has it too.
+        app.show_day(today() + chrono::Days::new(7));
+        assert_eq!(app.items()[0].time.unwrap().describe(false), "10:15–10:45");
+        // Both undone together.
+        app.show_day(today());
+        type_str(&mut app, "u");
+        assert!(app.items()[0].time.is_none() && app.items()[0].repeat.is_none());
+        // Changing the repeat later keeps its time unless another is typed.
+        app.store.set_time(today(), 0, Some(TimeSlot { date: today(), start: time.start, end: time.end })).unwrap();
+        type_str(&mut app, " rd2");
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Enter);
+        }
+        assert_eq!(app.items()[0].time.unwrap().describe(false), "10:15–10:45");
+    }
+
+    #[test]
+    fn space_r_sets_a_repeat_from_the_plan_view_as_part_of_the_plan() {
+        let (mut app, _dir) = app_with(&["Stand-up", "Water plants"]);
+        type_str(&mut app, " p");
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+        type_str(&mut app, " r");
+        assert!(matches!(app.mode, Mode::Repeat(_)));
+        type_str(&mut app, "w");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "10:15");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "10:45");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "y");
+        // Back in the plan, with the repeat and its time.
+        let Mode::Plan { plan, .. } = &app.mode else { panic!("back to the plan") };
+        assert!(plan.changed);
+        assert!(app.items()[0].repeat.is_some());
+        assert_eq!(app.items()[0].time.unwrap().describe(false), "10:15–10:45");
+        // Leaving without saving takes it back, as with any change in the plan.
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "q");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.items()[0].repeat.is_none() && app.items()[0].time.is_none());
+    }
+
+    #[test]
+    fn a_repeat_set_while_planning_is_saved_with_the_plan_as_one_change() {
+        let (mut app, _dir) = app_with(&["Stand-up"]);
+        type_str(&mut app, " p rw");
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Enter);
+        }
+        type_str(&mut app, "yw");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.items()[0].repeat.is_some());
+        type_str(&mut app, "u");
+        assert!(app.items()[0].repeat.is_none());
+    }
+
+    #[test]
+    fn the_leader_menu_in_the_plan_view_only_sets_repeats() {
+        let (mut app, _dir) = app_with(&["Stand-up"]);
+        type_str(&mut app, " p ");
+        assert!(matches!(app.mode, Mode::Leader(_)));
+        // Esc goes back to the plan.
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+        // It offers nothing else: another key closes it, back to the plan.
+        type_str(&mut app, " c");
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+        // Esc out of the repeat popup goes back too.
+        type_str(&mut app, " r");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+    }
+
+    #[test]
+    fn space_r_x_stops_repeating_and_esc_changes_nothing() {
+        let (mut app, _dir) = app_with(&["Team meeting"]);
+        app.store.set_repeat(today(), 0, Some(mondays_and_thursdays(today())), None, today()).unwrap();
+        type_str(&mut app, " rd5");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Repeat(_)), "back to choosing");
+        press(&mut app, KeyCode::Esc);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.items()[0].repeat, Some(mondays_and_thursdays(today())));
+        type_str(&mut app, " rx");
+        assert_eq!(app.items()[0].repeat, None);
+        assert_eq!(app.message.as_deref(), Some("Stopped repeating"));
+    }
+
+    #[test]
+    fn colon_repeat_opens_it_too_but_not_on_a_sub_item_or_an_empty_day() {
+        let (mut app, _dir) = app_with(&["Trip", "Pack"]);
+        type_str(&mut app, ":repeat");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.mode, Mode::Repeat(_)));
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "j>");
+        type_str(&mut app, " r");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.message.as_deref().is_some_and(|message| message.contains("Sub-items repeat")));
+        type_str(&mut app, "l r");
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn a_repeating_item_shows_up_on_the_days_it_repeats_on() {
+        let (mut app, _dir) = app_with(&["Team meeting"]);
+        type_str(&mut app, " rwlll ");
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Enter);
+        }
+        app.set_today(today() + chrono::Days::new(3)).unwrap();
+        assert_eq!(app.day, today() + chrono::Days::new(3));
+        assert_eq!(app.items().iter().map(|item| item.text.as_str()).collect::<Vec<_>>(), ["Team meeting"]);
+        assert!(app.items()[0].repeat.is_some());
+    }
+
+    #[test]
+    fn making_an_earlier_item_repeat_today_adds_todays_copy_at_once() {
+        let (mut app, _dir) = app_with(&[]);
+        let last_week = today() - chrono::Days::new(7);
+        app.store.insert(last_week, 0, "Team meeting".into()).unwrap();
+        app.show_day(last_week);
+        type_str(&mut app, " rw");
+        for _ in 0..4 {
+            press(&mut app, KeyCode::Enter);
+        }
+        assert_eq!(app.message.as_deref(), Some("Repeats every Mon. Next: today"));
+        assert_eq!(app.store.items(today())[0].text, "Team meeting");
+        // Both in the series.
+        assert_eq!(app.store.items(last_week)[0].series, app.store.items(today())[0].series);
+        // Not on the days between.
+        assert!(app.store.all().all(|(day, _)| day == last_week || day == today()));
+        // Undone together.
+        type_str(&mut app, "u");
+        assert!(app.store.items(today()).is_empty());
+    }
+
+    /// An app with a stand-up today (a Monday), 10:15 to 10:45, repeating
+    /// every Monday.
+    fn standup() -> (App, tempfile::TempDir) {
+        let (mut app, dir) = app_with(&["Stand-up", "Water plants"]);
+        let time = |h, m| NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        app.store.set_time(today(), 0, Some(TimeSlot { date: today(), start: time(10, 15), end: time(10, 45) })).unwrap();
+        app.store.set_repeat(today(), 0, repeat::Repeat::from_stored("1w mon from 2026-10-05"), None, today()).unwrap();
+        (app, dir)
+    }
+
+    fn texts(app: &App) -> Vec<String> {
+        app.items().iter().map(|item| item.text.clone()).collect()
+    }
+
+    #[test]
+    fn a_repeat_shows_on_the_days_ahead_it_falls_on_but_not_before_it_started() {
+        let (mut app, _dir) = standup();
+        type_str(&mut app, "l");
+        assert_eq!(texts(&app), Vec::<String>::new(), "not on Tuesday");
+        app.show_day(today() + chrono::Days::new(7));
+        assert_eq!(texts(&app), ["Stand-up"]);
+        let slot = app.slot(0).unwrap();
+        assert!(app.preview(slot));
+        // As its copy will be: at the same time, on that day.
+        assert_eq!(app.items()[0].time.unwrap().date, today() + chrono::Days::new(7));
+        app.show_day(today() + chrono::Days::new(14));
+        assert_eq!(texts(&app), ["Stand-up"]);
+        // Going back: today has the item itself, and the Monday before it
+        // started has nothing.
+        app.show_day(today());
+        assert!(!app.preview(app.slot(0).unwrap()));
+        app.show_day(today() - chrono::Days::new(7));
+        assert!(texts(&app).is_empty());
+    }
+
+    #[test]
+    fn a_preview_can_be_seen_but_not_changed() {
+        let (mut app, _dir) = standup();
+        let before = app.store.snapshot();
+        app.show_day(today() + chrono::Days::new(7));
+        for keys in ["x", "e", "m", "!", "J", ">", "@", "r", "V"] {
+            type_str(&mut app, keys);
+            assert!(matches!(app.mode, Mode::Normal), "{keys}");
+            assert!(app.message.as_deref().is_some_and(|message| message.contains("preview")), "{keys}");
+            app.message = None;
+        }
+        assert!(app.store.snapshot() == before);
+        // Space r changes the repeat itself.
+        type_str(&mut app, " r");
+        assert!(matches!(&app.mode, Mode::Repeat(picker) if picker.day == TEMPLATES && picker.from == today()));
+        press(&mut app, KeyCode::Esc);
+        // Adding beside it adds to that day.
+        type_str(&mut app, "aDentist");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.store.items(today() + chrono::Days::new(7))[0].text, "Dentist");
+    }
+
+    #[test]
+    fn a_completed_items_repeat_still_shows_ahead_open_and_on_the_timeline() {
+        let (mut app, _dir) = standup();
+        type_str(&mut app, "x");
+        let monday = today() + chrono::Days::new(7);
+        app.store.insert(monday, 0, "Dentist".into()).unwrap();
+        app.show_day(monday);
+        assert!(!app.items()[0].done);
+        type_str(&mut app, " p");
+        assert!(matches!(app.mode, Mode::Plan { .. }));
+        assert_eq!(texts(&app), ["Stand-up", "Dentist"]);
+        assert_eq!(app.timeline_blocks(), [0]);
+        // It can't be given a time, cleared or triaged there.
+        type_str(&mut app, "gg");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.message.as_deref().is_some_and(|message| message.contains("preview")));
+        type_str(&mut app, "c!");
+        let stored = app.store.items(today()).iter().find(|item| item.text == "Stand-up").unwrap();
+        assert!(stored.time.is_some() && stored.priority.is_none());
+        // The real item next to it still plans as usual.
+        type_str(&mut app, "j");
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(&app.mode, Mode::Plan { plan, .. } if plan.typing.is_some()));
+    }
+
+    #[test]
+    fn on_its_day_a_preview_becomes_the_real_copy() {
+        let (mut app, _dir) = standup();
+        let monday = today() + chrono::Days::new(7);
+        app.set_today(monday).unwrap();
+        app.show_day(monday);
+        assert_eq!(texts(&app), ["Stand-up"]);
+        let slot = app.slot(0).unwrap();
+        assert_eq!(slot.day, monday);
+        assert!(!app.preview(slot));
+        type_str(&mut app, "x");
+        assert!(app.items()[0].done);
+    }
+
+    #[test]
+    fn a_pinned_unfinished_repeat_is_carried_ahead_not_previewed_twice() {
+        let (mut app, _dir) = standup();
+        app.store.toggle_pinned(today(), 0).unwrap();
+        app.show_day(today() + chrono::Days::new(7));
+        assert_eq!(texts(&app), ["Stand-up"]);
+        assert!(!app.preview(app.slot(0).unwrap()));
+    }
+
+    #[test]
+    fn the_calendar_shows_repeats_ahead_unless_the_options_say_not() {
+        let (mut app, _dir) = standup();
+        let monday = today() + chrono::Days::new(7);
+        let shown = |app: &App, day: NaiveDate| -> Vec<(String, bool)> {
+            app.calendar_items(day).into_iter().map(|(item, preview)| (item.text.clone(), preview)).collect()
+        };
+        assert_eq!(shown(&app, monday), [("Stand-up".to_string(), true)]);
+        assert!(shown(&app, monday + chrono::Days::new(1)).is_empty());
+        // Today has the item itself, once.
+        assert_eq!(shown(&app, today()), [("Stand-up".to_string(), false), ("Water plants".to_string(), false)]);
+        app.settings.no_calendar_repeats = true;
+        assert!(shown(&app, monday).is_empty());
+    }
+
+    fn at(h: u32, m: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, 0).unwrap()
+    }
+
+    fn stand_up_done(app: &App) -> bool {
+        app.store.items(today()).iter().find(|item| item.text == "Stand-up").unwrap().done
+    }
+
+    #[test]
+    fn a_repeating_item_completes_itself_once_its_end_time_passes() {
+        let (mut app, _dir) = standup();
+        app.now = at(10, 30);
+        app.auto_complete().unwrap();
+        assert!(!stand_up_done(&app));
+        app.now = at(10, 45);
+        app.auto_complete().unwrap();
+        assert!(stand_up_done(&app));
+        // It still repeats, and next week's is open.
+        assert!(app.store.items(today()).iter().any(|item| item.text == "Stand-up" && item.repeat.is_some()));
+        app.set_today(today() + chrono::Days::new(7)).unwrap();
+        assert_eq!(texts(&app), ["Stand-up"]);
+        assert!(!app.items()[0].done);
+    }
+
+    #[test]
+    fn reopening_an_auto_completed_item_keeps_it_open() {
+        let (mut app, _dir) = standup();
+        app.now = at(11, 0);
+        app.auto_complete().unwrap();
+        assert!(stand_up_done(&app));
+        // The selection stayed on it, now among the completed items.
+        assert_eq!(app.items()[app.selected].text, "Stand-up");
+        type_str(&mut app, "x");
+        app.now = at(11, 1);
+        app.auto_complete().unwrap();
+        assert!(!stand_up_done(&app));
+    }
+
+    #[test]
+    fn without_a_time_it_completes_once_its_day_is_over() {
+        let (mut app, _dir) = app_with(&["Weekly review"]);
+        app.store.set_repeat(today(), 0, repeat::Repeat::from_stored("1w mon from 2026-10-05"), None, today()).unwrap();
+        app.now = at(23, 59);
+        app.auto_complete().unwrap();
+        assert!(!app.store.items(today())[0].done);
+        app.set_today(today() + chrono::Days::new(1)).unwrap();
+        assert!(app.store.items(today())[0].done);
+    }
+
+    #[test]
+    fn pinned_and_one_off_items_and_the_option_leave_items_open() {
+        let (mut app, _dir) = standup();
+        // A one-off item with a time that's passed.
+        app.store.set_time(today(), 1, Some(TimeSlot { date: today(), start: at(8, 0), end: at(9, 0) })).unwrap();
+        app.store.toggle_pinned(today(), 0).unwrap();
+        app.now = at(12, 0);
+        app.auto_complete().unwrap();
+        assert!(app.store.items(today()).iter().all(|item| !item.done));
+        // Unpinned, but turned off in the options.
+        app.store.toggle_pinned(today(), 0).unwrap();
+        app.settings.no_auto_complete = true;
+        app.now = at(12, 1);
+        app.auto_complete().unwrap();
+        assert!(!stand_up_done(&app));
+    }
+
+    #[test]
+    fn it_waits_while_typing_then_catches_up() {
+        let (mut app, _dir) = standup();
+        app.now = at(10, 0);
+        app.auto_complete().unwrap();
+        type_str(&mut app, "eX");
+        app.now = at(11, 0);
+        app.auto_complete().unwrap();
+        assert!(!stand_up_done(&app));
+        press(&mut app, KeyCode::Esc);
+        app.auto_complete().unwrap();
+        assert!(app.store.items(today()).iter().any(|item| item.text == "Stand-upX" && item.done));
+    }
+
+    #[test]
+    fn deleting_a_copy_asks_whether_to_stop_repeating_too() {
+        let (mut app, _dir) = standup();
+        let monday = today() + chrono::Days::new(7);
+        // d deletes just today's: next week's still comes.
+        type_str(&mut app, "d");
+        assert_eq!(app.series_at(0).map(|(_, preview)| preview), Some(false));
+        type_str(&mut app, "d");
+        assert_eq!(texts(&app), ["Water plants"]);
+        app.show_day(monday);
+        assert_eq!(texts(&app), ["Stand-up"]);
+        // s deletes it and stops the rest.
+        app.show_day(today());
+        type_str(&mut app, "u");
+        assert_eq!(texts(&app), ["Stand-up", "Water plants"]);
+        type_str(&mut app, "ds");
+        assert_eq!(texts(&app), ["Water plants"]);
+        assert_eq!(app.message.as_deref(), Some("Deleted, and stopped repeating"));
+        app.show_day(monday);
+        assert!(texts(&app).is_empty());
+        app.set_today(monday).unwrap();
+        assert!(app.store.items(monday).is_empty());
+        // A plain item asks as before.
+        app.show_day(today());
+        type_str(&mut app, "ds");
+        assert!(matches!(app.mode, Mode::ConfirmDelete { .. }), "s does nothing");
+    }
+
+    #[test]
+    fn deleting_a_preview_skips_its_day_or_stops_it_there() {
+        let (mut app, _dir) = standup();
+        let week = |n: u64| today() + chrono::Days::new(7 * n);
+        app.show_day(week(1));
+        type_str(&mut app, "dd");
+        assert!(texts(&app).is_empty());
+        assert_eq!(app.message.as_deref(), Some("Skipped 12 Oct. Next: 19 Oct"));
+        app.show_day(week(2));
+        assert_eq!(texts(&app), ["Stand-up"]);
+        // Undone like anything else.
+        app.show_day(week(1));
+        type_str(&mut app, "u");
+        assert_eq!(texts(&app), ["Stand-up"]);
+        // Stopped from the 19th: next week's still comes, none after.
+        app.show_day(week(2));
+        type_str(&mut app, "ds");
+        assert!(texts(&app).is_empty());
+        app.show_day(week(1));
+        assert_eq!(texts(&app), ["Stand-up"]);
+        app.show_day(week(3));
+        assert!(texts(&app).is_empty());
+        // When the skipped day comes, there's no copy.
+        app.show_day(week(1));
+        type_str(&mut app, "dd");
+        app.set_today(week(1)).unwrap();
+        assert!(app.store.items(week(1)).is_empty());
+    }
+
+    #[test]
+    fn every_copy_has_the_same_notes() {
+        let (mut app, _dir) = standup();
+        app.store.set_notes(today(), 0, "Agenda".into()).unwrap();
+        let monday = today() + chrono::Days::new(7);
+        app.set_today(monday).unwrap();
+        assert_eq!(app.items()[0].notes, "Agenda");
+        // Written on this week's, it's on last week's too.
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "Go- Wins");
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        let last = app.store.items(today()).iter().find(|item| item.text == "Stand-up").unwrap();
+        assert_eq!(last.notes, "Agenda\n- Wins");
+    }
+
+    #[test]
+    fn days_todoro_wasnt_open_get_their_copies_completed_once_over() {
+        let (mut app, _dir) = standup();
+        let week = |n: u64| today() + chrono::Days::new(7 * n);
+        // Opened again three weeks later, at nine.
+        app.now = at(9, 0);
+        app.set_today(week(3)).unwrap();
+        app.auto_complete().unwrap();
+        for n in 0..3 {
+            let copies: Vec<&Item> = app.store.items(week(n)).iter().filter(|item| item.text == "Stand-up").collect();
+            assert!(copies.len() == 1 && copies[0].done, "week {n}");
+        }
+        assert_eq!(texts(&app), ["Stand-up"]);
+        assert!(!app.items()[0].done, "today's isn't over yet");
     }
 
     fn days_before(amount: u32) -> reminder::Reminder {

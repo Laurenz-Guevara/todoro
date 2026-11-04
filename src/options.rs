@@ -26,6 +26,13 @@ pub struct Settings {
     /// Don't check once a day for a newer version (the option shows it the
     /// other way round, as "Check for updates", on by default).
     pub no_update_check: bool,
+    /// Leave repeating items open once their time has passed, rather than
+    /// completing them.
+    pub no_auto_complete: bool,
+    /// Don't show repeating items on the days ahead in the calendar (the
+    /// option shows it the other way round, as "Indicate repeats in the calendar",
+    /// on by default).
+    pub no_calendar_repeats: bool,
     /// The day the check last found out, so it's once a day.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update_checked: Option<String>,
@@ -92,6 +99,20 @@ pub const TOGGLES: &[Toggle] = &[
         description: "Show deadline times like 11PM instead of 23:00. You can type either.",
         get: |s| s.twelve_hour,
         set: |s, on| s.twelve_hour = on,
+    },
+    Toggle {
+        section: "Items",
+        label: "Don't auto-complete scheduled items",
+        description: "Repeating items complete themselves once their end time passes, or their day if they have no time (not pinned ones). Turn this on to complete them yourself.",
+        get: |s| s.no_auto_complete,
+        set: |s, on| s.no_auto_complete = on,
+    },
+    Toggle {
+        section: "Items",
+        label: "Indicate repeats in the calendar",
+        description: "Show repeating items on the days ahead they repeat on in the calendar, like the items on those days, so every Monday's stand-up marks its day.",
+        get: |s| !s.no_calendar_repeats,
+        set: |s, on| s.no_calendar_repeats = !on,
     },
     Toggle {
         section: "Updates",
@@ -473,12 +494,15 @@ mod tests {
     #[test]
     fn everything_is_off_by_default() {
         assert_eq!(Settings::default(), Settings { semantic_icons: false, no_colour: false, last_seen_version: None, ..Settings::default() });
-        // Every option is off, but checking for updates, which is on: its
-        // setting is stored the other way round, so it starts off too.
+        // Every option is off, but checking for updates and showing repeats
+        // in the calendar, which are on: their settings are stored the other
+        // way round, so they start off too.
         for toggle in TOGGLES {
-            assert_eq!((toggle.get)(&Settings::default()), toggle.label == "Check for updates", "{}", toggle.label);
+            let on = ["Check for updates", "Indicate repeats in the calendar"].contains(&toggle.label);
+            assert_eq!((toggle.get)(&Settings::default()), on, "{}", toggle.label);
         }
         assert!(!Settings::default().no_update_check);
+        assert!(!Settings::default().no_calendar_repeats);
     }
 
     #[test]

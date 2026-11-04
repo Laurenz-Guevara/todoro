@@ -39,7 +39,8 @@ pub fn day_text(app: &App) -> String {
             out.push_str("\n\n");
         }
         any = true;
-        block(app.store.items(slot.day), slot.index, &label(app, row), &mut out);
+        let (items, root) = app.block(slot);
+        block(&items, root, &label(app, row), &mut out);
     }
     if !any {
         out.push_str("\nNothing on this day.\n");
@@ -52,7 +53,8 @@ pub fn day_text(app: &App) -> String {
 pub fn item_text(app: &App) -> String {
     let Some(slot) = app.slots().get(app.selected).copied() else { return String::new() };
     let mut out = String::new();
-    block(app.store.items(slot.day), slot.index, &label(app, app.selected), &mut out);
+    let (items, root) = app.block(slot);
+    block(&items, root, &label(app, app.selected), &mut out);
     out
 }
 

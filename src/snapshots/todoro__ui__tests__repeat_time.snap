@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 16).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Team meeting                                           │"
+"│2. Water plants                                           │"
+"│                                                          │"
+"│                                                          │"
+"│    ╭ Start time ────────────────────────────────────╮    │"
+"│    │ › 10:15                                        │    │"
+"│    │                                                │    │"
+"│    │ Start time on each day, like 9, 9:30 or 1pm,   │    │"
+"│    │ if it has one. Enter alone leaves it without a │    │"
+"│    │ time.                                          │    │"
+"│    ╰──────────── enter next · esc back ─────────────╯    │"
+"│                                                          │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" REPEAT   type a time  enter next  esc back                 "

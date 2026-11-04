@@ -271,6 +271,12 @@ pub fn find(store: &Store, query: &str, kind: Kind, tag: Option<&str>, today: Na
         }
     }
     hits.sort_by_key(|hit| (std::cmp::Reverse(hit.score), (hit.day - today).num_days().abs(), hit.day, hit.index));
+    // A repeating item's copies share their notes: those show once, from
+    // the copy closest to today.
+    if kind == Kind::Notes {
+        let mut seen = std::collections::HashSet::new();
+        hits.retain(|hit| store.items(hit.day)[hit.index].series.is_none_or(|series| seen.insert(series)));
+    }
     hits
 }
 
@@ -281,6 +287,20 @@ mod tests {
 
     fn day(offset: i64) -> NaiveDate {
         today() + chrono::Duration::days(offset)
+    }
+
+    #[test]
+    fn shared_notes_are_found_once_from_the_closest_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path().join("todos.json")).unwrap();
+        store.insert(today(), 0, "Stand-up".into()).unwrap();
+        store.set_notes(today(), 0, "Ask about holidays".into()).unwrap();
+        let weekly = crate::repeat::Repeat::from_stored("1w mon from 2026-10-05");
+        store.set_repeat(today(), 0, weekly, None, today()).unwrap();
+        store.roll_over(day(14)).unwrap();
+        let hits = find(&store, "holidays", Kind::Notes, None, day(10));
+        assert_eq!(hits.iter().map(|hit| hit.day).collect::<Vec<_>>(), [day(7)]);
+        assert_eq!(find(&store, "stand", Kind::Items, None, day(10)).len(), 3, "the items themselves all show");
     }
 
     /// A store with a few items over several days.

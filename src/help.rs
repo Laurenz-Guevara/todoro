@@ -171,6 +171,20 @@ pub const SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        title: "Repeating an item (Space r)",
+        bindings: &[
+            ("j / k, Enter", "Move between the options, choose the highlighted one"),
+            ("w", "On days of the week: h / l choose a day, Space toggles it"),
+            ("1-9 (weeks)", "Every so many weeks: 2 for every other week"),
+            ("d / m", "Every so many days / months, then type how many"),
+            ("Enter", "Then a start and end time, or Enter to skip; then save, after asking (Enter/y)"),
+            ("Enter", "After the time, the last day it repeats on (31 Dec, 2026-12-31), or Enter for no end"),
+            ("x", "Stop repeating"),
+            ("d (on the list)", "On a copy: d deletes just it, s stops repeating too; on a preview: d skips the day, s stops it from there"),
+            ("Esc", "Back, or cancel"),
+        ],
+    },
+    Section {
         title: "Timeline (Space t)",
         bindings: &[
             ("j / k", "Scroll an hour down / up"),
@@ -198,6 +212,7 @@ pub const SECTIONS: &[Section] = &[
             ("> / <, za", "Indent / outdent, fold (zc, zo too)"),
             ("m / @ / r", "Pin, deadline, reminder"),
             ("v / V", "Select several (not to another day)"),
+            ("Space r", "Repeat the item, with its time (the leader menu offers only this here)"),
             ("c", "Clear the item's time"),
             ("x / d", "Delete the item, asking first"),
             ("!", "Triage: High, Medium, Low, then none"),
@@ -444,7 +459,7 @@ mod tests {
 
     #[test]
     fn single_key_matches_key_names_only() {
-        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x", "Setting a reminder (r): x", "Planning the day (Space p): x / d", "Calendar: x"]);
+        assert_eq!(found("x"), ["List: x", "Notes: x", "Selecting several (V): x", "Setting a reminder (r): x", "Repeating an item (Space r): x", "Planning the day (Space p): x / d", "Calendar: x"]);
         assert_eq!(found("?"), ["List: ?", "Notes: ?", "Calendar: ?"]);
         assert_eq!(found("$"), ["Notes: 0 / $"]);
         assert!(found("v").contains(&"List: V / v".to_string()));

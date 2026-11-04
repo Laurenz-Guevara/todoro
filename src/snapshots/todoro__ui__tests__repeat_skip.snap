@@ -1,0 +1,16 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 12).backend()"
+---
+"╭──────────────── Thursday, October 8 2026 ────────────────╮"
+"│1. Team meeting 10:15–11:15 ↻                             │"
+"│    ╭ Delete item? ──────────────────────────────────╮    │"
+"│    │1. Team meeting                                 │    │"
+"│    │   It repeats every Mon, Thu until 31 Dec 2026  │    │"
+"│    │                                                │    │"
+"│    │ d  skip just this day                          │    │"
+"│    │ s  stop it from here on                        │    │"
+"│    │ c  cancel                                      │    │"
+"│    ╰────────────────────────────────────────────────╯    │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" DELETE   d skip day  s stop  c cancel                      "

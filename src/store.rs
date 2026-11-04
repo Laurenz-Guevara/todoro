@@ -11,6 +11,7 @@ use crate::deadline::Deadline;
 use crate::notes_files::{Conflict, NotesFiles};
 use crate::outline;
 use crate::reminder::Reminder;
+use crate::repeat::Repeat;
 use crate::timeline::TimeSlot;
 
 /// One todo entry. `notes` is longer free text shown only on the notes screen,
@@ -39,7 +40,29 @@ pub struct Item {
     pub folded: bool,
     /// When it's planned for, on a day (`Space p`), if it is.
     pub time: Option<TimeSlot>,
+    /// How it repeats (`Space r`), on a series' template (stored under
+    /// `TEMPLATES`): when a day it repeats on comes, `Store::roll_over` adds
+    /// a copy of it there. Each copy shows its template's while it still
+    /// repeats, in memory only.
+    pub repeat: Option<Repeat>,
+    /// The series a template and its copies are in (top-level items only).
+    /// A copy shares its template's notes (in memory only; the file is the
+    /// template's), so they're the same on every day.
+    pub series: Option<u32>,
+    /// On a template: the last day copies were added up to.
+    pub made: Option<NaiveDate>,
+    /// On a template: days ahead it won't be added on, deleted while
+    /// previewed.
+    pub skips: Vec<NaiveDate>,
+    /// On a copy: reopened by hand, so it isn't completed by itself again
+    /// (`Store::auto_complete`). Completing it clears this.
+    pub kept_open: bool,
 }
+
+/// The day series' templates are stored under: no real day, so they show
+/// on none (`"repeats"` on disk). A slot on it is a preview of a copy.
+pub const TEMPLATES: NaiveDate = NaiveDate::MIN;
+const TEMPLATES_KEY: &str = "repeats";
 
 impl Item {
     /// Whether it's open and past its deadline, on `today` at `now`.
@@ -51,6 +74,36 @@ impl Item {
     pub fn reminder_due_at(&self, day: NaiveDate) -> Option<chrono::NaiveDateTime> {
         let reminder = self.reminder.filter(|_| !self.done)?;
         Some(reminder.due_at(day, self.deadline))
+    }
+
+    /// This template item's copy on `to`, its dates counted from `from`:
+    /// open, with its time, deadline and reminder moved on as many days,
+    /// and its notes (a top-level copy shares them, so it has no file).
+    pub fn repeated(&self, from: NaiveDate, to: NaiveDate) -> Item {
+        let shift = |d: NaiveDate| d.checked_add_signed(to - from).unwrap_or(d);
+        Item {
+            notes_file: None,
+            done: false,
+            made: None,
+            skips: Vec::new(),
+            kept_open: false,
+            time: self.time.map(|time| TimeSlot { date: shift(time.date), ..time }),
+            deadline: self.deadline.map(|deadline| Deadline { date: shift(deadline.date), ..deadline }),
+            reminder: self.reminder.map(|reminder| match reminder {
+                Reminder::On(on) => Reminder::On(Deadline { date: shift(on.date), ..on }),
+                before => before,
+            }),
+            ..self.clone()
+        }
+    }
+
+    /// When it's over, as stored on `day`: the end of its time, or of the
+    /// day without one.
+    pub fn ends_at(&self, day: NaiveDate) -> chrono::NaiveDateTime {
+        match self.time {
+            Some(time) => time.date.and_time(time.end),
+            None => day.succ_opt().unwrap_or(day).and_time(chrono::NaiveTime::MIN),
+        }
     }
 
     /// The day this item, stored on an earlier day, moves on to by `today`:
@@ -96,6 +149,7 @@ impl Priority {
 /// readable by older versions until an item gets notes or is completed.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(clippy::large_enum_variant)]
 enum RawItem {
     Text(String),
     Full {
@@ -123,6 +177,20 @@ enum RawItem {
         /// `2026-10-11 09:00-10:30`; anything else is ignored.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         time: Option<String>,
+        /// `1w mon,thu from 2026-10-05`, `3d from ...` or `1mo from ...`;
+        /// anything else is ignored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repeat: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        series: Option<u32>,
+        /// `2026-10-05`, on a template.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        made: Option<String>,
+        /// Days a template is skipped on, like `made`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skip: Vec<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kept_open: bool,
         /// Its sub-items, written the same way.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         items: Vec<RawItem>,
@@ -135,11 +203,50 @@ fn flatten(raw: Vec<RawItem>, depth: usize, into: &mut Vec<Item>) {
     for raw in raw {
         match raw {
             RawItem::Text(text) => into.push(Item { text, depth, ..Item::default() }),
-            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, time, items } => {
+            RawItem::Full {
+                text,
+                notes,
+                notes_file,
+                done,
+                pinned,
+                priority,
+                deadline,
+                reminder,
+                folded,
+                time,
+                repeat,
+                series,
+                made,
+                skip,
+                kept_open,
+                items,
+            } => {
                 let deadline = deadline.as_deref().and_then(Deadline::from_stored);
                 let reminder = reminder.as_deref().and_then(Reminder::from_stored);
                 let time = time.as_deref().and_then(TimeSlot::from_stored);
-                into.push(Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, depth, folded, time });
+                let repeat = repeat.as_deref().and_then(Repeat::from_stored);
+                let date = |text: &str| NaiveDate::parse_from_str(text, "%Y-%m-%d").ok();
+                let made = made.as_deref().and_then(date);
+                let skips = skip.iter().filter_map(|text| date(text)).collect();
+                let series = series.filter(|_| depth == 0);
+                into.push(Item {
+                    text,
+                    notes,
+                    notes_file,
+                    done,
+                    pinned,
+                    priority,
+                    deadline,
+                    reminder,
+                    depth,
+                    folded,
+                    time,
+                    repeat,
+                    series,
+                    made,
+                    skips,
+                    kept_open,
+                });
                 flatten(items, depth + 1, into);
             }
         }
@@ -162,15 +269,41 @@ fn nest(items: &[Item]) -> Vec<RawItem> {
             && item.reminder.is_none()
             && !item.folded
             && item.time.is_none()
+            && item.repeat.is_none()
+            && item.series.is_none()
+            && item.made.is_none()
+            && item.skips.is_empty()
+            && !item.kept_open
             && sub.is_empty()
         {
             RawItem::Text(item.text)
         } else {
-            let Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, time, .. } = item;
+            let Item { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, time, repeat, series, made, skips, kept_open, .. } =
+                item;
             let deadline = deadline.map(Deadline::to_stored);
             let reminder = reminder.map(Reminder::to_stored);
             let time = time.map(TimeSlot::to_stored);
-            RawItem::Full { text, notes, notes_file, done, pinned, priority, deadline, reminder, folded, time, items: sub }
+            let repeat = repeat.map(Repeat::to_stored);
+            let made = made.map(key);
+            let skip = skips.into_iter().map(key).collect();
+            RawItem::Full {
+                text,
+                notes,
+                notes_file,
+                done,
+                pinned,
+                priority,
+                deadline,
+                reminder,
+                folded,
+                time,
+                repeat,
+                series,
+                made,
+                skip,
+                kept_open,
+                items: sub,
+            }
         });
         i = end;
     }
@@ -196,7 +329,11 @@ impl Deleted {
     /// `items`, its block as it was, stored at `index` on `day`.
     pub fn new(day: NaiveDate, index: usize, items: &[Item]) -> Self {
         let depth = items.first().map_or(0, |item| item.depth);
-        let mut copies: Vec<Item> = items.iter().map(|item| Item { notes_file: None, ..item.clone() }).collect();
+        // A copy's repeat is its template's, shown, not its own.
+        let mut copies: Vec<Item> = items
+            .iter()
+            .map(|item| Item { notes_file: None, repeat: item.repeat.filter(|_| item.series.is_none()), ..item.clone() })
+            .collect();
         outline::rebase(&mut copies, 0);
         let notes = copies.iter().map(|item| item.notes.clone()).collect();
         Deleted { day: key(day), index, depth, items: nest(&copies), notes }
@@ -260,6 +397,9 @@ pub struct Store {
     /// How the last save merged this store's items into the file's outside
     /// version, for the app to follow them.
     merge: Option<Merge>,
+    /// Never saves: for showing what todoro would, without changing
+    /// anything (`todoro -l`, `--check-data`).
+    read_only: bool,
 }
 
 /// How a save merged into a todos file that had changed outside todoro:
@@ -296,11 +436,15 @@ impl Store {
     /// notes into files as `open` does: for checking what a version reads
     /// (`todoro --check-data`). It must not be saved.
     pub fn open_read_only(path: PathBuf) -> io::Result<Self> {
-        Ok(Self::load(path)?.0)
+        let mut store = Self::load(path)?.0;
+        store.read_only = true;
+        Ok(store)
     }
 
+
     /// The store at `path`, and whether it has notes from before notes
-    /// files, which saving moves into them.
+    /// files, or repeats from before templates, which saving moves into
+    /// them.
     fn load(path: PathBuf) -> io::Result<(Self, bool)> {
         let on_disk = read_if_there(&path)?;
         let raw: BTreeMap<String, Vec<RawItem>> = match &on_disk {
@@ -322,11 +466,14 @@ impl Store {
         }
         // Notes from before they had files move into them now.
         let inline = days.values().flatten().any(|item| !item.notes.is_empty() && item.notes_file.is_none());
+        let migrated = migrate_repeats(&mut days);
         let mut notes = NotesFiles::for_todos(&path);
         notes.load(&mut days)?;
         let stamp = Cell::new(stamp(&path));
-        let store = Self { path, days, notes, conflicts: Vec::new(), on_disk, stamp, kept_outside: None, merge: None };
-        Ok((store, inline))
+        let mut store =
+            Self { path, days, notes, conflicts: Vec::new(), on_disk, stamp, kept_outside: None, merge: None, read_only: false };
+        store.mirror();
+        Ok((store, inline || migrated))
     }
 
     /// Whether something else has changed the todos file since this store
@@ -435,6 +582,7 @@ impl Store {
     /// Reads an item's notes from its file again, in case something else
     /// changed it, as before opening them.
     pub fn reload_notes(&mut self, day: NaiveDate, index: usize) -> io::Result<()> {
+        let (day, index) = self.notes_owner(day, index);
         let Some(file) = self.items(day).get(index).and_then(|item| item.notes_file.clone()) else { return Ok(()) };
         let text = self.notes.read(&file)?;
         if let Some(item) = self.item_mut(day, index) {
@@ -446,13 +594,115 @@ impl Store {
                 }
             }
         }
+        self.mirror();
         Ok(())
+    }
+
+    /// Where an item's notes are kept: a copy in a series shares its
+    /// template's.
+    fn notes_owner(&self, day: NaiveDate, index: usize) -> (NaiveDate, usize) {
+        let template = (day != TEMPLATES)
+            .then(|| self.items(day).get(index))
+            .flatten()
+            .and_then(|item| item.series.filter(|_| item.depth == 0))
+            .and_then(|series| self.template(series));
+        template.map_or((day, index), |at| (TEMPLATES, at))
+    }
+
+    /// Where series `series`'s template is among the templates.
+    fn template(&self, series: u32) -> Option<usize> {
+        self.items(TEMPLATES).iter().position(|item| item.depth == 0 && item.series == Some(series))
+    }
+
+    /// The template of the copy at `index` on `day`, or of the preview
+    /// at `index` on `TEMPLATES`: where it is among the templates.
+    pub fn template_of(&self, day: NaiveDate, index: usize) -> Option<usize> {
+        if day == TEMPLATES {
+            let items = self.items(TEMPLATES);
+            return (index < items.len()).then(|| outline::ancestors(items, index).last().copied().unwrap_or(index));
+        }
+        let item = self.items(day).get(index).filter(|item| item.depth == 0)?;
+        self.template(item.series?)
+    }
+
+    /// The copy on `day` of the template at `index` (or its sub-item), as
+    /// it will be added: for previews.
+    pub fn preview(&self, index: usize, day: NaiveDate) -> Item {
+        let items = self.items(TEMPLATES);
+        let root = outline::ancestors(items, index).last().copied().unwrap_or(index);
+        let from = items[root].repeat.map_or(day, |repeat| repeat.from);
+        items[index].repeated(from, day)
+    }
+
+    /// Whether the template at `index` still adds copies: it has a rule
+    /// that falls on a day after the last it added.
+    fn active(item: &Item) -> bool {
+        item.repeat.is_some_and(|repeat| repeat.next_after(item.made.unwrap_or(repeat.from)).is_some())
+    }
+
+    /// Gives each copy its template's notes, and its rule while it still
+    /// repeats. A copy whose template is gone is a plain item, keeping
+    /// its notes (saving gives them a file).
+    fn mirror(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        // Only one template per series, should a merge have doubled one.
+        if let Some(templates) = self.days.get_mut(TEMPLATES_KEY) {
+            let doubled: Vec<usize> = outline::roots(templates)
+                .into_iter()
+                .filter(|&at| !templates[at].series.is_some_and(|series| seen.insert(series)))
+                .collect();
+            for &at in doubled.iter().rev() {
+                let end = outline::block_end(templates, at);
+                templates.drain(at..end);
+            }
+        }
+        let shared: HashMap<u32, (String, Option<Repeat>)> = self
+            .items(TEMPLATES)
+            .iter()
+            .filter(|item| item.depth == 0)
+            .filter_map(|item| Some((item.series?, (item.notes.clone(), item.repeat.filter(|_| Self::active(item))))))
+            .collect();
+        for (day, items) in self.days.iter_mut() {
+            if day == TEMPLATES_KEY {
+                continue;
+            }
+            for item in items.iter_mut().filter(|item| item.depth == 0) {
+                let Some(series) = item.series else { continue };
+                match shared.get(&series) {
+                    Some((notes, repeat)) => {
+                        item.notes.clone_from(notes);
+                        item.notes_file = None;
+                        item.repeat = *repeat;
+                    }
+                    None => {
+                        item.series = None;
+                        item.repeat = None;
+                        item.kept_open = false;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Takes the template's notes and rule off each copy, for saving.
+    fn unmirror(&mut self) {
+        for (day, items) in self.days.iter_mut() {
+            if day == TEMPLATES_KEY {
+                continue;
+            }
+            for item in items.iter_mut().filter(|item| item.depth == 0 && item.series.is_some()) {
+                item.notes.clear();
+                item.notes_file = None;
+                item.repeat = None;
+            }
+        }
     }
 
     /// The path of an item's notes file, to open in another editor, after
     /// reading it again. An item without notes gets an empty file, which is
     /// deleted again by `notes_edited` if it's still empty.
     pub fn notes_path(&mut self, day: NaiveDate, index: usize) -> io::Result<Option<PathBuf>> {
+        let (day, index) = self.notes_owner(day, index);
         self.reload_notes(day, index)?;
         let Some(item) = self.items(day).get(index) else { return Ok(None) };
         let file = match &item.notes_file {
@@ -479,7 +729,7 @@ impl Store {
 
     /// How many open items are past their deadline, on `today` at `now`.
     pub fn overdue_count(&self, today: NaiveDate, now: chrono::NaiveTime) -> usize {
-        self.days.values().flatten().filter(|item| item.is_overdue(today, now)).count()
+        self.all().flat_map(|(_, items)| items).filter(|item| item.is_overdue(today, now)).count()
     }
 
     /// Deletes every item's notes, and every notes file, for good.
@@ -504,10 +754,148 @@ impl Store {
         std::mem::take(&mut self.conflicts)
     }
 
-    /// Moves every pinned, open item from days before `today` to the start of
-    /// today's list, oldest day first. They stay pinned, so they keep moving
-    /// forward until completed. Everything else stays on its day.
+    /// Adds each repeating item's copies up to `today`, on every day it
+    /// falls on since they were last added, as if todoro had been open
+    /// then (`add_repeats`). Then moves every pinned, open item from days
+    /// before `today` to the start of today's list, oldest day first. They
+    /// stay pinned, so they keep moving forward until completed.
+    /// Everything else stays on its day.
     pub fn roll_over(&mut self, today: NaiveDate) -> io::Result<()> {
+        let repeated = self.add_repeats(today);
+        let moved = self.carry_over(today);
+        let pruned = self.prune_templates();
+        if moved || repeated || pruned { self.save() } else { Ok(()) }
+    }
+
+    /// `roll_over`, then `auto_complete` at `now` if `complete`: what
+    /// opening todoro does, for the command line.
+    pub fn catch_up(&mut self, now: chrono::NaiveDateTime, complete: bool) -> io::Result<()> {
+        self.roll_over(now.date())?;
+        if complete {
+            self.auto_complete(now)?;
+        }
+        Ok(())
+    }
+
+    /// Adds a copy of each template to each day it falls on after the last
+    /// it was added to, up to `today`, at the end of the day's open items:
+    /// open, with its time, deadline and reminder moved to the day. Not on
+    /// days skipped. One that moves on by itself (pinned or with a
+    /// deadline) gets only its latest copy, and none is added while a
+    /// copy that moves on is open (`carried`).
+    /// Returns whether it changed anything.
+    fn add_repeats(&mut self, today: NaiveDate) -> bool {
+        let templates = self.items(TEMPLATES).to_vec();
+        let mut copies: BTreeMap<NaiveDate, Vec<Item>> = BTreeMap::new();
+        let mut caught_up = Vec::new();
+        for start in outline::roots(&templates) {
+            let template = &templates[start];
+            let (Some(repeat), Some(series)) = (template.repeat, template.series) else { continue };
+            let made = template.made.unwrap_or(repeat.from.pred_opt().unwrap_or(repeat.from));
+            if made >= today {
+                continue;
+            }
+            let mut days: Vec<NaiveDate> = made
+                .iter_days()
+                .skip(1)
+                .take_while(|&day| day <= today)
+                .filter(|&day| repeat.occurs_on(day) && !template.skips.contains(&day))
+                .collect();
+            if self.carried(series, today) {
+                days.clear();
+            } else if template.roll_to(today).is_some() {
+                days = days.pop().into_iter().collect();
+            }
+            let end = outline::block_end(&templates, start);
+            for day in days {
+                copies.entry(day).or_default().extend(templates[start..end].iter().map(|item| item.repeated(repeat.from, day)));
+            }
+            caught_up.push(start);
+        }
+        if caught_up.is_empty() {
+            return false;
+        }
+        if let Some(templates) = self.days.get_mut(TEMPLATES_KEY) {
+            for start in caught_up {
+                templates[start].made = Some(today);
+                templates[start].skips.retain(|&day| day > today);
+            }
+        }
+        for (day, copies) in copies {
+            let items = self.days.entry(key(day)).or_default();
+            let at = boundary(items);
+            items.splice(at..at, copies);
+            outline::normalize(items);
+        }
+        self.mirror();
+        true
+    }
+
+    /// Whether an open copy in series `series` moves on by itself (pinned
+    /// or with a deadline), so it's on `day` anyway: then no other is
+    /// added or previewed.
+    fn carried(&self, series: u32, day: NaiveDate) -> bool {
+        self.all().any(|(_, items)| items.iter().any(|item| item.series == Some(series) && item.roll_to(day).is_some()))
+    }
+
+    /// Removes templates that add no more copies and that no copy shares
+    /// notes with any more. Returns whether it removed any.
+    fn prune_templates(&mut self) -> bool {
+        let used: std::collections::HashSet<u32> = self.all().flat_map(|(_, items)| items).filter_map(|item| item.series).collect();
+        let Some(templates) = self.days.get_mut(TEMPLATES_KEY) else { return false };
+        let done: Vec<usize> = outline::roots(templates)
+            .into_iter()
+            .filter(|&at| !Self::active(&templates[at]) && !templates[at].series.is_some_and(|series| used.contains(&series)))
+            .collect();
+        for &at in done.iter().rev() {
+            let end = outline::block_end(templates, at);
+            templates.drain(at..end);
+        }
+        if templates.is_empty() {
+            self.days.remove(TEMPLATES_KEY);
+        }
+        !done.is_empty()
+    }
+
+    /// Completes each open, unpinned copy in a series whose end
+    /// (`Item::ends_at`) has passed by `now`, unless it was reopened by
+    /// hand (`Item::kept_open`). Returns whether it completed any.
+    pub fn auto_complete(&mut self, now: chrono::NaiveDateTime) -> io::Result<bool> {
+        let due: Vec<(NaiveDate, Vec<usize>)> = self
+            .all()
+            .filter(|(day, _)| *day <= now.date())
+            .filter_map(|(day, items)| {
+                let passed: Vec<usize> = outline::roots(items)
+                    .into_iter()
+                    .filter(|&i| {
+                        let item = &items[i];
+                        item.series.is_some() && !item.done && !item.pinned && !item.kept_open && item.ends_at(day) <= now
+                    })
+                    .collect();
+                (!passed.is_empty()).then_some((day, passed))
+            })
+            .collect();
+        for (day, indices) in &due {
+            if let Some(items) = self.days.get_mut(&key(*day)) {
+                for &i in indices {
+                    let end = outline::block_end(items, i);
+                    for item in &mut items[i..end] {
+                        item.done = true;
+                    }
+                }
+                outline::normalize(items);
+            }
+        }
+        if due.is_empty() {
+            return Ok(false);
+        }
+        self.save()?;
+        Ok(true)
+    }
+
+    /// Moves pinned and due items on to today, as `roll_over` says. Returns
+    /// whether it moved any.
+    fn carry_over(&mut self, today: NaiveDate) -> bool {
         let today_key = key(today);
         // Where each moving item goes: today. Oldest first, so they keep
         // their order.
@@ -535,12 +923,12 @@ impl Store {
             !items.is_empty()
         });
         if moving.is_empty() {
-            return Ok(());
+            return false;
         }
         for (day, carried) in moving {
             self.days.entry(key(day)).or_default().splice(0..0, carried);
         }
-        self.save()
+        true
     }
 
     /// Where the open items from days before `day` that show on it are, as
@@ -557,6 +945,31 @@ impl Store {
                     .filter(|(_, item)| item.depth == 0 && item.shows_on(day, today))
                     .map(move |(i, _)| (date, i))
             })
+            .collect()
+    }
+
+    /// Where the templates of the series that will add a copy on `day` are,
+    /// as `(TEMPLATES, index)`: only on today and later days, after the
+    /// last day copies were added, and not one that moves on by itself
+    /// (`Item::roll_to`: pinned or with a deadline), which isn't copied
+    /// ahead. They show as their copies will be, until `roll_over` adds
+    /// those on the day.
+    pub fn repeats_on(&self, day: NaiveDate, today: NaiveDate) -> Vec<(NaiveDate, usize)> {
+        if day < today {
+            return Vec::new();
+        }
+        let templates = self.items(TEMPLATES);
+        outline::roots(templates)
+            .into_iter()
+            .filter(|&at| {
+                let item = &templates[at];
+                item.repeat.is_some_and(|repeat| repeat.occurs_on(day))
+                    && item.made.is_none_or(|made| day > made)
+                    && !item.skips.contains(&day)
+                    && item.roll_to(day).is_none()
+                    && !item.series.is_some_and(|series| self.carried(series, day))
+            })
+            .map(|at| (TEMPLATES, at))
             .collect()
     }
 
@@ -627,11 +1040,23 @@ impl Store {
     /// deep (a sub-item of what's above, at a depth over 0). Returns where
     /// the first one ended up, as an open sub-item reopens its parents.
     pub fn insert_at(&mut self, day: NaiveDate, index: usize, items: Vec<Item>, depth: usize) -> io::Result<usize> {
-        let mut items: Vec<Item> = items.into_iter().map(|item| Item { done: false, notes_file: None, ..item }).collect();
+        // Copies get notes files of their own, and aren't in a series.
+        let mut items: Vec<Item> = items
+            .into_iter()
+            .map(|item| Item {
+                done: false,
+                notes_file: None,
+                repeat: None,
+                series: None,
+                made: None,
+                skips: Vec::new(),
+                kept_open: false,
+                ..item
+            })
+            .collect();
         outline::rebase(&mut items, depth);
         let day_items = self.days.entry(key(day)).or_default();
         let index = index.min(day_items.len());
-        // Copies get notes files of their own.
         day_items.splice(index..index, items);
         let moved = outline::normalize(day_items);
         self.save()?;
@@ -646,6 +1071,7 @@ impl Store {
     }
 
     pub fn set_notes(&mut self, day: NaiveDate, index: usize, notes: String) -> io::Result<()> {
+        let (day, index) = self.notes_owner(day, index);
         if let Some(item) = self.item_mut(day, index) {
             item.notes = notes;
         }
@@ -697,13 +1123,19 @@ impl Store {
 
     /// Completes or reopens the items at `indices` on `day`, with their
     /// sub-items. Like `toggle_done`, top-level ones move to the boundary
-    /// between open and completed items, keeping their order.
+    /// between open and completed items, keeping their order. A copy in a
+    /// series reopened (or with a sub-item reopened) stays open
+    /// (`Item::kept_open`), until it's completed again.
     pub fn set_done_many(&mut self, day: NaiveDate, indices: &[usize], done: bool) -> io::Result<()> {
         let Some(items) = self.days.get_mut(&key(day)) else { return Ok(()) };
         for i in outline::outermost(items, indices) {
             let end = outline::block_end(items, i);
             for item in &mut items[i..end] {
                 item.done = done;
+            }
+            let root = outline::ancestors(items, i).last().copied().unwrap_or(i);
+            if items[root].series.is_some() && (!done || root == i) {
+                items[root].kept_open = !done;
             }
         }
         outline::normalize(items);
@@ -871,6 +1303,122 @@ impl Store {
         self.save()
     }
 
+    /// Makes the top-level item at `index` on `day` repeat by `repeat`,
+    /// each copy at `times` if given (and it too), or with `None`, stops
+    /// its series. A new series' template is a copy of the item, sub-items
+    /// and all, and takes its notes, which the item then shares; it adds
+    /// copies from the day after the item's, or from today for an item
+    /// from before. An item already in a series (or a preview, at `index`
+    /// on `TEMPLATES`) makes its template like it, keeping the notes.
+    /// Returns where the template is.
+    pub fn set_repeat(
+        &mut self,
+        day: NaiveDate,
+        index: usize,
+        repeat: Option<Repeat>,
+        times: Option<(chrono::NaiveTime, chrono::NaiveTime)>,
+        today: NaiveDate,
+    ) -> io::Result<Option<usize>> {
+        let existing = self.template_of(day, index);
+        let Some(repeat) = repeat else {
+            if let Some(at) = existing
+                && let Some(template) = self.item_mut(TEMPLATES, at)
+            {
+                template.repeat = None;
+            }
+            self.save()?;
+            return Ok(existing);
+        };
+        if day != TEMPLATES
+            && let Some((start, end)) = times
+            && let Some(item) = self.item_mut(day, index)
+        {
+            item.time = Some(TimeSlot { date: day, start, end });
+        }
+        let items = self.items(day);
+        if index >= items.len() || items[index].depth > 0 {
+            return Ok(None);
+        }
+        let block_end = outline::block_end(items, index);
+        // The template as it will be, its dates counted from the rule's start.
+        let (from, block): (NaiveDate, Vec<Item>) = if day == TEMPLATES {
+            let old = items[index].repeat.map_or(repeat.from, |old| old.from);
+            (old, items[index..block_end].to_vec())
+        } else {
+            (day, items[index..block_end].to_vec())
+        };
+        let mut template: Vec<Item> = block
+            .iter()
+            .map(|item| Item { notes: String::new(), notes_file: None, series: None, repeat: None, ..item.repeated(from, repeat.from) })
+            .collect();
+        outline::rebase(&mut template, 0);
+        if day == TEMPLATES
+            && let Some((start, end)) = times
+        {
+            template[0].time = Some(TimeSlot { date: repeat.from, start, end });
+        }
+        template[0].repeat = Some(repeat);
+        match existing {
+            Some(at) => {
+                // Same series: its notes, and where it's up to, stay.
+                let templates = self.days.entry(TEMPLATES_KEY.into()).or_default();
+                let old = templates[at].clone();
+                template[0] = Item {
+                    notes: old.notes,
+                    notes_file: old.notes_file,
+                    series: old.series,
+                    made: old.made,
+                    skips: old.skips,
+                    ..template[0].clone()
+                };
+                let end = outline::block_end(templates, at);
+                templates.splice(at..end, template);
+            }
+            None => {
+                let series = self.all().chain(std::iter::once((TEMPLATES, self.items(TEMPLATES)))).flat_map(|(_, items)| items).filter_map(|item| item.series).max().map_or(1, |most| most + 1);
+                let item = self.item_mut(day, index).expect("checked above");
+                item.series = Some(series);
+                template[0].notes = std::mem::take(&mut item.notes);
+                template[0].notes_file = item.notes_file.take();
+                template[0].series = Some(series);
+                template[0].made = Some(day.max(today.pred_opt().unwrap_or(today)));
+                self.days.entry(TEMPLATES_KEY.into()).or_default().extend(template);
+            }
+        }
+        self.mirror();
+        self.save()?;
+        Ok(existing.or_else(|| self.items(TEMPLATES).iter().rposition(|item| item.depth == 0)))
+    }
+
+    /// Leaves out the day `day` from the series of the template at `at`:
+    /// its preview there goes, and no copy is added.
+    pub fn skip(&mut self, at: usize, day: NaiveDate) -> io::Result<()> {
+        if let Some(template) = self.item_mut(TEMPLATES, at)
+            && !template.skips.contains(&day)
+        {
+            template.skips.push(day);
+            template.skips.sort();
+        }
+        self.save()
+    }
+
+    /// Ends the series of the template at `at` before `day`: no more copies
+    /// from then on (nor any after the last added).
+    pub fn end_series(&mut self, at: usize, day: NaiveDate) -> io::Result<()> {
+        if let Some(template) = self.item_mut(TEMPLATES, at)
+            && let Some(repeat) = &mut template.repeat
+        {
+            let last = day.pred_opt().unwrap_or(day).max(template.made.unwrap_or(repeat.from));
+            if last < repeat.from {
+                template.repeat = None;
+            } else {
+                repeat.until = Some(repeat.until.map_or(last, |until| until.min(last)));
+            }
+        }
+        self.mirror();
+        self.save()
+    }
+
     /// Folds or unfolds an item's sub-items.
     pub fn set_folded(&mut self, day: NaiveDate, index: usize, folded: bool) -> io::Result<()> {
         if let Some(item) = self.item_mut(day, index) {
@@ -892,6 +1440,10 @@ impl Store {
     }
 
     fn save(&mut self) -> io::Result<()> {
+        if self.read_only {
+            self.mirror();
+            return Ok(());
+        }
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
@@ -912,12 +1464,16 @@ impl Store {
                 }
             }
         }
+        // Copies' notes are their templates', saved once, there.
+        self.mirror();
+        self.unmirror();
         // Notes next, since new ones get their file names here.
-        let conflicts = self.notes.sync(&mut self.days)?;
-        self.conflicts.extend(conflicts);
+        let synced = self.notes.sync(&mut self.days);
+        let nested: BTreeMap<String, Vec<RawItem>> = self.days.iter().map(|(day, items)| (day.clone(), nest(items))).collect();
+        self.mirror();
+        self.conflicts.extend(synced?);
         // Write to a temp file and rename so a crash never leaves a half-written file.
         let tmp = self.path.with_extension("json.tmp");
-        let nested: BTreeMap<&String, Vec<RawItem>> = self.days.iter().map(|(day, items)| (day, nest(items))).collect();
         let text = serde_json::to_string_pretty(&nested).map_err(io::Error::other)?;
         fs::write(&tmp, &text)?;
         fs::rename(tmp, &self.path)?;
@@ -963,7 +1519,43 @@ fn boundary(items: &[Item]) -> usize {
 }
 
 fn key(day: NaiveDate) -> String {
-    day.format("%Y-%m-%d").to_string()
+    if day == TEMPLATES { TEMPLATES_KEY.into() } else { day.format("%Y-%m-%d").to_string() }
+}
+
+/// Moves repeats from before templates, kept on the latest copy, into
+/// templates: each such item becomes the first copy of a new series,
+/// whose template takes its notes. Returns whether it moved any.
+fn migrate_repeats(days: &mut BTreeMap<String, Vec<Item>>) -> bool {
+    let mut series = days.values().flatten().filter_map(|item| item.series).max().unwrap_or(0);
+    let mut templates = Vec::new();
+    for (day, items) in days.iter_mut() {
+        if day == TEMPLATES_KEY {
+            continue;
+        }
+        let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d") else { continue };
+        for start in outline::roots(items) {
+            let end = outline::block_end(items, start);
+            for item in &mut items[start + 1..end] {
+                item.repeat = None;
+            }
+            let Some(repeat) = items[start].repeat.take().filter(|_| items[start].series.is_none()) else { continue };
+            series += 1;
+            let mut template: Vec<Item> =
+                items[start..end].iter().map(|item| Item { notes: String::new(), notes_file: None, ..item.repeated(date, repeat.from) }).collect();
+            outline::rebase(&mut template, 0);
+            template[0].repeat = Some(repeat);
+            template[0].series = Some(series);
+            template[0].made = Some(date);
+            template[0].notes_file = items[start].notes_file.take();
+            items[start].series = Some(series);
+            templates.extend(template);
+        }
+    }
+    if templates.is_empty() {
+        return false;
+    }
+    days.entry(TEMPLATES_KEY.into()).or_default().extend(templates);
+    true
 }
 
 #[cfg(test)]
@@ -1457,6 +2049,249 @@ mod tests {
         store.cycle_priority(today(), 9).unwrap();
     }
 
+    fn mondays_and_thursdays(from: NaiveDate) -> Repeat {
+        Repeat::from_stored(&format!("1w mon,thu from {}", from.format("%Y-%m-%d"))).unwrap()
+    }
+
+    fn repeat(store: &mut Store, day: NaiveDate, index: usize, repeat: Option<Repeat>) {
+        store.set_repeat(day, index, repeat, None, today()).unwrap();
+    }
+
+    fn mondays(from: NaiveDate) -> Repeat {
+        Repeat::from_stored(&format!("1w mon from {}", from.format("%Y-%m-%d"))).unwrap()
+    }
+
+    #[test]
+    fn a_repeat_is_saved_as_a_template_the_item_is_a_copy_of() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Team meeting".into()).unwrap();
+        repeat(&mut store, today(), 0, Some(mondays_and_thursdays(today())));
+        let json: serde_json::Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "2026-10-05": [{ "text": "Team meeting", "series": 1 }],
+                "repeats": [{ "text": "Team meeting", "repeat": "1w mon,thu from 2026-10-05", "series": 1, "made": "2026-10-05" }],
+            })
+        );
+        let reopened = Store::open(path.clone()).unwrap();
+        // The copy shows its template's rule, and the template is on no day.
+        assert_eq!(reopened.items(today())[0].repeat, Some(mondays_and_thursdays(today())));
+        assert_eq!(reopened.all().count(), 1);
+        // Stopping it: the copy is a plain item again, and the template goes
+        // once nothing shares its notes... which the copy still does.
+        repeat(&mut store, today(), 0, None);
+        assert_eq!(store.items(today())[0].repeat, None);
+        store.roll_over(today()).unwrap();
+        assert_eq!(store.items(TEMPLATES).len(), 1, "kept for the copy's notes");
+        store.remove_many(today(), &[0]).unwrap();
+        store.roll_over(today()).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("repeats"));
+        fs::write(&path, r#"{ "repeats": [{ "text": "Team meeting", "repeat": "often", "series": 1 }] }"#).unwrap();
+        assert_eq!(Store::open(path).unwrap().items(TEMPLATES)[0].repeat, None);
+    }
+
+    #[test]
+    fn repeats_with_an_end_are_saved_and_stop_there() {
+        let until = Repeat { until: Some(day(10)), ..mondays_and_thursdays(today()) };
+        assert_eq!(until.to_stored(), "1w mon,thu from 2026-10-05 until 2026-10-15");
+        assert_eq!(Repeat::from_stored(&until.to_stored()), Some(until));
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "Course".into()).unwrap();
+        repeat(&mut store, today(), 0, Some(until));
+        assert_eq!(store.repeats_on(day(10), today()).len(), 1);
+        assert!(store.repeats_on(day(14), today()).is_empty());
+        store.roll_over(day(20)).unwrap();
+        let days: Vec<NaiveDate> = store.all().map(|(day, _)| day).collect();
+        assert_eq!(days, [today(), day(3), day(7), day(10)]);
+    }
+
+    #[test]
+    fn roll_over_adds_a_copy_on_each_day_it_repeats() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        let at = |date: NaiveDate, h| TimeSlot {
+            date,
+            start: chrono::NaiveTime::from_hms_opt(h, 15, 0).unwrap(),
+            end: chrono::NaiveTime::from_hms_opt(h + 1, 0, 0).unwrap(),
+        };
+        // Monday's meeting, done, with notes, a sub-item and a deadline.
+        store.insert(today(), 0, "Team meeting".into()).unwrap();
+        store.insert_at(today(), 1, vec![Item { text: "Agenda".into(), ..Item::default() }], 1).unwrap();
+        store.set_notes(today(), 0, "Minutes".into()).unwrap();
+        store.set_time(today(), 0, Some(at(today(), 10))).unwrap();
+        store.set_deadline(today(), 0, Some(Deadline { date: today(), time: chrono::NaiveTime::from_hms_opt(11, 0, 0) })).unwrap();
+        repeat(&mut store, today(), 0, Some(mondays_and_thursdays(today())));
+        store.set_done_many(today(), &[0], true).unwrap();
+        store.insert(day(3), 0, "Already there".into()).unwrap();
+
+        // Not on Wednesday.
+        store.roll_over(day(2)).unwrap();
+        assert!(store.items(day(2)).is_empty());
+        // On Thursday, after what's open there.
+        store.roll_over(day(3)).unwrap();
+        assert_eq!(texts(&store, day(3)), ["Already there", "Team meeting", "Agenda"]);
+        let copy = &store.items(day(3))[1];
+        assert!(!copy.done && !store.items(day(3))[2].done);
+        assert_eq!(copy.notes, "Minutes", "the notes are shared");
+        assert_eq!(copy.time, Some(at(day(3), 10)));
+        assert_eq!(copy.deadline.map(|deadline| deadline.date), Some(day(3)));
+        assert_eq!(copy.repeat, Some(mondays_and_thursdays(today())));
+        assert_eq!(store.items(day(3))[2].repeat, None);
+        // Monday's still repeats too: it's in the same series.
+        assert_eq!(store.items(today())[0].repeat, Some(mondays_and_thursdays(today())));
+        // Once a day: starting again on Thursday adds nothing more.
+        store.roll_over(day(3)).unwrap();
+        assert_eq!(texts(&store, day(3)).len(), 3);
+        store.set_done_many(day(3), &[1], true).unwrap();
+        store.roll_over(day(7)).unwrap();
+        assert_eq!(texts(&store, day(7)), ["Team meeting", "Agenda"]);
+        assert_eq!(store.items(day(7))[0].time, Some(at(day(7), 10)));
+        assert_eq!(Store::open(path).unwrap().items(day(7))[0].repeat, Some(mondays_and_thursdays(today())));
+    }
+
+    #[test]
+    fn copies_share_one_notes_file() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Stand-up".into()).unwrap();
+        store.set_notes(today(), 0, "Ask about the release".into()).unwrap();
+        repeat(&mut store, today(), 0, Some(mondays(today())));
+        store.roll_over(day(14)).unwrap();
+        let files = || fs::read_dir(store_notes_dir(&path)).unwrap().count();
+        assert_eq!(files(), 1);
+        // Editing it from any copy edits it for all, in the one file.
+        store.set_notes(day(7), 0, "Ask about the release\nAnd the holidays".into()).unwrap();
+        for day in [today(), day(7), day(14)] {
+            assert_eq!(store.items(day)[0].notes, "Ask about the release\nAnd the holidays");
+        }
+        assert_eq!(files(), 1);
+        let reopened = Store::open(path.clone()).unwrap();
+        assert_eq!(reopened.items(day(14))[0].notes, "Ask about the release\nAnd the holidays");
+        // Another editor gets the one file too.
+        let file = store.notes_path(day(14), 0).unwrap().unwrap();
+        assert_eq!(file, store.notes_path(today(), 0).unwrap().unwrap());
+        fs::write(&file, "Changed elsewhere").unwrap();
+        store.notes_edited(day(14), 0).unwrap();
+        assert_eq!(store.items(day(7))[0].notes, "Changed elsewhere");
+        // A pasted copy is its own item, with its own file.
+        let pasted = store.items(day(7))[0].clone();
+        store.insert_items(day(20), 0, vec![pasted]).unwrap();
+        assert_eq!(store.items(day(20))[0].series, None);
+        assert_eq!(files(), 2);
+    }
+
+    fn store_notes_dir(path: &std::path::Path) -> PathBuf {
+        NotesFiles::for_todos(path).dir
+    }
+
+    #[test]
+    fn days_missed_get_their_copies_as_if_todoro_had_been_open() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "Stand-up".into()).unwrap();
+        repeat(&mut store, today(), 0, Some(Repeat::from_stored("2d from 2026-10-05").unwrap()));
+        // Away until Friday next week.
+        store.roll_over(day(11)).unwrap();
+        let days: Vec<NaiveDate> = store.all().map(|(day, _)| day).collect();
+        assert_eq!(days, [today(), day(2), day(4), day(6), day(8), day(10)]);
+        // And copies already there aren't added again.
+        store.roll_over(day(12)).unwrap();
+        assert_eq!(texts(&store, day(12)), ["Stand-up"]);
+        assert_eq!(texts(&store, day(10)), ["Stand-up"]);
+    }
+
+    #[test]
+    fn a_skipped_day_gets_no_copy_and_an_ended_series_none_after() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        store.insert(today(), 0, "Stand-up".into()).unwrap();
+        repeat(&mut store, today(), 0, Some(mondays(today())));
+        store.skip(0, day(7)).unwrap();
+        assert!(store.repeats_on(day(7), today()).is_empty());
+        assert_eq!(store.repeats_on(day(14), today()).len(), 1);
+        store.roll_over(day(14)).unwrap();
+        assert!(store.items(day(7)).is_empty());
+        assert_eq!(texts(&store, day(14)), ["Stand-up"]);
+        assert!(store.items(TEMPLATES)[0].skips.is_empty(), "past skips are tidied away");
+        // Ending it before the 28th: the 21st still comes, the 28th doesn't.
+        store.end_series(0, day(28)).unwrap();
+        assert_eq!(store.repeats_on(day(21), day(14)).len(), 1);
+        assert!(store.repeats_on(day(28), day(14)).is_empty());
+        // Ending it from a copy: none after the last added.
+        store.end_series(0, day(14)).unwrap();
+        assert!(store.repeats_on(day(21), day(14)).is_empty());
+        assert_eq!(store.items(day(14))[0].repeat, None, "the copies no longer show it");
+    }
+
+    #[test]
+    fn copies_complete_themselves_unless_reopened_by_hand() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Stand-up".into()).unwrap();
+        store.insert(today(), 1, "Other".into()).unwrap();
+        let ten = |h| chrono::NaiveTime::from_hms_opt(h, 0, 0).unwrap();
+        store.set_repeat(today(), 0, Some(mondays(today())), Some((ten(10), ten(11))), today()).unwrap();
+        assert!(!store.auto_complete(today().and_time(ten(10))).unwrap());
+        assert!(store.auto_complete(today().and_time(ten(11))).unwrap());
+        assert_eq!(done_flags(&store, today()), [false, true], "only the repeating one");
+        // Reopened, it stays open, even after a restart.
+        store.toggle_done(today(), 1).unwrap();
+        assert!(!store.auto_complete(today().and_time(ten(12))).unwrap());
+        let mut reopened = Store::open(path).unwrap();
+        assert!(!reopened.auto_complete(today().and_time(ten(12))).unwrap());
+        // Completed again by hand, it's as if never touched.
+        reopened.toggle_done(today(), 0).unwrap();
+        assert!(!reopened.items(today())[1].kept_open);
+    }
+
+    #[test]
+    fn repeats_from_before_templates_move_into_one() {
+        let (_dir, path) = temp_path();
+        fs::create_dir_all(store_notes_dir(&path)).unwrap();
+        fs::write(store_notes_dir(&path).join("team-meeting.md"), "Minutes").unwrap();
+        fs::write(
+            &path,
+            r#"{ "2026-10-05": [{ "text": "Team meeting", "notes_file": "team-meeting.md", "repeat": "1w mon from 2026-10-05" }] }"#,
+        )
+        .unwrap();
+        let mut store = Store::open(path.clone()).unwrap();
+        assert_eq!(store.items(today())[0].series, Some(1));
+        assert_eq!(store.items(today())[0].notes, "Minutes");
+        assert_eq!(store.items(TEMPLATES)[0].notes_file.as_deref(), Some("team-meeting.md"));
+        assert!(fs::read_to_string(&path).unwrap().contains("repeats"), "saved");
+        store.roll_over(day(7)).unwrap();
+        assert_eq!(store.items(day(7))[0].notes, "Minutes");
+    }
+
+    #[test]
+    fn a_read_only_store_catches_up_without_writing() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path.clone()).unwrap();
+        store.insert(today(), 0, "Stand-up".into()).unwrap();
+        repeat(&mut store, today(), 0, Some(mondays(today())));
+        let before = fs::read_to_string(&path).unwrap();
+        let mut reading = Store::open_read_only(path.clone()).unwrap();
+        reading.catch_up(day(7).and_hms_opt(9, 0, 0).unwrap(), true).unwrap();
+        assert_eq!(texts(&reading, day(7)), ["Stand-up"]);
+        assert!(reading.items(today())[0].done, "last week's completed itself");
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn an_unfinished_pinned_repeating_item_moves_on_rather_than_being_copied() {
+        let (_dir, path) = temp_path();
+        let mut store = Store::open(path).unwrap();
+        insert_pinned(&mut store, today(), "Team meeting");
+        repeat(&mut store, today(), 0, Some(mondays_and_thursdays(today())));
+        store.roll_over(day(3)).unwrap();
+        assert_eq!(texts(&store, day(3)), ["Team meeting"]);
+        assert!(store.items(today()).is_empty());
+        assert!(store.items(day(3))[0].repeat.is_some());
+    }
+
     #[test]
     fn priority_is_saved_by_name_and_reloads() {
         let (_dir, path) = temp_path();
@@ -1663,12 +2498,21 @@ mod tests {
             depth: 0,
             folded: false,
             time: None,
+            repeat: Repeat::from_stored("1w mon from 2026-10-05"),
+            series: Some(1),
+            made: None,
+            skips: Vec::new(),
+            kept_open: true,
         };
         assert_eq!(store.insert_items(today(), 9, vec![copy.clone(), copy.clone()]).unwrap(), 1);
         assert_eq!(texts(&store, today()), ["a", "copy", "copy", "b"]);
-        // Open, with the same notes, pin and priority, but notes files of their own.
+        // Open, with the same notes, pin and priority, but notes files of their
+        // own, and in no series: only items todoro copies itself are.
         let pasted = &store.items(today())[1..3];
-        assert_eq!(pasted[0], Item { done: false, notes_file: Some("copy.md".into()), ..copy.clone() });
+        assert_eq!(
+            pasted[0],
+            Item { done: false, notes_file: Some("copy.md".into()), repeat: None, series: None, kept_open: false, ..copy.clone() }
+        );
         assert_eq!(pasted[1].notes_file.as_deref(), Some("copy-2.md"));
     }
 

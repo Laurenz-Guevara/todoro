@@ -12,6 +12,9 @@ use crate::keymap::{self, Binding, Command, Key, Keymap, Match};
 #[derive(Default)]
 pub struct Leader {
     pub typed: Vec<Key>,
+    /// The one command it offers, if only one works where it's opened (the
+    /// plan view only sets repeats from it).
+    pub only: Option<Command>,
 }
 
 /// What the app should do after the leader menu handles a key.
@@ -44,17 +47,23 @@ impl Leader {
             _ => {}
         }
         self.typed.push(Key::from_event(event));
-        match keymap::lookup(bindings, &self.typed) {
+        let allowed: Vec<Binding> = bindings.iter().filter(|binding| self.offers(binding)).cloned().collect();
+        match keymap::lookup(&allowed, &self.typed) {
             Match::Run(command) => Action::Run(command),
             Match::More => Action::Stay,
             Match::Nothing => Action::Close,
         }
     }
 
+    /// Whether it offers `binding`: all of them, unless it's only for one.
+    fn offers(&self, binding: &Binding) -> bool {
+        self.only.is_none_or(|only| binding.command == only)
+    }
+
     /// What can be typed next, in the order of the bindings.
     pub fn entries(&self, keymap: &Keymap) -> Vec<Entry> {
         let mut entries: Vec<Entry> = Vec::new();
-        for binding in &keymap.leader {
+        for binding in keymap.leader.iter().filter(|binding| self.offers(binding)) {
             let Some(rest) = binding.keys.strip_prefix(self.typed.as_slice()) else { continue };
             let Some(&key) = rest.first() else { continue };
             if entries.iter().any(|entry| entry.key == key) {
@@ -180,4 +189,17 @@ mod tests {
         assert_eq!(shown.len(), first.len());
         assert_eq!(shown[0].key.name(), "Space");
     }
+
+    #[test]
+    fn opened_for_one_command_it_offers_only_that() {
+        let keymap = Keymap::default();
+        let mut leader = Leader { only: Some(Command::Repeat), ..Leader::default() };
+        let entries = leader.entries(&keymap);
+        assert_eq!(entries.iter().map(|entry| entry.label.as_str()).collect::<Vec<_>>(), ["repeat"]);
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        assert_eq!(leader.handle_key(key('c'), &keymap.leader), Action::Close);
+        let mut leader = Leader { only: Some(Command::Repeat), ..Leader::default() };
+        assert_eq!(leader.handle_key(key('r'), &keymap.leader), Action::Run(Command::Repeat));
+    }
+
 }

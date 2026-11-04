@@ -132,6 +132,7 @@ These are the default keys. You can change any of them, and the leader menu's, i
 | `Space` `e` | View every item on the day, with its sub-items and notes |
 | `Space` `t` | The day as a timeline, with the time now |
 | `Space` `p` | Plan the day: give items a start and end time |
+| `Space` `r` / `:repeat` | Repeat the selected item: on days of the week, or every few days or months |
 | `?` | Show all keybindings |
 | `q` / `:q` | Quit |
 | `:update` | Check for a newer todoro: see what's new, then update or not |
@@ -334,6 +335,7 @@ Both leave out completed items: they're about what's left to do. `Space` `p` pla
 | `x` / `d` | Delete the item, asking first as on the list |
 | `u` / `Ctrl+R` | Undo / redo a change made in the plan, one at a time |
 | `J` / `K`, `yy` / `p` / `P`, `>` / `<`, `za` / `zc` / `zo`, `m`, `@`, `r`, `v` / `V`, counts | As on the list (selecting can't move items to another day here) |
+| `Space` `r` | Make the item repeat, and give it a time as you do (see Repeating items). The leader menu offers only this while planning, and it's part of the plan: saved with it, or undone if you leave without saving |
 | `c` | Clear the item's time, making it all day |
 | `!` | Triage the item, as on the list: its block takes the priority's colour |
 | `w` | Save the plan |
@@ -341,6 +343,28 @@ Both leave out completed items: they're about what's left to do. `Space` `p` pla
 | `Esc` / `q` | Leave. If you changed anything, a popup asks whether to save first: `w` saves, `q` leaves without saving (so `q` `q` throws the changes away), `n` keeps planning |
 
 The list shows an item's time on the day it's planned for, like `09:00–09:30`. A time belongs to that day, so a pinned item carried on to the next day is all day there until you plan it again. Saving a plan is one change for `u` to undo, including any items added, edited or deleted in it; leaving without saving puts those back too. Sub-items go inside their parent's block.
+
+### Repeating items
+
+`Space` `r` (or `:repeat`) makes the selected item repeat, like a meeting every Monday at 10:15. Then press:
+
+| Key | Action |
+|---|---|
+| `j` / `k` (or `↓` / `↑`) | Move the highlight between the options below; `Enter` (or `l` / `→`) chooses the highlighted one. Or press an option's key |
+| `w` | On days of the week. `h` / `l` choose a day and `Space` (or `x`) picks it or unpicks it; the item's own day starts picked. Type a number to repeat every so many weeks, like `2` for every other week |
+| `d` | Every so many days: type how many, like `3` (`1` is every day) |
+| `m` | Every so many months, on the same day of the month as the item (or the month's last day, if it's shorter): type how many, like `1` for monthly or `3` for quarterly |
+| `Enter` | Then type its start time, if it has one, like `10:15`, `9` or `1pm`, and `Enter`, then its end and `Enter` (just `Enter` for an hour), as when planning the day. Just `Enter` at the start keeps the time it has, or leaves it without one. Then type the last day it repeats on, if it ends, like `31 Dec` or `2026-12-31` (just `Enter` for no end). Then it asks, showing the repeat in words: `Enter` or `y` saves, `n` or `Esc` goes back a step |
+| `x` | Stop repeating |
+| `Esc` | Back, or cancel |
+
+The popup says how it will repeat and when it comes next, as you choose. On a big enough terminal it also shows the year ahead, the next twelve months from this one, with every day it would repeat on highlighted as you pick days or type a number, and the item's own day underlined. Repeating items show `↻` on the list.
+
+When a day it repeats on comes, todoro adds a copy of the item to that day's list, open, with its sub-items open and its time (and any deadline or reminder) moved on to the new day. Every copy shares the same notes, kept in one notes file: write them on any day and they're there on all of them. Weeks and months are counted from the day you made it repeat, so every other week stays on the same weeks. Days todoro wasn't open get their copies too, the next time it starts, as if it had been.
+
+Repeating items complete themselves once their end time passes (at 10:45 for a 10:15–10:45 stand-up, while todoro is open, or when it next starts), or once their day is over if they have no time. Pinned ones don't, and the repeat goes on: the next copy starts open. If you reopen one with `x`, it stays open, even after todoro restarts; complete it again and it's as if you never touched it. Turn **Don't auto-complete scheduled items** on in the options to complete them yourself.
+
+`Space` `r` on any copy changes how it repeats (making it like that copy from then on), or stops it. Deleting a copy asks: `d` deletes just that day's, `s` deletes it and stops repeating. Copies are added on the day itself, when todoro starts or at midnight. Until then, the days ahead it repeats on (never before the day it started) show a preview of the copy: dimmed, with `↻`, at its time on the list and the timeline, open even if today's is done. A preview can't be changed, since it isn't added yet: completing, editing or planning it says so, but `Space` `r` on it changes how the item repeats, `a` adds an item to that day, and `d` asks whether to skip just that day or stop repeating from there. `todoro -l` shows today's copies too, even before todoro has been opened today. The calendar shows them too, marking each day ahead the item repeats on as it does days with items; turn **Indicate repeats in the calendar** off in the options to leave them out. If you make an item from an earlier day repeat on today, today's copy is added at once. Pasting a copy of a repeating item doesn't repeat. Only top-level items repeat; their sub-items come with them.
 
 ### Calendar
 
@@ -380,6 +404,8 @@ The calendar shows the items that belong to each day. Pinned items aren't repeat
 
 - **Pin new items:** new items, from the list or the calendar, start pinned, so they move on to today until they're done. Off by default. Pasted items keep their own pin.
 - **12-hour clock:** show deadline times like `11PM` instead of `23:00`. Off by default. You can type times either way.
+- **Don't auto-complete scheduled items:** leave repeating items open once their time has passed, to complete them yourself. Off by default, so they complete themselves.
+- **Indicate repeats in the calendar:** show repeating items on the days ahead they repeat on in the calendar, dimmed, so those days are marked like days with items. On by default.
 
 **Updates**
 
@@ -522,6 +548,7 @@ The help (`?`) shows each key with its command's name in grey. These are all the
 | `patch-notes` | Patch notes: what changed in every release |
 | `timeline` | The day as a timeline, with the time now |
 | `plan` | Plan the day: give items a start and end time |
+| `repeat` | Repeat the item: on days of the week, or every few days or months |
 
 ## Your todos folder
 
@@ -543,7 +570,7 @@ If you used todoro before it had this folder, your existing todos move into your
 
 To keep everything somewhere else later, open the options (`Space` `o`), select **Todoro folder** under **Data** and press `Enter`, then type the new folder. todoro moves every workspace there. If the new folder already has a workspace with the same name, it moves nothing and tells you.
 
-Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes_file": "....md", "done": true, "pinned": true, "priority": "high" }`. An item's sub-items are in its `"items"`, written the same way, and `"folded": true` keeps them folded. A planned time is `"time": "2026-10-11 09:00-10:30"`.
+Todos are saved after every change, as JSON grouped by date. Items with only text are plain strings, and others are objects like `{ "text": ..., "notes_file": "....md", "done": true, "pinned": true, "priority": "high" }`. An item's sub-items are in its `"items"`, written the same way, and `"folded": true` keeps them folded. A planned time is `"time": "2026-10-11 09:00-10:30"`, and a repeating item's copies have `"series": 1`. The series itself is kept under `"repeats"` rather than a date, with its notes file and `"repeat": "1w mon,thu from 2026-10-05"` (every week on Monday and Thursday, counted from that day), `"3d from ..."` or `"1mo from ..."`, with ` until 2026-12-31` if it ends, plus `"made"` (the last day copies were added) and any `"skip"` days. A copy reopened by hand has `"kept_open": true`.
 
 If a folder is synced between machines, don't have todoro open on two of them at once: the last one to save wins.
 

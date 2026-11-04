@@ -29,6 +29,7 @@ use crate::workspaces::{self, Picker};
 use crate::tags::{self, TagPicker};
 use crate::deadline::{self, Deadline};
 use crate::reminder::{self, Reminder};
+use crate::repeat;
 use crate::viewer::{Scope, Viewer};
 use crate::markdown;
 use crate::update;
@@ -51,7 +52,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         Mode::Plan { .. } => draw_plan(frame, app, main),
         // Adding, editing or deleting from the plan view keeps its layout.
-        Mode::Insert { .. } | Mode::ConfirmDelete { .. } | Mode::Visual { .. } | Mode::Remind(_) if app.plan_stash.is_some() => {
+        Mode::Insert { .. } | Mode::ConfirmDelete { .. } | Mode::Visual { .. } | Mode::Remind(_) | Mode::Repeat(_) | Mode::Leader(_) if app.plan_stash.is_some() => {
             draw_plan(frame, app, main)
         }
         _ => draw_list(frame, app, main),
@@ -72,6 +73,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Mode::Workspaces(picker) => draw_workspaces(frame, app, picker),
         Mode::Tags(picker) => draw_tags(frame, app, picker),
         Mode::Remind(picker) => draw_remind(frame, app, picker),
+        Mode::Repeat(picker) => draw_repeat(frame, app, picker, main),
         Mode::Leader(leader) => draw_leader(frame, app, leader, main),
         Mode::Plan { plan, .. } if plan.confirm_cancel => draw_discard_plan(frame),
         _ => {}
@@ -162,10 +164,14 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         .into_iter()
         .map(|slot| {
             let items = app.store.items(slot.day);
-            let item = &items[slot.index];
+            // A preview shows as its copy will be: open, without notes.
+            let preview = app.preview(slot);
+            let item = app.shown(slot);
             let progress = outline::progress(items, slot.index);
+            let progress = if preview { (0, progress.1) } else { progress };
             Row {
-                text: &item.text,
+                text: &items[slot.index].text,
+                preview,
                 time: item.time.filter(|time| time.date == app.day),
                 depth: item.depth,
                 progress: (progress.1 > 0).then_some(progress),
@@ -179,6 +185,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                     from: (slot.day > app.day).then_some(slot.day),
                 }),
                 has_notes: !item.notes.is_empty(),
+                repeats: item.repeat.is_some(),
                 done: item.done,
                 typing: false,
             }
@@ -201,8 +208,10 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                 deadline: None,
                 reminder: None,
                 has_notes: false,
+                repeats: false,
                 done: false,
                 typing: true,
+                preview: false,
             };
             rows.insert(*index, row);
         }
@@ -307,7 +316,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         });
 
         // Wrap long text under itself, leaving room for the markers at the end.
-        let markers = [(pinned, PINNED_MARKER.width()), (row.has_notes, NOTES_MARKER.width())];
+        let markers =
+            [(pinned, PINNED_MARKER.width()), (row.repeats, REPEAT_MARKER.width()), (row.has_notes, NOTES_MARKER.width())];
         let markers_width: usize = markers.iter().filter(|(shown, _)| *shown).map(|(_, width)| width).sum::<usize>()
             + deadline.as_ref().map_or(0, Span::width)
             + reminder.as_ref().map_or(0, Span::width)
@@ -361,6 +371,9 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         if let Some(reminder) = reminder {
             last.push_span(reminder);
         }
+        if row.repeats {
+            last.push_span(REPEAT_MARKER.fg(if row.done { Color::DarkGray } else { Color::Magenta }));
+        }
         if row.has_notes {
             last.push_span(NOTES_MARKER.dim());
         }
@@ -372,6 +385,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(Color::Yellow)
         } else if selecting {
             Style::new().bg(VISUAL_BG)
+        } else if row.preview {
+            Style::new().add_modifier(Modifier::DIM | Modifier::ITALIC)
         } else {
             Style::new()
         };
@@ -493,9 +508,13 @@ struct Row<'a> {
     progress: Option<(usize, usize)>,
     folded: bool,
     has_notes: bool,
+    /// Whether it repeats (`Space r`).
+    repeats: bool,
     done: bool,
     /// The item being added or edited.
     typing: bool,
+    /// A repeat's copy to come (`App::preview`), shown dim.
+    preview: bool,
 }
 
 /// A row's reminder, as shown.
@@ -541,6 +560,9 @@ pub(crate) const PINNED_MARKER: &str = " ⚲";
 
 /// Shown after an item with a reminder, and beside how many are due today.
 pub(crate) const REMINDER_MARKER: &str = "⚑";
+
+/// Shown after an item that repeats (`Space r`).
+pub(crate) const REPEAT_MARKER: &str = " ↻";
 
 /// Shown in the pin's place on an item with a deadline, before when it's due.
 pub(crate) const DEADLINE_MARKER: &str = " ◷ ";
@@ -601,8 +623,8 @@ fn draw_view(frame: &mut Frame, app: &App, viewer: &Viewer, area: Rect) {
     let lines = match viewer.scope {
         Scope::Day => day_lines(app, width),
         Scope::Item => {
-            let slot = app.slots()[app.selected];
-            whole_lines(app.store.items(slot.day), slot.index, "", width)
+            let (items, root) = app.block(app.slots()[app.selected]);
+            whole_lines(&items, root, "", width)
         }
         Scope::Notes => {
             let notes = &app.items()[app.selected].notes;
@@ -666,7 +688,8 @@ fn day_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             lines.push(Line::from("─".repeat(width)).dark_gray());
             lines.push(Line::default());
         }
-        lines.extend(whole_lines(app.store.items(slot.day), slot.index, &row_label(app, row), width));
+        let (block, root) = app.block(slot);
+        lines.extend(whole_lines(&block, root, &row_label(app, row), width));
     }
     if lines.is_empty() {
         lines.push(Line::from("Nothing on this day.").dark_gray());
@@ -874,6 +897,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Insert { editing: true, .. } => {
             ("INSERT", Color::Green, &[("←/→ move", 1), ("enter/esc save", 2), ("(empty asks to delete)", 0)])
         }
+        Mode::ConfirmDelete { rows } if rows.len() == 1 && app.series_at(rows[0]).is_some_and(|(_, preview)| preview) => {
+            ("DELETE", Color::Red, &[("d skip day", 2), ("s stop", 2), ("c cancel", 1)])
+        }
+        Mode::ConfirmDelete { rows } if rows.len() == 1 && app.series_at(rows[0]).is_some() => {
+            ("DELETE", Color::Red, &[("d this one", 2), ("s stop repeating", 2), ("c cancel", 1)])
+        }
         Mode::ConfirmDelete { .. } => ("DELETE", Color::Red, &[("d confirm", 1), ("c cancel", 1)]),
         Mode::Visual { .. } => (
             "VISUAL",
@@ -968,6 +997,25 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             &[("h/d/m before", 3), ("c on a day", 2), ("x remove", 1), ("esc cancel", 4)],
         ),
         Mode::Remind(_) => ("REMIND", Color::Yellow, &[("h/d/m before", 3), ("c on a day", 2), ("esc cancel", 4)]),
+        Mode::Repeat(picker) => match &picker.stage {
+            Some(_) if matches!(picker.timing, Some(repeat::Timing::Until(_))) => {
+                ("REPEAT", Color::Magenta, &[("type a day", 2), ("enter next", 3), ("esc back", 1)])
+            }
+            Some(_) if picker.timing.is_some() => ("REPEAT", Color::Magenta, &[("type a time", 2), ("enter next", 3), ("esc back", 1)]),
+            Some(_) if picker.confirming => ("REPEAT", Color::Magenta, &[("enter/y save", 2), ("n/esc back", 1)]),
+            Some(repeat::Stage::Weeks { .. }) => (
+                "REPEAT",
+                Color::Magenta,
+                &[("h/l day", 3), ("space choose", 4), ("1-9 weeks", 1), ("enter save", 2), ("esc back", 0)],
+            ),
+            Some(_) => ("REPEAT", Color::Magenta, &[("enter save", 2), ("esc back", 1)]),
+            None if picker.current.is_some() => (
+                "REPEAT",
+                Color::Magenta,
+                &[("j/k move", 5), ("↵ choose", 6), ("w weekly", 3), ("d/m days/months", 2), ("x stop", 1), ("esc cancel", 4)],
+            ),
+            None => ("REPEAT", Color::Magenta, &[("j/k move", 5), ("↵ choose", 6), ("w weekly", 3), ("d/m days/months", 2), ("esc cancel", 4)]),
+        },
         Mode::Calendar(calendar) if calendar.picking.as_ref().is_some_and(|picking| picking.reminder && picking.time.is_some()) => {
             ("REMIND", Color::Yellow, &[("enter save", 2), ("(empty: all day)", 0), ("esc back", 1)])
         }
@@ -1081,8 +1129,11 @@ fn draw_confirm(frame: &mut Frame, app: &App, rows: &[usize]) {
     let items = app.items();
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(50);
-    // Room for the borders, a blank line and the d/c hint, and a line of margin.
-    let max_lines = (screen.height as usize).saturating_sub(6).max(1);
+    // Deleting one that repeats asks whether to skip the day or stop it.
+    let series = if rows.len() == 1 { app.series_at(rows[0]) } else { None };
+    // Room for the borders, a blank line and the keys, and a line of margin.
+    let keys = if series.is_some() { 3 } else { 1 };
+    let max_lines = (screen.height as usize).saturating_sub(5 + keys).max(1);
 
     // Each item as on the list (completed ones aren't numbered), its long text
     // wrapped under itself, until the popup reaches the screen height.
@@ -1109,11 +1160,36 @@ fn draw_confirm(frame: &mut Frame, app: &App, rows: &[usize]) {
             let s = if under == 1 { "" } else { "s" };
             body.push(Line::from(format!("{indent}and its {under} sub-item{s}")).dim());
         }
+        // One that repeats asks what to delete: the day's, or the rest.
+        if series.is_some()
+            && let Some(repeat) = item.repeat
+        {
+            let note = format!("It repeats {}", repeat.describe());
+            let room = max_lines.saturating_sub(body.len());
+            body.extend(wrap(&note, text_width, room).into_iter().map(|line| Line::from(format!("{indent}{line}")).dim()));
+        }
     }
     body.push(Line::default());
-    body.push(
-        Line::from(vec!["d".bold().fg(Color::Red), " delete   ".into(), "c".bold(), " cancel".into()]).centered(),
-    );
+    // Inside the borders, after the key.
+    let room = (width as usize).saturating_sub(6);
+    let choice = |key: &'static str, what: &str, style: Style| {
+        Line::from(vec![" ".into(), Span::styled(key, style.bold()), "  ".into(), truncate(what, room).into()])
+    };
+    match series {
+        Some((_, true)) => {
+            body.push(choice("d", "skip just this day", Style::new().fg(Color::Red)));
+            body.push(choice("s", "stop it from here on", Style::new().fg(Color::Red)));
+            body.push(choice("c", "cancel", Style::new()));
+        }
+        Some((_, false)) => {
+            body.push(choice("d", "delete just this one", Style::new().fg(Color::Red)));
+            body.push(choice("s", "stop repeating too", Style::new().fg(Color::Red)));
+            body.push(choice("c", "cancel", Style::new()));
+        }
+        None => body.push(
+            Line::from(vec!["d".bold().fg(Color::Red), " delete   ".into(), "c".bold(), " cancel".into()]).centered(),
+        ),
+    }
 
     let title = if rows.len() == 1 { " Delete item? ".to_string() } else { format!(" Delete {} items? ", rows.len()) };
     let area = centered(screen, width, body.len() as u16 + 2);
@@ -1403,7 +1479,8 @@ fn year_preview_split(area: Rect) -> Option<(Rect, Rect, Rect)> {
 /// fit the rest is counted.
 fn draw_day_preview(frame: &mut Frame, app: &App, day: NaiveDate, area: Rect) {
     let width = area.width as usize;
-    let items = app.store.items(day);
+    let shown = app.calendar_items(day);
+    let items: Vec<&Item> = shown.iter().map(|(item, _)| item.as_ref()).collect();
     let date = fit_first(&[day.format("%A %-d %B %Y").to_string().as_str(), &day.format("%a %-d %b %Y").to_string()], width).to_string();
     let open = items.iter().filter(|item| item.depth == 0 && !item.done).count();
     let done = items.iter().filter(|item| item.depth == 0 && item.done).count();
@@ -1442,7 +1519,7 @@ fn draw_day_preview(frame: &mut Frame, app: &App, day: NaiveDate, area: Rect) {
             .enumerate()
             .map(|(row, part)| {
                 let lead = if row == 0 { prefix.clone().dark_gray() } else { indent.clone().into() };
-                Line::from(vec![lead, Span::styled(part, item_style(item))])
+                Line::from(vec![lead, Span::styled(part, calendar_style(item, shown[i].1))])
             })
             .collect();
         // Leave a row for the count unless this is the last item and fits.
@@ -1457,10 +1534,16 @@ fn draw_day_preview(frame: &mut Frame, app: &App, day: NaiveDate, area: Rect) {
     frame.render_widget(Paragraph::new(lines), body);
 }
 
-/// A day's top-level items: the calendar leaves sub-items out, to keep
-/// each day short.
-fn top_level(app: &App, day: NaiveDate) -> Vec<&Item> {
-    app.store.items(day).iter().filter(|item| item.depth == 0).collect()
+/// A day's top-level items, with whether each previews a repeat: the
+/// calendar leaves sub-items out, to keep each day short.
+fn top_level(app: &App, day: NaiveDate) -> Vec<(std::borrow::Cow<'_, Item>, bool)> {
+    app.calendar_items(day).into_iter().filter(|(item, _)| item.depth == 0).collect()
+}
+
+/// An item's style in the calendar: a repeat's copy to come dim and in
+/// italics, as on the list.
+fn calendar_style(item: &Item, preview: bool) -> Style {
+    if preview { item_style(item).add_modifier(Modifier::DIM | Modifier::ITALIC) } else { item_style(item) }
 }
 
 /// The days of the selected week, top to bottom, each with its items.
@@ -1498,7 +1581,7 @@ fn draw_week(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
 
         let shown = if items.len() <= room { items.len() } else { room.saturating_sub(1) };
         let mut number = 0;
-        for item in &items[..shown] {
+        for (item, preview) in &items[..shown] {
             let prefix = if item.done {
                 "   ✓ ".to_string()
             } else {
@@ -1506,7 +1589,7 @@ fn draw_week(frame: &mut Frame, app: &App, calendar: &Calendar, area: Rect) {
                 format!("  {number:>2}. ")
             };
             let text = truncate(&item.text, width.saturating_sub(prefix.width()));
-            lines.push(Line::from(vec![prefix.dark_gray(), Span::styled(text, item_style(item))]));
+            lines.push(Line::from(vec![prefix.dark_gray(), Span::styled(text, calendar_style(item, *preview))]));
         }
         if shown < items.len() {
             lines.push(Line::from(format!("     +{} more", items.len() - shown)).dim());
@@ -1557,14 +1640,14 @@ fn draw_month_day(frame: &mut Frame, app: &App, calendar: &Calendar, day: NaiveD
     let text_width = (rect.width as usize).saturating_sub(1);
     let mut lines = vec![Line::from(number)];
     if rect.height == 1 {
-        if items.iter().any(|item| !item.done) && text_width >= 3 {
+        if items.iter().any(|(item, _)| !item.done) && text_width >= 3 {
             lines[0].push_span("•".yellow());
         }
     } else {
         let room = rect.height as usize - 1;
         let shown = if items.len() <= room { items.len() } else { room.saturating_sub(1) };
-        for item in &items[..shown] {
-            lines.push(Line::from(Span::styled(truncate(&item.text, text_width), item_style(item))));
+        for (item, preview) in &items[..shown] {
+            lines.push(Line::from(Span::styled(truncate(&item.text, text_width), calendar_style(item, *preview))));
         }
         if shown < items.len() {
             lines.push(Line::from(truncate(&format!("+{} more", items.len() - shown), text_width)).dim());
@@ -1631,9 +1714,9 @@ fn draw_year_month(frame: &mut Frame, app: &App, calendar: &Calendar, first: Nai
                 spans.push(snake_cell(game, day));
                 continue;
             }
-            let items = app.store.items(day);
+            let items = app.calendar_items(day);
             let mut style = Style::new();
-            if items.iter().any(|item| !item.done) {
+            if items.iter().any(|(item, _)| !item.done) {
                 style = style.fg(Color::Yellow).bold();
             } else if !items.is_empty() {
                 style = style.fg(Color::DarkGray);
@@ -1885,10 +1968,10 @@ fn draw_timeline(frame: &mut Frame, app: &App, area: Rect, title: &str, selected
     }
     let twelve = app.settings.twelve_hour;
     // The day's top-level items, as on the list.
-    let entries: Vec<(crate::app::Slot, &Item)> = app
+    let entries: Vec<(crate::app::Slot, std::borrow::Cow<Item>)> = app
         .slots()
         .into_iter()
-        .map(|slot| (slot, &app.store.items(slot.day)[slot.index]))
+        .map(|slot| (slot, app.shown(slot)))
         .filter(|(_, item)| item.depth == 0)
         .collect();
     let timed: Vec<(usize, TimeSlot)> = entries
@@ -2016,7 +2099,7 @@ fn draw_timeline(frame: &mut Frame, app: &App, area: Rect, title: &str, selected
         (above + placed.column) % 2 == 1
     };
     for placed in placed_blocks.iter().copied() {
-        let (slot, item) = entries[placed.item];
+        let (slot, ref item) = entries[placed.item];
         let time = timed.iter().find(|(i, _)| *i == placed.item).map(|(_, time)| *time).expect("placed items have times");
         let start = minute_row(time.start);
         let end = (minutes_in(time.end) * per_hour).div_ceil(60).max(start + 1);
@@ -2191,6 +2274,345 @@ fn draw_remind(frame: &mut Frame, app: &App, picker: &reminder::Picker) {
     if let Some(col) = cursor {
         frame.set_cursor_position(Position::new(inner.x + (col as u16).min(inner.width.saturating_sub(1)), inner.y));
     }
+}
+
+/// The `Space r` popup: what the item repeats on, then which days of the
+/// week, or every how many days or months. With a repeat to show and room
+/// for it, it takes the list's place instead, beside the year ahead with
+/// every day it falls on highlighted.
+fn draw_repeat(frame: &mut Frame, app: &App, picker: &repeat::Picker, main: Rect) {
+    let Some(item) = app.store.items(picker.day).get(picker.index) else { return };
+    // The repeat to show: the one being chosen (none yet if it can't be
+    // saved), or before choosing, the one it has.
+    let shown = match &picker.stage {
+        Some(_) => Some(picker.shown()),
+        None => picker.current.map(Some),
+    };
+    let title = match &picker.stage {
+        Some(_) if matches!(picker.timing, Some(repeat::Timing::Start(_))) => [" Start time ", " Start "],
+        Some(_) if matches!(picker.timing, Some(repeat::Timing::Until(_))) => [" Last day ", " Ends "],
+        Some(_) if picker.timing.is_some() => [" End time ", " End "],
+        Some(repeat::Stage::Weeks { .. }) => [" Days of the week ", " Weekly "],
+        Some(repeat::Stage::Days(_)) => [" Every few days ", " Days "],
+        Some(repeat::Stage::Months(_)) => [" Every few months ", " Months "],
+        None => [" Repeat ", " Repeat "],
+    };
+    let hints: &[&str] = match &picker.stage {
+        Some(_) if picker.timing.is_some() => &[" enter next · esc back ", " enter "],
+        Some(_) if picker.confirming => &[" enter/y save · n/esc back ", " y/n "],
+        Some(_) => &[" enter save · esc back ", " enter "],
+        None => &[" esc cancel ", " esc "],
+    };
+    let window = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(Color::Magenta));
+
+    // The choices' lines, as wide as they'd be beside the year, to know how
+    // tall they are above it.
+    let tall = repeat_lines(app, picker, &item.text, REPEAT_PANEL_MIN as usize - 2).0.len() as u16;
+    if let (Some(shown), Some(split)) = (shown, repeat_year_split(window.inner(main), tall)) {
+        // The months from the one it starts in (or this one, if that's
+        // gone), for a year.
+        let start = picker.from.max(app.today).with_day(1).expect("every month has a 1st");
+        let end = start + chrono::Months::new(11);
+        let period = format!("{} – {}", start.format("%b %Y"), end.format("%b %Y"));
+        let room = (main.width as usize).saturating_sub(4);
+        let titles = [format!("{}· {} · {period} ", title[0], item.text), format!("{}· {period} ", title[0]), title[0].to_string()];
+        let titled = titles.iter().find(|title| title.width() <= room).cloned().unwrap_or_else(|| title[1].to_string());
+        let block = window
+            .title(Line::from(titled.bold()).centered())
+            .title_bottom(Line::from(fit_first(hints, room)).centered().dim());
+        frame.render_widget(Clear, main);
+        frame.render_widget(block, main);
+        draw_repeat_year(frame, app, shown, picker.from, start, split.months);
+        if split.beside {
+            for y in split.divider.top()..split.divider.bottom() {
+                frame.render_widget(Line::from("│").dark_gray().centered(), Rect { y, height: 1, ..split.divider });
+            }
+        } else {
+            frame.render_widget(Line::from("─".repeat(split.divider.width as usize)).dark_gray(), split.divider);
+        }
+        let panel = Rect { x: split.panel.x + 1, width: split.panel.width.saturating_sub(2), ..split.panel };
+        let (lines, cursor) = repeat_lines(app, picker, &item.text, panel.width as usize);
+        frame.render_widget(Paragraph::new(lines), panel);
+        if let Some(col) = cursor {
+            frame.set_cursor_position(Position::new(panel.x + (col as u16).min(panel.width.saturating_sub(1)), panel.y));
+        }
+        return;
+    }
+
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(50);
+    let room = (width as usize).saturating_sub(4).max(1);
+    let (lines, cursor) = repeat_lines(app, picker, &item.text, room);
+    let height = (lines.len() as u16 + 2).min(screen.height.saturating_sub(2));
+    let area = centered(screen, width, height);
+    let block = window
+        .title(fit_first(&title, room + 2).bold())
+        .title_bottom(Line::from(fit_first(hints, room + 2)).centered().dim())
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+    if let Some(col) = cursor {
+        frame.set_cursor_position(Position::new(inner.x + (col as u16).min(inner.width.saturating_sub(1)), inner.y));
+    }
+}
+
+/// The narrowest the repeat's choices can be beside the year.
+const REPEAT_PANEL_MIN: u16 = 30;
+
+/// Where the repeat window puts the year ahead, the choices, and the line
+/// between them: side by side (`beside`), or the choices above.
+struct RepeatSplit {
+    months: Rect,
+    divider: Rect,
+    panel: Rect,
+    beside: bool,
+}
+
+/// How many columns of months fit `width`, with a column of space at each
+/// edge, up to four.
+fn month_columns(width: u16) -> u16 {
+    (width.saturating_sub(2) + YEAR_MONTH_GAP) / (YEAR_MONTH_WIDTH + YEAR_MONTH_GAP)
+}
+
+/// How many of the twelve months fit in `area`.
+fn months_shown(area: Rect) -> u16 {
+    (month_columns(area.width).min(4) * ((area.height + 1) / (YEAR_MONTH_HEIGHT + 1))).min(12)
+}
+
+/// Splits the repeat window's inside into the months, a divider and the
+/// choices (`tall` lines above the months, or beside them), whichever shows
+/// more of the year, or `None` if neither shows at least two months.
+fn repeat_year_split(area: Rect, tall: u16) -> Option<RepeatSplit> {
+    let beside = (2..=4u16).rev().find_map(|columns| {
+        let width = columns * YEAR_MONTH_WIDTH + (columns - 1) * YEAR_MONTH_GAP + 2;
+        (width + YEAR_DIVIDER + REPEAT_PANEL_MIN <= area.width).then(|| {
+            let [months, divider, panel] =
+                Layout::horizontal([Constraint::Length(width), Constraint::Length(YEAR_DIVIDER), Constraint::Fill(1)]).areas(area);
+            RepeatSplit { months, divider, panel, beside: true }
+        })
+    });
+    let above = (area.width >= REPEAT_PANEL_MIN).then(|| {
+        let [panel, divider, months] =
+            Layout::vertical([Constraint::Length(tall), Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+        RepeatSplit { months, divider, panel, beside: false }
+    });
+    [beside, above]
+        .into_iter()
+        .flatten()
+        .filter(|split| months_shown(split.months) >= 2)
+        .max_by_key(|split| (months_shown(split.months), split.beside))
+}
+
+/// Twelve months from `start`, as many side by side as fit, with the days
+/// `repeat` falls on highlighted, and the item's own day (`day`) underlined.
+fn draw_repeat_year(frame: &mut Frame, app: &App, repeat: Option<repeat::Repeat>, day: NaiveDate, start: NaiveDate, area: Rect) {
+    let columns = month_columns(area.width).clamp(1, 4);
+    let used = columns * YEAR_MONTH_WIDTH + (columns - 1) * YEAR_MONTH_GAP;
+    let area = Rect { x: area.x + area.width.saturating_sub(used) / 2, width: used.min(area.width), ..area };
+    let rows = ((area.height + 1) / (YEAR_MONTH_HEIGHT + 1)).max(1);
+    for n in 0..12u16 {
+        let (row, column) = (n / columns, n % columns);
+        if row >= rows {
+            break;
+        }
+        let first = start + chrono::Months::new(n.into());
+        let x = area.x + column * (YEAR_MONTH_WIDTH + YEAR_MONTH_GAP);
+        let y = area.y + row * (YEAR_MONTH_HEIGHT + 1);
+        let rect = Rect::new(x, y, YEAR_MONTH_WIDTH.min(area.right().saturating_sub(x)), YEAR_MONTH_HEIGHT.min(area.bottom().saturating_sub(y)));
+
+        let name = if first.month() == 1 || n == 0 { first.format("%B %Y") } else { first.format("%B") };
+        let mut lines = vec![Line::from(name.to_string()).centered().bold(), Line::from("Mo Tu We Th Fr Sa Su").dim()];
+        for monday in calendar::month_weeks(first) {
+            let mut spans = Vec::new();
+            for i in 0..7u64 {
+                let date = monday + Days::new(i);
+                if i > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                if date.month() != first.month() {
+                    spans.push(Span::raw("  "));
+                    continue;
+                }
+                // Copies only come from today on.
+                let falls = date >= app.today && repeat.is_some_and(|repeat| repeat.occurs_on(date));
+                let mut style = if falls {
+                    Style::new().fg(Color::Black).bg(Color::Magenta).bold()
+                } else if date < app.today {
+                    Style::new().fg(Color::DarkGray)
+                } else if date == app.today {
+                    Style::new().fg(Color::Green).bold()
+                } else {
+                    Style::new()
+                };
+                if date == day {
+                    style = style.add_modifier(Modifier::UNDERLINED);
+                }
+                spans.push(Span::styled(format!("{:>2}", date.day()), style));
+            }
+            lines.push(Line::from(spans));
+        }
+        frame.render_widget(Paragraph::new(lines), rect);
+    }
+}
+
+/// What the repeat popup says, `room` wide, and where its cursor goes on
+/// the first line, when typing a number.
+fn repeat_lines(app: &App, picker: &repeat::Picker, text: &str, room: usize) -> (Vec<Line<'static>>, Option<usize>) {
+    let room = room.max(1);
+    let explain = |lines: &mut Vec<Line<'static>>, text: &str, style: Style| {
+        lines.extend(wrap(text, room, usize::MAX).into_iter().map(|part| Line::from(part).style(style)));
+    };
+    // How a repeat would go, in words, with the day of the first copy.
+    let in_words = |repeat: repeat::Repeat| {
+        let next = repeat.next_after(picker.after).map_or(String::new(), |next| {
+            format!(" Next: {}.", Deadline { date: next, time: None }.describe(app.today, app.settings.twelve_hour))
+        });
+        let words = repeat.describe();
+        format!("{}{}.{next}", words[..1].to_uppercase(), &words[1..])
+    };
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut cursor = None;
+    let twelve = app.settings.twelve_hour;
+    let times = |(start, end): (chrono::NaiveTime, chrono::NaiveTime)| {
+        format!("{}–{}", deadline::format_time(start, twelve), deadline::format_time(end, twelve))
+    };
+    match &picker.stage {
+        // After Enter: its time, if it's to have one, typed as when planning.
+        Some(_) if picker.timing.is_some() => {
+            let (input, help) = match &picker.timing {
+                Some(repeat::Timing::Start(input)) => {
+                    let keep = match picker.times {
+                        Some(had) => format!("Enter alone keeps {}.", times(had)),
+                        None => "Enter alone leaves it without a time.".into(),
+                    };
+                    (input, format!("Start time on each day, like 9, 9:30 or 1pm, if it has one. {keep}"))
+                }
+                Some(repeat::Timing::End(start, input)) => {
+                    (input, format!("From {} until? Enter alone: an hour.", deadline::format_time(*start, twelve)))
+                }
+                Some(repeat::Timing::Until(input)) => {
+                    (input, "Last day it repeats on, like 2026-12-31 or 31 Dec, if it ends. Enter alone: no end.".into())
+                }
+                None => unreachable!("timing is some"),
+            };
+            cursor = Some(2 + input.text[..input.cursor].width());
+            lines.push(Line::from(vec!["› ".magenta().bold(), truncate(&input.text, room.saturating_sub(2)).into()]));
+            lines.push(Line::default());
+            explain(&mut lines, &help, Style::new().dim());
+            // The last day, in words, as soon as it reads as one.
+            if matches!(picker.timing, Some(repeat::Timing::Until(_)))
+                && let Some(repeat) = picker.shown()
+            {
+                lines.push(Line::default());
+                explain(&mut lines, &in_words(repeat), Style::new().fg(Color::Cyan));
+            }
+            if let Some(error) = &picker.error {
+                explain(&mut lines, error, Style::new().fg(Color::Red));
+            }
+        }
+        // After that: asking first, what it would be in words.
+        Some(_) if picker.confirming => {
+            if let Some(repeat) = picker.chosen() {
+                let at = picker.times.map_or(String::new(), |had| format!(", {}", times(had)));
+                explain(&mut lines, &format!("Repeat {}{at}?", repeat.describe()), Style::new().fg(Color::Magenta).bold());
+                let next = repeat.next_after(picker.after).map_or(String::new(), |next| {
+                    format!("Next: {}.", Deadline { date: next, time: None }.describe(app.today, app.settings.twelve_hour))
+                });
+                explain(&mut lines, &next, Style::new().fg(Color::Cyan));
+            }
+            lines.push(Line::default());
+            let save = vec!["enter/y".magenta().bold(), " save".into()];
+            let back = vec!["n/esc".bold(), truncate(" back", room.saturating_sub(5)).into()];
+            // On one line where they fit.
+            if room >= 34 {
+                lines.push(Line::from([save, vec!["   ".into()], back].concat()));
+            } else {
+                lines.push(Line::from(save));
+                lines.push(Line::from(back));
+            }
+        }
+        Some(stage) => {
+            let every = stage.every();
+            cursor = Some(2 + every.text[..every.cursor].width());
+            let unit = stage.unit();
+            let unit = if every.text.trim() == "1" { unit.trim_end_matches('s') } else { unit };
+            let unit = match stage {
+                repeat::Stage::Months(_) => format!(" {unit}, on the {}", repeat::ordinal(picker.from.day())),
+                _ => format!(" {unit}"),
+            };
+            lines.push(Line::from(vec![
+                "› ".magenta().bold(),
+                every.text.clone().into(),
+                truncate(&unit, room.saturating_sub(3 + every.text.width())).dim(),
+            ]));
+            if let repeat::Stage::Weeks { days, cursor, .. } = stage {
+                // Two letters a day where there's room, one where there isn't,
+                // with gaps where there's more; chosen days in brackets too,
+                // to show without colour.
+                let (wide, gaps) = (room >= 28, room >= 34);
+                let mut spans = Vec::new();
+                for n in 0..7 {
+                    let day = repeat::weekday(n);
+                    let name = day.to_string();
+                    let name = if wide { &name[..2] } else { &name[..1] };
+                    let chosen = days.has(day);
+                    let text = if chosen { format!("[{name}]") } else { format!(" {name} ") };
+                    let mut style = if chosen { Style::new().fg(Color::Magenta).bold() } else { Style::new().dim() };
+                    if n == *cursor {
+                        style = style.bg(BLOCK_SELECTED_BG).add_modifier(Modifier::UNDERLINED);
+                    }
+                    spans.push(Span::styled(text, style));
+                    if gaps {
+                        spans.push(" ".into());
+                    }
+                }
+                lines.push(Line::default());
+                lines.push(Line::from(spans));
+            }
+            lines.push(Line::default());
+            match picker.chosen() {
+                Some(repeat) => explain(&mut lines, &in_words(repeat), Style::new().fg(Color::Cyan)),
+                None => explain(&mut lines, &format!("Every how many {}?", stage.unit()), Style::new().dim()),
+            }
+            if let Some(error) = &picker.error {
+                explain(&mut lines, error, Style::new().fg(Color::Red));
+            }
+        }
+        None => {
+            // The keys first, so a short screen cuts off the explanation instead.
+            lines.push(Line::from(truncate(text, room)).bold());
+            lines.push(Line::default());
+            let monthly = format!("every few months, on the {}…", repeat::ordinal(picker.from.day()));
+            for (n, &key) in picker.choices().iter().enumerate() {
+                let what = match key {
+                    'w' => "on days of the week…",
+                    'd' => "every few days…",
+                    'm' => monthly.as_str(),
+                    _ => "stop repeating",
+                };
+                let what = truncate(what, room.saturating_sub(3));
+                // The highlighted one across the whole width, reversed
+                // without colour.
+                let line = if n == picker.selected {
+                    let fill = " ".repeat(room.saturating_sub(3 + what.width()));
+                    Line::from(vec![format!("{key}  ").bold(), format!("{what}{fill}").into()]).style(Style::new().bg(BLOCK_SELECTED_BG))
+                } else {
+                    Line::from(vec![format!("{key}  ").magenta().bold(), what.into()])
+                };
+                lines.push(line);
+            }
+            lines.push(Line::default());
+            if let Some(current) = picker.current {
+                explain(&mut lines, &format!("Repeats {}.", current.describe()), Style::new().fg(Color::Cyan));
+            }
+            explain(&mut lines, "Each time, a copy is added to its day, with the same time.", Style::new().dim());
+        }
+    }
+    (lines, cursor)
 }
 
 /// The narrowest search that has room for a preview of the selected item.
@@ -3840,7 +4262,168 @@ mod tests {
         let other = crate::update::Install::Other;
         app.mode = Mode::Update(Box::new(crate::update::Popup::newer("99.0.0".into(), changelog.into(), other)));
         shot(&app, "an update");
+        app.mode = Mode::Normal;
+        type_str(&mut app, "h r");
+        shot(&app, "choosing how it repeats");
+        type_str(&mut app, "w2l ");
+        shot(&app, "days of the week");
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "9");
+        shot(&app, "a repeat's start time");
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        shot(&app, "a repeat's last day");
+        press(&mut app, KeyCode::Enter);
+        shot(&app, "saving a repeat");
+        press(&mut app, KeyCode::Enter);
+        shot(&app, "repeating");
+        type_str(&mut app, "d");
+        shot(&app, "deleting one that repeats");
+        type_str(&mut app, "c");
         out
+    }
+
+    #[test]
+    fn repeating_beside_the_year_ahead() {
+        let (mut app, _dir) = app_with(&["Team meeting", "Water plants"]);
+        // Monday starts chosen; add Thursday and Sunday.
+        type_str(&mut app, " rwlll lll ");
+        let terminal = render_sized(&app, 100, 32);
+        assert_snapshot!(terminal.backend());
+        // The days it falls on are highlighted, from today on: in this row
+        // of four months, each Monday, Thursday and Sunday, and no other day.
+        let buffer = terminal.backend().buffer();
+        let line = |y: u16| (0..100).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        let row = (0..32).find(|&y| line(y).contains("October 2026")).unwrap();
+        let week = row + 3;
+        let highlighted: Vec<String> = (0..100)
+            .filter(|&x| buffer[(x, week)].bg == Color::Magenta)
+            .map(|x| buffer[(x, week)].symbol().to_string())
+            .collect();
+        assert_eq!(highlighted.concat(), " 5 811 2 5 8 71013 4 710", "{}", line(week));
+        // Without room, it's the popup alone.
+        assert!(!render_sized(&app, 60, 16).backend().to_string().contains("October 2026"));
+        // Typing a last day takes the days after it off at once.
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "1 Dec");
+        let terminal = render_sized(&app, 100, 32);
+        let buffer = terminal.backend().buffer();
+        let line = |y: u16| (0..100).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        let week = (0..32).find(|&y| line(y).contains("October 2026")).unwrap() + 3;
+        let highlighted: Vec<String> = (0..100)
+            .filter(|&x| buffer[(x, week)].bg == Color::Magenta)
+            .map(|x| buffer[(x, week)].symbol().to_string())
+            .collect();
+        assert_eq!(highlighted.concat(), " 5 811 2 5 8");
+        assert!(terminal.backend().to_string().contains("until 1 Dec 2026"));
+    }
+
+    #[test]
+    fn a_repeat_previewed_on_a_day_ahead() {
+        let (mut app, _dir) = app_with(&["Stand-up"]);
+        let time = |h, m| chrono::NaiveTime::from_hms_opt(h, m, 0).unwrap();
+        app.store.set_time(today(), 0, Some(TimeSlot { date: today(), start: time(10, 15), end: time(10, 45) })).unwrap();
+        app.store.set_repeat(today(), 0, crate::repeat::Repeat::from_stored("1w mon from 2026-10-05"), None, today()).unwrap();
+        app.store.set_notes(today(), 0, "Today's minutes".into()).unwrap();
+        let monday = today() + chrono::Days::new(7);
+        app.store.insert(monday, 0, "Dentist".into()).unwrap();
+        app.day = monday;
+        let terminal = render_sized(&app, 60, 6);
+        assert_snapshot!(terminal.backend());
+        // Dim, so it's told apart from what's really there.
+        let buffer = terminal.backend().buffer();
+        let row = |text: &str| (0..6u16).find(|&y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>().contains(text)).unwrap();
+        assert!(buffer[(5, row("Stand-up"))].modifier.contains(Modifier::DIM));
+        assert!(!buffer[(5, row("Dentist"))].modifier.contains(Modifier::DIM));
+        type_str(&mut app, " t");
+        assert_snapshot!("a_repeat_previewed_on_the_timeline", render_sized(&app, 50, 16).backend());
+    }
+
+    #[test]
+    fn the_year_calendar_marks_the_days_a_repeat_falls_on() {
+        let (mut app, _dir) = app_with(&["Stand-up"]);
+        app.store.set_repeat(today(), 0, crate::repeat::Repeat::from_stored("1w mon from 2026-10-05"), None, today()).unwrap();
+        type_str(&mut app, " c");
+        // The month lists it on every Monday, dim and in italics.
+        let month = render_sized(&app, 100, 40).backend().to_string();
+        assert_eq!(month.matches("Stand-up").count(), 4, "{month}");
+        type_str(&mut app, "y");
+        // The days in October's week rows coloured as having open items.
+        let marked = |app: &App| {
+            let terminal = render_sized(app, 100, 40);
+            let buffer = terminal.backend().buffer().clone();
+            let line = |y: u16| (0..100).map(|x| buffer[(x, y)].symbol()).collect::<Vec<_>>().concat();
+            let top = (0..40).find(|&y| line(y).contains("October")).unwrap();
+            // Counted in cells, as the borders take more than a byte each.
+            let column = |y: u16, text: &str| (0..100u16).find(|&x| line(y).chars().skip(x.into()).collect::<String>().starts_with(text)).unwrap();
+            // The name is centred over the month's 20 columns, rounding right.
+            let x = column(top, "October") - 7;
+            let mut days = Vec::new();
+            for y in top + 2..top + 8 {
+                for x in x..x + 20 {
+                    let cell = &buffer[(x, y)];
+                    if cell.fg == Color::Yellow && cell.symbol() != " " {
+                        days.push(cell.symbol().to_string());
+                    }
+                }
+            }
+            days.concat()
+        };
+        // Today (the 5th) is green; the Mondays after it are yellow.
+        assert_eq!(marked(&app), "121926");
+        app.settings.no_calendar_repeats = true;
+        assert_eq!(marked(&app), "");
+    }
+
+    #[test]
+    fn the_leader_menu_over_the_plan() {
+        let (mut app, _dir) = app_with(&["Stand-up", "Water plants"]);
+        type_str(&mut app, " p ");
+        assert_snapshot!(render_sized(&app, 70, 14).backend());
+    }
+
+    #[test]
+    fn repeating() {
+        let (mut app, _dir) = app_with(&["Team meeting", "Water plants"]);
+        type_str(&mut app, " rwlll ");
+        assert_snapshot!("repeat_weekdays", render_sized(&app, 60, 16).backend());
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "10:15");
+        assert_snapshot!("repeat_time", render_sized(&app, 60, 16).backend());
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, "31 Dec");
+        assert_snapshot!("repeat_until", render_sized(&app, 60, 16).backend());
+        press(&mut app, KeyCode::Enter);
+        assert_snapshot!("repeat_confirm", render_sized(&app, 60, 16).backend());
+        press(&mut app, KeyCode::Enter);
+        type_str(&mut app, " r");
+        assert_snapshot!("repeat_choosing", render_sized(&app, 60, 16).backend());
+        // The highlighted option is the one it repeats in now, across the
+        // popup; j moves it down.
+        let highlighted = |app: &App| {
+            let terminal = render_sized(app, 60, 16);
+            let buffer = terminal.backend().buffer();
+            (0..16u16)
+                .filter(|&y| (0..60).filter(|&x| buffer[(x, y)].bg == BLOCK_SELECTED_BG).count() >= 40)
+                .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+        let rows = highlighted(&app);
+        assert!(rows.len() == 1 && rows[0].contains("w  on days of the week"), "{rows:?}");
+        type_str(&mut app, "j");
+        let rows = highlighted(&app);
+        assert!(rows.len() == 1 && rows[0].contains("d  every few days"), "{rows:?}");
+        type_str(&mut app, "k");
+        press(&mut app, KeyCode::Esc);
+        type_str(&mut app, "d");
+        assert_snapshot!("repeat_delete", render_sized(&app, 60, 12).backend());
+        // A preview: skip its day, or stop it there.
+        type_str(&mut app, "c");
+        app.day = today() + chrono::Days::new(3);
+        type_str(&mut app, "ggd");
+        assert_snapshot!("repeat_skip", render_sized(&app, 60, 12).backend());
     }
 
     const RICH_NOTES: &str = "# Plan\n\nSee the **draft** and the `budget.xlsx` sheet, then *ask* [Sam](https://example.com).\n\n## To do\n\n- [x] Book a room\n- [ ] Send the agenda\n  - with the numbers\n1. First\n2. Second\n\n> Keep it short.\n\n```\nlet total = sum(q3);\n```\n\n| Who | When |\n|---|---|\n| Sam | Mon |\n\n---\n\nThe end.";

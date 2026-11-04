@@ -80,6 +80,7 @@ pub enum Command {
     PatchNotes,
     Timeline,
     Plan,
+    Repeat,
 }
 
 /// Every command, in the order the help and the starter file list them:
@@ -140,6 +141,7 @@ const COMMANDS: &[(Command, &str, &str, &str)] = &[
     (Command::Workspaces, "workspaces", "workspaces", "Workspaces: switch, create or delete"),
     (Command::Timeline, "timeline", "timeline", "The day as a timeline, with the time now"),
     (Command::Plan, "plan", "plan the day", "Plan the day: give items a start and end time"),
+    (Command::Repeat, "repeat", "repeat", "Repeat the item: on days of the week, or every few days or months"),
     (Command::PatchNotes, "patch-notes", "patch notes", "Patch notes: what changed in every release"),
 ];
 
@@ -424,6 +426,7 @@ const DEFAULT_LEADER: &[(&str, Command)] = &[
     ("e", Command::ViewDay),
     ("t", Command::Timeline),
     ("p", Command::Plan),
+    ("r", Command::Repeat),
 ];
 
 const DEFAULT_GROUPS: &[(&str, &str)] = &[("s", "search")];

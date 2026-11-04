@@ -16,6 +16,7 @@ mod notes_files;
 mod options;
 mod outline;
 mod reminder;
+mod repeat;
 mod safety;
 mod search;
 mod setup;
@@ -66,6 +67,7 @@ fn main() -> io::Result<()> {
             let outcome = match open_for_command_line(&settings, todoro_file)? {
                 Ok((mut store, _)) => {
                     let now = Local::now();
+                    store.catch_up(now.naive_local(), !settings.no_auto_complete)?;
                     list::add(&mut store, now.date_naive(), now.time(), &text, parent, settings.pin_new_items)?
                 }
                 Err(message) => Err(message),
@@ -88,6 +90,8 @@ fn main() -> io::Result<()> {
             };
             let now = Local::now();
             let (today, time) = (now.date_naive(), now.time());
+            // As todoro would show it, so the numbers are the same.
+            store.catch_up(now.naive_local(), !settings.no_auto_complete)?;
             if !force {
                 match list::delete_preview(&store, today, time, &address) {
                     Ok(preview) => print!("{preview}"),
@@ -113,6 +117,7 @@ fn main() -> io::Result<()> {
                 Ok(opened) => opened,
                 Err(message) => fail(&message),
             };
+            store.catch_up(Local::now().naive_local(), !settings.no_auto_complete)?;
             match list::undo(&mut store)? {
                 Ok(message) => println!("{message}"),
                 Err(message) => fail(&message),
@@ -187,7 +192,10 @@ fn main() -> io::Result<()> {
             app.workspaces = Some(workspaces);
             app.workspace = Some(name);
         }
+        // Today's copies, and what ended while todoro was closed.
+        app.now = Local::now().time();
         app.store.roll_over(today)?;
+        app.auto_complete()?;
         app.show_whats_new()?;
         app.start_update_check();
         run(&mut terminal, &mut app)?;
@@ -205,14 +213,16 @@ fn main() -> io::Result<()> {
 }
 
 /// Today's list as text, from `TODORO_FILE` or the workspace todoro would
-/// open, `numbered` for `todoro -d`'s list (`list::numbered`). It only
-/// reads: nothing is set up, saved or moved on.
+/// open, `numbered` for `todoro -d`'s list (`list::numbered`). It shows
+/// the list as todoro would, with today's copies of repeating items, but
+/// only reads: nothing is set up, saved or moved on.
 fn list_today(settings: &Settings, todoro_file: Option<PathBuf>, numbered: bool) -> io::Result<String> {
-    let (store, workspace) = match open_for_command_line(settings, todoro_file)? {
+    let (mut store, workspace) = match open_for_command_line_as(settings, todoro_file, Store::open_read_only)? {
         Ok(opened) => opened,
         Err(message) => return Ok(format!("{message}\n")),
     };
     let now = Local::now();
+    store.catch_up(now.naive_local(), !settings.no_auto_complete)?;
     // The workspace's name helps only when there's more than one.
     let several = settings.data_dir.as_ref().is_some_and(|dir| Workspaces::new(dir.clone()).list().is_ok_and(|names| names.len() > 1));
     let workspace = workspace.filter(|_| several);
@@ -240,6 +250,15 @@ fn confirm(question: &str) -> io::Result<bool> {
 /// The todos a command-line flag works on: `TODORO_FILE`, or the workspace
 /// todoro would open, with its name. Or why there are none yet.
 fn open_for_command_line(settings: &Settings, todoro_file: Option<PathBuf>) -> io::Result<Result<(Store, Option<String>), String>> {
+    open_for_command_line_as(settings, todoro_file, Store::open)
+}
+
+/// `open_for_command_line`, opening the file with `open`.
+fn open_for_command_line_as(
+    settings: &Settings,
+    todoro_file: Option<PathBuf>,
+    open: fn(PathBuf) -> io::Result<Store>,
+) -> io::Result<Result<(Store, Option<String>), String>> {
     let (path, workspace) = match (todoro_file, &settings.data_dir) {
         (Some(file), _) => (file, None),
         (None, Some(dir)) => match workspaces::pick(dir, settings.workspace.as_deref())? {
@@ -248,7 +267,7 @@ fn open_for_command_line(settings: &Settings, todoro_file: Option<PathBuf>) -> i
         },
         (None, None) => return Ok(Err("todoro isn't set up yet. Run todoro to choose a folder.".into())),
     };
-    Ok(Ok((Store::open(path)?, workspace)))
+    Ok(Ok((open(path)?, workspace)))
 }
 
 /// Whether the terminal reports keys like Shift+Enter apart, once asked.
@@ -365,6 +384,8 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> io::Result<()>
         }
         app.tick(Instant::now());
         app.set_today(Local::now().date_naive())?;
+        app.now = Local::now().time();
+        app.auto_complete()?;
     }
     Ok(())
 }

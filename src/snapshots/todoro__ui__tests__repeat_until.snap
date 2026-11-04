@@ -1,0 +1,20 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 60, 16).backend()"
+---
+"╭───────────── Monday, October 5 2026 (today) ─────────────╮"
+"│1. Team meeting                                           │"
+"│2. Water plants                                           │"
+"│                                                          │"
+"│    ╭ Last day ──────────────────────────────────────╮    │"
+"│    │ › 31 Dec                                       │    │"
+"│    │                                                │    │"
+"│    │ Last day it repeats on, like 2026-12-31 or 31  │    │"
+"│    │ Dec, if it ends. Enter alone: no end.          │    │"
+"│    │                                                │    │"
+"│    │ Every Mon, Thu until 31 Dec 2026. Next: Thu.   │    │"
+"│    ╰──────────── enter next · esc back ─────────────╯    │"
+"│                                                          │"
+"│                                                          │"
+"╰──── h ← prev day · k ↑ up · j ↓ down · next day → l ─────╯"
+" REPEAT   type a day  enter next  esc back                  "
