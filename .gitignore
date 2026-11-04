@@ -18,3 +18,6 @@
 
 # OS
 .DS_Store
+
+# Claude Code worktrees for work in other threads
+/.claude/worktrees/
