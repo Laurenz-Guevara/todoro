@@ -2,6 +2,28 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [1.1.0] - 2026-11-04
+
+### Features
+
+Repeating items:
+
+- `Space` `r` (or `:repeat`) makes an item repeat on days of the week, every few weeks, days or months, with an optional start and end time and a last day. The popup shows the year ahead with the days it falls on highlighted.
+- Each day it falls on gets its own copy of the item, and every copy shares one notes file. Days todoro wasn't open get their copies the next time it starts, and `todoro -l` shows today's even before then.
+- Days ahead show a dimmed preview of the copies to come, in the list, the plan and the calendar. The calendar's previews can be turned off in the options.
+- A copy completes itself once its end time has passed, unless you reopen it by hand. "Don't auto-complete scheduled items" in the options turns this off.
+- Deleting a copy asks whether to delete just that one or stop repeating. Deleting a preview skips that day or stops the repeat from there.
+- You can set a repeat while planning the day.
+
+Calendar:
+
+- `p` in the year view shows the selected day's items beside the months. It is off until you press it, and isn't shown on narrow screens.
+- `x` completes every item on the selected day, with their sub-items, or reopens them all if all are complete.
+
+Options:
+
+- A new Zen mode (`Space` `o`) hides the key hints on every screen: the status bar's, and the line along the bottom of each box. The `Space` menu and `?` still show every key, and questions such as the delete prompt keep theirs. It's off by default.
+
 ## [1.0.0] - 2026-10-31
 
 ### Features
