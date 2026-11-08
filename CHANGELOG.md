@@ -2,6 +2,12 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
+## [1.1.1] - 2026-11-08
+
+### Features
+
+- Long lines in the notes editor now wrap at the edge of the screen instead of scrolling sideways. A wrapped line is still one line: it keeps one line number, and `j` and `k` move past it in one step.
+
 ## [1.1.0] - 2026-11-04
 
 ### Features
