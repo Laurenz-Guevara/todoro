@@ -1,0 +1,14 @@
+---
+source: src/ui.rs
+expression: "render_sized(&app, 40, 10).backend()"
+---
+"╭────────── 1. Write report ───────────╮"
+"│  1 Ask the team for the third        │"
+"│    quarter numbers before the        │"
+"│    meeting on Wednesday              │"
+"│  2 then charts                       │"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"╰───────── esc/q back to list ─────────╯"
+" NORMAL   i/a/o insert  x delete  ? help"

@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui_textarea::{CursorMove, TextArea};
+use ratatui_textarea::{CursorMove, TextArea, WrapMode};
+use unicode_width::UnicodeWidthChar;
 
 use crate::input::LineInput;
 use crate::ui::VISUAL_BG;
@@ -138,6 +139,9 @@ impl NotesEditor {
         // The text area's default selection is a bright blue that hides the
         // text; use the list's dark selection colour instead.
         textarea.set_selection_style(Style::new().bg(VISUAL_BG));
+        // A line longer than the screen is wide carries on below, at a word
+        // break where there is one; it's still one line.
+        textarea.set_wrap_mode(WrapMode::WordOrGlyph);
         let row = row.min(textarea.lines().len() - 1);
         let col = col.min(textarea.lines()[row].chars().count());
         textarea.move_cursor(CursorMove::Jump(row as u16, col as u16));
@@ -343,8 +347,8 @@ impl NotesEditor {
                 KeyCode::End => self.motion(CursorMove::End),
                 KeyCode::Left => self.repeat(times, CursorMove::Back),
                 KeyCode::Right => self.repeat(times, CursorMove::Forward),
-                KeyCode::Up => self.repeat(times, CursorMove::Up),
-                KeyCode::Down => self.repeat(times, CursorMove::Down),
+                KeyCode::Up => self.vertical(-(times as isize)),
+                KeyCode::Down => self.vertical(times as isize),
                 _ => Action::Stay,
             };
         };
@@ -413,8 +417,8 @@ impl NotesEditor {
             (_, '?') => Action::Help,
             (_, 'h') => self.repeat(times, CursorMove::Back),
             (_, 'l') => self.repeat(times, CursorMove::Forward),
-            (_, 'j') => self.repeat(times, CursorMove::Down),
-            (_, 'k') => self.repeat(times, CursorMove::Up),
+            (_, 'j') => self.vertical(times as isize),
+            (_, 'k') => self.vertical(-(times as isize)),
             (_, 'w') => self.repeat(times, CursorMove::WordForward),
             (_, 'b') => self.repeat(times, CursorMove::WordBack),
             (_, 'e') => self.repeat(times, CursorMove::WordEnd),
@@ -820,6 +824,29 @@ impl NotesEditor {
     fn repeat(&mut self, times: usize, m: CursorMove) -> Action {
         for _ in 0..times {
             self.motion(m);
+        }
+        Action::Stay
+    }
+
+    /// Moves `by` lines down (or up), as vim's `j` and `k` do: whole lines,
+    /// not the rows a long line wraps onto, which the text area's own Up and
+    /// Down would step through. The cursor keeps its column on screen.
+    fn vertical(&mut self, by: isize) -> Action {
+        let (row, col) = self.position();
+        let lines = self.textarea.lines();
+        let target = row.saturating_add_signed(by).min(lines.len() - 1);
+        if target != row {
+            let width: usize = lines[row].chars().take(col).map(|c| c.width().unwrap_or(0)).sum();
+            let mut used = 0;
+            let col = lines[target]
+                .chars()
+                .take_while(|c| {
+                    used += c.width().unwrap_or(0);
+                    used <= width
+                })
+                .count();
+            self.textarea.move_cursor(CursorMove::Jump(target as u16, col as u16));
+            self.clamp();
         }
         Action::Stay
     }

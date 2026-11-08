@@ -5315,6 +5315,30 @@ mod tests {
     }
 
     #[test]
+    fn long_notes_lines_wrap_and_stay_one_line() {
+        let (mut app, _dir) = app_with(&["Write report"]);
+        let long = "Ask the team for the third quarter numbers before the meeting on Wednesday";
+        app.store.set_notes(app.day, 0, format!("{long}\nthen charts")).unwrap();
+        press(&mut app, KeyCode::Enter);
+        // The long line carries on below at word breaks, under one line number.
+        assert_snapshot!(render_sized(&app, 40, 10).backend());
+        // j and k go between the two lines, not through the rows the first
+        // wraps onto.
+        type_str(&mut app, "j");
+        let Mode::Notes(editor) = &app.mode else { panic!("still in the notes") };
+        assert_eq!(editor.textarea.cursor().0, 1);
+        type_str(&mut app, "k");
+        let Mode::Notes(editor) = &app.mode else { panic!("still in the notes") };
+        assert_eq!(editor.textarea.cursor().0, 0);
+        // Typing past the edge wraps too, without breaking the line in two.
+        type_str(&mut app, "A and the budget");
+        render_sized(&app, 40, 10);
+        let Mode::Notes(editor) = &app.mode else { panic!("still in the notes") };
+        assert_eq!(editor.textarea.lines().len(), 2);
+        assert!(editor.textarea.lines()[0].ends_with("Wednesday and the budget"));
+    }
+
+    #[test]
     fn selecting_text_in_the_notes() {
         let (mut app, _dir) = app_with(&["Write report"]);
         app.store.set_notes(app.day, 0, "Draft the intro".into()).unwrap();
