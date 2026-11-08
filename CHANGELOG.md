@@ -2,7 +2,7 @@
 
 All notable changes to todoro. Each release's section is also shown on its GitHub release page.
 
-## [1.1.1] - 2026-11-08
+## [1.1.2] - 2026-11-08
 
 ### Features
 
